@@ -1,13 +1,13 @@
 from opshin.prelude import *
-from opshin.std.builtins import append_byte_string, cons_byte_string, sha3_256
+# from opshin.std.builtins import append_byte_string, cons_byte_string, sha3_256
 
 # =============================================================================
 # CONSTANTS
 # =============================================================================
 
 # Token name prefixes for unique identification
-PREFIX_PROTOCOL_NFT = b"100"  # Protocol reference NFT (sent to contract)
-PREFIX_USER_NFT = b"200"  # User NFT (sent to creator)
+# PREFIX_PROTOCOL_NFT = b"100"  # Protocol reference NFT (sent to contract)
+# PREFIX_USER_NFT = b"200"  # User NFT (sent to creator)
 PREFIX_PROJECT_NFT = b"300"  # Project NFT
 PREFIX_ORACLE_NFT = b"400"  # Oracle NFT
 PREFIX_GREY_TOKEN = b"GREY"  # Grey tokens (pre-certification)
@@ -29,61 +29,61 @@ MIN_TOKEN_AMOUNT = 1
 # =============================================================================
 
 
-def unique_token_name(oref: TxOutRef, prefix: bytes) -> TokenName:
-    """
-    Generate unique token name from output reference and prefix.
+# def unique_token_name(oref: TxOutRef, prefix: bytes) -> TokenName:
+#     """
+#     Generate unique token name from output reference and prefix.
 
-    Args:
-        oref: Transaction output reference
-        prefix: Byte prefix for token name
+#     Args:
+#         oref: Transaction output reference
+#         prefix: Byte prefix for token name
 
-    Returns:
-        Unique token name
-    """
-    txid_hash = sha3_256(oref.id)
-    prepend_index = cons_byte_string(oref.idx, txid_hash)
-    token_name = append_byte_string(prefix, prepend_index)
+#     Returns:
+#         Unique token name
+#     """
+#     txid_hash = sha3_256(oref.id)
+#     prepend_index = cons_byte_string(oref.idx, txid_hash)
+#     token_name = append_byte_string(prefix, prepend_index)
 
-    return token_name
-
-
-def has_utxo(context: ScriptContext, oref: TxOutRef) -> bool:
-    """
-    Check if the specified UTXO is consumed in this transaction.
-
-    Args:
-        context: Script execution context
-        oref: Transaction output reference to check
-
-    Returns:
-        True if UTXO is consumed, False otherwise
-    """
-    return any([oref == i.out_ref for i in context.tx_info.inputs])
+#     return token_name
 
 
-def find_script_address(policy_id: PolicyId) -> Address:
-    """
-    Get the script address from policy ID.
+# def has_utxo(context: ScriptContext, oref: TxOutRef) -> bool:
+#     """
+#     Check if the specified UTXO is consumed in this transaction.
 
-    Args:
-        policy_id: The policy ID of the script
+#     Args:
+#         context: Script execution context
+#         oref: Transaction output reference to check
 
-    Returns:
-        Script address
-    """
-    return Address(ScriptCredential(policy_id), NoStakingCredential())
+#     Returns:
+#         True if UTXO is consumed, False otherwise
+#     """
+#     return any([oref == i.out_ref for i in context.tx_info.inputs])
 
 
-def find_token_output(
-    outputs: List[TxOut], policy_id: PolicyId, protocol_token_name: TokenName
-) -> TxOut:
-    """Find the output containing the protocol NFT"""
-    result = None
-    for output in outputs:
-        token_amount = output.value.get(policy_id, {b"": 0}).get(protocol_token_name, 0)
-        if token_amount == 1:
-            result = output
-    return result
+# def find_script_address(policy_id: PolicyId) -> Address:
+#     """
+#     Get the script address from policy ID.
+
+#     Args:
+#         policy_id: The policy ID of the script
+
+#     Returns:
+#         Script address
+#     """
+#     return Address(ScriptCredential(policy_id), NoStakingCredential())
+
+
+# def find_token_output(
+#     outputs: List[TxOut], policy_id: PolicyId, protocol_token_name: TokenName
+# ) -> TxOut:
+#     """Find the output containing the protocol NFT"""
+#     result = None
+#     for output in outputs:
+#         token_amount = output.value.get(policy_id, {b"": 0}).get(protocol_token_name, 0)
+#         if token_amount == 1:
+#             result = output
+#     return result
 
 
 # TODO: pending to create test case

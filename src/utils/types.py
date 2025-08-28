@@ -1,25 +1,25 @@
 from opshin.prelude import *
 
 
-@dataclass
-class Mint(PlutusData):
-    CONSTR_ID = 0
+# @dataclass
+# class Mint(PlutusData):
+#     CONSTR_ID = 0
 
 
-@dataclass
-class Burn(PlutusData):
-    CONSTR_ID = 1
+# @dataclass
+# class Burn(PlutusData):
+#     CONSTR_ID = 1
 
 
-@dataclass
-class DatumProtocol(PlutusData):
-    """Protocol datum containing admin and configuration information"""
+# @dataclass
+# class DatumProtocol(PlutusData):
+#     """Protocol datum containing admin and configuration information"""
 
-    CONSTR_ID = 0
-    protocol_admin: List[PubKeyHash]  # List of admin public key hashes
-    protocol_fee: int  # Protocol fee in lovelace
-    oracle_id: bytes  # Oracle identifier
-    project_id: bytes  # Project identifier
+#     CONSTR_ID = 0
+#     protocol_admin: List[PubKeyHash]  # List of admin public key hashes
+#     protocol_fee: int  # Protocol fee in lovelace
+#     oracle_id: bytes  # Oracle identifier
+#     project_id: bytes  # Project identifier
 
 
 @dataclass
