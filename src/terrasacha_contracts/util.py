@@ -1,6 +1,8 @@
 from opshin.prelude import *
 from opshin.std.builtins import *
 
+from terrasacha_contracts.types import *
+
 def get_minting_purpose(context: ScriptContext) -> Minting:
     purpose = context.purpose
     assert isinstance(purpose, Minting)
@@ -27,6 +29,13 @@ def unique_token_name(oref: TxOutRef, prefix: bytes) -> TokenName:
 
     return token_name
 
+def get_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
+    """
+    Slice the token name into its prefix and unique suffix.
+    """
+
+    return slice_byte_string(len(PREFIX_PROTOCOL_NFT), len(protocol_token) - len(PREFIX_PROTOCOL_NFT), protocol_token)
+
 def check_mint_exactly_n_with_name(
     mint: Value, n: int, policy_id: PolicyId, required_token_name: TokenName
 ) -> None:
@@ -51,6 +60,9 @@ def check_mint_exactly_one_with_name(
 def only_one_input_from_address(address: Address, inputs: List[TxInInfo]) -> bool:
     return sum([int(i.resolved.address == address) for i in inputs]) == 1
 
+def only_one_output_to_address(address: Address, outputs: List[TxOut]) -> bool:
+    return sum([int(i.address == address) for i in outputs]) == 1
+
 def amount_of_token_in_output(token: Token, output: TxOut) -> int:
     return output.value.get(token.policy_id, {b"": 0}).get(token.token_name, 0)
 
@@ -69,6 +81,22 @@ def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -
     ), "More than one input from the contract address"
     return previous_state_input
 
+def resolve_linear_output(
+    previous_state_input: TxOut, tx_info: TxInfo, output_index: int
+) -> TxOut:
+    """
+    Resolve the continuing output that is referenced by the redeemer. Checks that the output does not move funds to a different address.
+    """
+    outputs = tx_info.outputs
+    next_state_output = outputs[output_index]
+    assert (
+        next_state_output.address == previous_state_input.address
+    ), "Moved funds to different address"
+    assert only_one_output_to_address(
+        next_state_output.address, outputs
+    ), "More than one output to the contract address"
+    return next_state_output
+
 def check_mint_exactly_one_to_output(mint: Value, token: Token, staking_output: TxOut):
     """
     Check that exactly one token is minted and sent to address
@@ -78,3 +106,11 @@ def check_mint_exactly_one_to_output(mint: Value, token: Token, staking_output: 
     assert (
         amount_of_token_in_output(token, staking_output) == 1
     ), "Exactly one token must be sent to staking address"
+
+def check_token_present(token: Token, output: TxOut) -> bool:
+    """
+    Returns whether the given token is contained in the output
+    """
+    return output.value.get(token.policy_id, {b"": 0}).get(token.token_name, 0) > 0
+
+
