@@ -29,63 +29,6 @@ MIN_TOKEN_AMOUNT = 1
 # =============================================================================
 
 
-# def unique_token_name(oref: TxOutRef, prefix: bytes) -> TokenName:
-#     """
-#     Generate unique token name from output reference and prefix.
-
-#     Args:
-#         oref: Transaction output reference
-#         prefix: Byte prefix for token name
-
-#     Returns:
-#         Unique token name
-#     """
-#     txid_hash = sha3_256(oref.id)
-#     prepend_index = cons_byte_string(oref.idx, txid_hash)
-#     token_name = append_byte_string(prefix, prepend_index)
-
-#     return token_name
-
-
-# def has_utxo(context: ScriptContext, oref: TxOutRef) -> bool:
-#     """
-#     Check if the specified UTXO is consumed in this transaction.
-
-#     Args:
-#         context: Script execution context
-#         oref: Transaction output reference to check
-
-#     Returns:
-#         True if UTXO is consumed, False otherwise
-#     """
-#     return any([oref == i.out_ref for i in context.tx_info.inputs])
-
-
-# def find_script_address(policy_id: PolicyId) -> Address:
-#     """
-#     Get the script address from policy ID.
-
-#     Args:
-#         policy_id: The policy ID of the script
-
-#     Returns:
-#         Script address
-#     """
-#     return Address(ScriptCredential(policy_id), NoStakingCredential())
-
-
-# def find_token_output(
-#     outputs: List[TxOut], policy_id: PolicyId, protocol_token_name: TokenName
-# ) -> TxOut:
-#     """Find the output containing the protocol NFT"""
-#     result = None
-#     for output in outputs:
-#         token_amount = output.value.get(policy_id, {b"": 0}).get(protocol_token_name, 0)
-#         if token_amount == 1:
-#             result = output
-#     return result
-
-
 # TODO: pending to create test case
 def check_admin_signature(context: ScriptContext, admin_list: List[PubKeyHash]) -> bool:
     """

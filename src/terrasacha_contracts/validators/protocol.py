@@ -2,7 +2,6 @@ from opshin.prelude import *
 from terrasacha_contracts.util import *
 from terrasacha_contracts.types import *
 
-
 def validate_protocol_nft_continues(
     protocol_output: TxOut,
     protocol_token: Token
@@ -42,7 +41,7 @@ def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenNam
     """
     
     # Extract the unique suffix (everything after the prefix)
-    unique_suffix = protocol_token[len(PREFIX_USER_NFT):]
+    unique_suffix = protocol_token[len(PREFIX_PROTOCOL_NFT):]
 
     # Create user token with same suffix
     user_token_name = PREFIX_USER_NFT + unique_suffix
@@ -86,21 +85,14 @@ def validator(datum_protocol: DatumProtocol, redeemer: RedeemerProtocol, context
         protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
         protocol_output = resolve_linear_output(protocol_input, tx_info, redeemer.protocol_output_index)
 
-        user_input = resolve_linear_input(tx_info, redeemer.user_input_index, purpose)
+        # user_input = resolve_linear_input(tx_info, redeemer.user_input_index, purpose)
+        user_input = tx_info.inputs[redeemer.user_input_index].resolved
 
         protocol_token = extract_protocol_token_from_input(protocol_input)
 
-        protocol_token_name = protocol_token.token_name
-
-        user_token_name = derive_user_token_from_protocol_token(protocol_token_name)
-
-        user_token = Token(protocol_token.policy_id, user_token_name)
-
-        check_token_present(user_token, user_input)
+        assert check_token_present(protocol_token.policy_id, user_input), "User does not have required token"
 
         validate_protocol_nft_continues(protocol_output, protocol_token)
-
-        protocol_output = tx_info.outputs[redeemer.protocol_output_index]
 
         protocol_datum = protocol_output.datum
 

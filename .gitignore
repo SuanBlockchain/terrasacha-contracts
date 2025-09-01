@@ -115,3 +115,4 @@ tests/ledger/api_v2.py
 tests/ledger/to_script_context_v1.py
 tests/ledger/to_script_context_v2.py
 src/terrasacha_contracts/validators/protocol copy.py
+tests/test_offchain_protocol.py

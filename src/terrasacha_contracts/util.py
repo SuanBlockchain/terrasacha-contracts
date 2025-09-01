@@ -22,51 +22,35 @@ def has_utxo(context: ScriptContext, oref: TxOutRef) -> bool:
     return False
 
 def unique_token_name(oref: TxOutRef, prefix: bytes) -> TokenName:
-    """Generate unique token name from UTXO reference and prefix"""
-    txid_hash = sha3_256(oref.id.tx_id)
-    prepend_index = cons_byte_string(oref.idx, txid_hash)
-    token_name = append_byte_string(prefix, prepend_index)
+    """Hash tx_id with index to ensure index affects the entire hash"""
+    # Combine tx_id with index before hashing
+    index_bytes = cons_byte_string(oref.idx, b"")
+    combined_data = append_byte_string(oref.id.tx_id, index_bytes)
+    
+    # Hash the combined data  
+    combined_hash = sha3_256(combined_data)
+    
+    # Add prefix and truncate
+    full_token = append_byte_string(prefix, combined_hash)
+    
+    if len(full_token) > 32:
+        return slice_byte_string(0, 32, full_token)
+    
+    return full_token
 
-    return token_name
-
-def get_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
-    """
-    Slice the token name into its prefix and unique suffix.
-    """
-
-    return slice_byte_string(len(PREFIX_PROTOCOL_NFT), len(protocol_token) - len(PREFIX_PROTOCOL_NFT), protocol_token)
-
-def check_mint_exactly_n_with_name(
-    mint: Value, n: int, policy_id: PolicyId, required_token_name: TokenName
-) -> None:
-    """
-    Check that exactly n token with the given name is minted
-    from the given policy
-    """
-    d = mint[policy_id]
-    assert d[required_token_name] == n, "Exactly n token must be minted"
-    assert len(d) == 1, "No other token must be minted"
-
-
-def check_mint_exactly_one_with_name(
-    mint: Value, policy_id: PolicyId, required_token_name: TokenName
-) -> None:
-    """
-    Check that exactly one token with the given name is minted
-    from the given policy
-    """
-    check_mint_exactly_n_with_name(mint, 1, policy_id, required_token_name)
-
-def only_one_input_from_address(address: Address, inputs: List[TxInInfo]) -> bool:
+def only_one_input_from_address(address: Address, inputs: List[TxInInfo]) -> bool: #Not in Used
+    """Check if there is only one input from the specified address"""
     return sum([int(i.resolved.address == address) for i in inputs]) == 1
 
-def only_one_output_to_address(address: Address, outputs: List[TxOut]) -> bool:
+def only_one_output_to_address(address: Address, outputs: List[TxOut]) -> bool: #Not in Used
+    """Check if there is only one output to the specified address"""
     return sum([int(i.address == address) for i in outputs]) == 1
 
-def amount_of_token_in_output(token: Token, output: TxOut) -> int:
+def amount_of_token_in_output(token: Token, output: TxOut) -> int: #Not in Used
+    """Get the amount of a specific token in a transaction output"""
     return output.value.get(token.policy_id, {b"": 0}).get(token.token_name, 0)
 
-def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -> TxOut:
+def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -> TxOut: #In Use
     """
     Resolve the input that is referenced by the redeemer.
     Also checks that the input is referenced correctly and that there is only one.
@@ -83,7 +67,7 @@ def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -
 
 def resolve_linear_output(
     previous_state_input: TxOut, tx_info: TxInfo, output_index: int
-) -> TxOut:
+) -> TxOut: #In Use
     """
     Resolve the continuing output that is referenced by the redeemer. Checks that the output does not move funds to a different address.
     """
@@ -97,20 +81,17 @@ def resolve_linear_output(
     ), "More than one output to the contract address"
     return next_state_output
 
-def check_mint_exactly_one_to_output(mint: Value, token: Token, staking_output: TxOut):
-    """
-    Check that exactly one token is minted and sent to address
-    Also ensures that no other token of this policy is minted
-    """
-    check_mint_exactly_one_with_name(mint, token.policy_id, token.token_name)
-    assert (
-        amount_of_token_in_output(token, staking_output) == 1
-    ), "Exactly one token must be sent to staking address"
-
-def check_token_present(token: Token, output: TxOut) -> bool:
+def check_token_present(policy_id: PolicyId, output: TxOut) -> bool:
     """
     Returns whether the given token is contained in the output
     """
-    return output.value.get(token.policy_id, {b"": 0}).get(token.token_name, 0) > 0
+    default_tokens: Dict[bytes, int] = {b"": 0}
+    policy_tokens = output.value.get(policy_id, default_tokens)
+    
+    # Use .keys() to iterate over dictionary keys
+    for token_name in policy_tokens.keys():
+        if policy_tokens[token_name] > 0:
+            return True
+    return False
 
 
