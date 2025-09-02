@@ -6,6 +6,7 @@ smart contracts, and transaction handling capabilities.
 
 import os
 import json
+import pathlib
 import time
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
@@ -17,10 +18,22 @@ import pycardano as pc
 # import opshin
 # from opshin import build_script
 # from opshin.prelude import *
-from opshin.builder import build
+from opshin.builder import build, PlutusContract
+from opshin.prelude import *
+
+from dotenv import load_dotenv
+import pathlib
+
+from terrasacha_contracts.types import PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, DatumProtocol, Mint
+from terrasacha_contracts.util import unique_token_name
+
+# Load .env from project root (parent of tests directory)
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+ENV_FILE = PROJECT_ROOT / 'tests/.env'
+load_dotenv(ENV_FILE)  # Load once with absolute path
 
 # Load environment variables
-load_dotenv()
+# load_dotenv()
 
 class CardanoDApp:
     """Main dApp class that handles wallet management and smart contract interactions"""
@@ -30,6 +43,7 @@ class CardanoDApp:
         self.wallet_mnemonic = os.getenv("wallet_mnemonic")
         self.blockfrost_api_key = os.getenv("blockfrost_api_key")
         self.cardano_explorer_url = "https://preview.cexplorer.io" if self.network == "testnet" else "https://cexplorer.io"
+        self.contracts_dir ="./src/terrasacha_contracts"
         
         # Set network configuration
         if self.network == "testnet":
@@ -45,7 +59,10 @@ class CardanoDApp:
             base_url=self.base_url
         )
         self.context = self._get_chain_context()
-        
+
+        self.minting_contracts_path = pathlib.Path(self.contracts_dir) / "minting_policies"
+        self.spending_contracts_path = pathlib.Path(self.contracts_dir) / "validators"
+
         # Initialize wallet
         self._setup_wallet()
         
@@ -56,7 +73,7 @@ class CardanoDApp:
         
         # Smart contract instances
         self.contracts = {}
-        # self._compile_contracts()
+        self._compile_contracts()
 
     def _get_chain_context(self) -> pc.ChainContext:
         return pc.BlockFrostChainContext(self.blockfrost_api_key, base_url=self.base_url)
@@ -125,166 +142,16 @@ class CardanoDApp:
     def _compile_contracts(self):
         """Compile OpShin smart contracts"""
         print("Compiling smart contracts...")
-        
-        # Simple locking contract
-        self.contracts['simple_lock'] = self._create_simple_lock_contract()
-        
-        # Vesting contract
-        self.contracts['vesting'] = self._create_vesting_contract()
-        
-        # Token minting contract
-        self.contracts['token_mint'] = self._create_token_mint_contract()
+
+        protocol_nfts_path = self.minting_contracts_path.joinpath("protocol_nfts.py")
+
+        protocol_nft_contract = build(protocol_nfts_path)
+
+
+        self.contracts["protocol_nfts"] = PlutusContract(protocol_nft_contract)
         
         print("Smart contracts compiled successfully!")
 
-    def _create_simple_lock_contract(self) -> pc.PlutusV2Script:
-        """Create a simple locking smart contract using OpShin"""
-        
-        contract_code = '''
-from opshin.prelude import *
-
-@dataclass
-class SimpleLockDatum(PlutusData):
-    """Datum for simple lock contract"""
-    CONSTR_ID = 0
-    owner: bytes  # Public key hash of the owner
-    unlock_time: int  # POSIX timestamp when funds can be unlocked
-
-@dataclass  
-class SimpleLockRedeemer(PlutusData):
-    """Redeemer for simple lock contract"""
-    CONSTR_ID = 0
-    action: bytes  # Action to perform (unlock/extend)
-
-def validator(datum: SimpleLockDatum, redeemer: SimpleLockRedeemer, context: ScriptContext) -> bool:
-    """
-    Simple time-locked contract validator
-    Funds can only be unlocked after the specified time by the owner
-    """
-    
-    # Check if current time is after unlock time
-    tx_info = context.tx_info
-    time_range = tx_info.valid_range
-    
-    # Get current time (start of validity range)
-    current_time = time_range.lower_bound.limit
-    
-    # Verify unlock conditions
-    if redeemer.action == b"unlock":
-        # Check if unlock time has passed
-        assert current_time >= datum.unlock_time, "Unlock time not reached"
-        
-        # Check if transaction is signed by owner
-        assert datum.owner in tx_info.signatories, "Not signed by owner"
-        
-        return True
-    
-    return False
-        '''
-        
-        # Compile the contract
-        script = build(contract_code)
-        return script
-
-    def _create_vesting_contract(self) -> pc.PlutusV2Script:
-        """Create a vesting contract using OpShin"""
-        
-        contract_code = '''
-from opshin.prelude import *
-
-@dataclass
-class VestingDatum(PlutusData):
-    """Datum for vesting contract"""
-    CONSTR_ID = 0
-    beneficiary: bytes  # Beneficiary's public key hash
-    vesting_schedule: List[int]  # List of unlock timestamps
-    amounts: List[int]  # Corresponding unlock amounts in lovelace
-
-@dataclass
-class VestingRedeemer(PlutusData):
-    """Redeemer for vesting contract"""
-    CONSTR_ID = 0
-    withdrawal_index: int  # Which vesting period to unlock
-
-def validator(datum: VestingDatum, redeemer: VestingRedeemer, context: ScriptContext) -> bool:
-    """
-    Vesting contract validator
-    Allows gradual release of funds according to schedule
-    """
-    
-    tx_info = context.tx_info
-    time_range = tx_info.valid_range
-    current_time = time_range.lower_bound.limit
-    
-    # Verify withdrawal index is valid
-    withdrawal_idx = redeemer.withdrawal_index
-    assert 0 <= withdrawal_idx < len(datum.vesting_schedule), "Invalid withdrawal index"
-    
-    # Check if vesting time has been reached
-    unlock_time = datum.vesting_schedule[withdrawal_idx]
-    assert current_time >= unlock_time, "Vesting period not reached"
-    
-    # Check if signed by beneficiary
-    assert datum.beneficiary in tx_info.signatories, "Not signed by beneficiary"
-    
-    # Verify correct amount is being withdrawn
-    expected_amount = datum.amounts[withdrawal_idx]
-    
-    # Check outputs to ensure remaining funds stay in contract
-    # (This is simplified - in practice you'd check all outputs)
-    
-    return True
-        '''
-
-        script = build(contract_code)
-        return script
-
-    def _create_token_mint_contract(self) -> pc.PlutusV2Script:
-        """Create a token minting contract using OpShin"""
-        
-        contract_code = '''
-from opshin.prelude import *
-
-@dataclass
-class MintingRedeemer(PlutusData):
-    """Redeemer for minting contract"""
-    CONSTR_ID = 0
-    action: bytes  # "mint" or "burn"
-    amount: int   # Amount to mint/burn
-
-def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
-    """
-    Token minting validator
-    Controls minting and burning of custom tokens
-    """
-    
-    tx_info = context.tx_info
-    purpose = context.purpose
-    
-    # Ensure this is being used for minting
-    assert isinstance(purpose, Minting), "Wrong script purpose"
-    
-    policy_id = purpose.policy_id
-    mint_value = tx_info.mint
-    
-    if redeemer.action == b"mint":
-        # Allow minting up to specified amount
-        minted_amount = mint_value.get(policy_id, {}).get(b"MyToken", 0)
-        assert minted_amount <= redeemer.amount, "Minting too many tokens"
-        assert minted_amount > 0, "Must mint positive amount"
-        
-    elif redeemer.action == b"burn":
-        # Allow burning
-        burned_amount = mint_value.get(policy_id, {}).get(b"MyToken", 0)
-        assert burned_amount < 0, "Must burn negative amount"
-        assert abs(burned_amount) <= redeemer.amount, "Burning too many tokens"
-    
-    return True
-        '''
-
-        script = build(contract_code)
-        return script
-    
     def check_balances(self) -> Dict[str, Any]:
         """Check balances for all wallet addresses"""
         balances = {
@@ -365,20 +232,6 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
             builder.add_output(
                 pc.TransactionOutput(to_address, pc.Value(amount_lovelace))
             )
-            
-            # for utxo in utxos:
-            #     tx_in = TransactionInput.from_primitive([utxo.tx_hash, utxo.output_index])
-            #     tx_out = TransactionOutput(
-            #         Address.from_bech32(utxo.address),
-            #         Value.from_primitive(
-            #             [amount.quantity if amount.unit == 'lovelace' else 0 for amount in utxo.amount]
-            #         )
-            #     )
-            #     builder.add_input_and_build_utxo(tx_in, tx_out)
-            
-            # # Add output
-            # recipient_address = Address.from_bech32(to_address)
-            # builder.add_output(TransactionOutput(recipient_address, Value(coin=amount_lovelace)))
             
             # Build transaction
             signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
@@ -478,9 +331,13 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
         
         print(f"\nSMART CONTRACTS:")
         for name, contract in self.contracts.items():
-            contract_hash = contract.hash()
-            contract_address = pc.Address(pc.ScriptHash(contract_hash), network=self.cardano_network)
-            print(f"{name:15s} | Hash: {contract_hash.hex()[:16]}... | Address: {str(contract_address)[:50]}...")
+            policy_id = contract.policy_id
+            # contract_address = pc.Address(pc.ScriptHash(policy_id), network=self.cardano_network)
+            if self.cardano_network == "mainnet":
+                contract_address = contract.mainnet_addr
+            else:
+                contract_address = contract.testnet_addr
+            print(f"{name:15s} | PolicyId: {policy_id} | Address: {contract_address.encode()}")
         
         # Check and display balances
         print(f"\nCHECKING BALANCES...")
@@ -498,46 +355,6 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
         print(f"\nTOTAL WALLET BALANCE: {balances['total_balance']/1_000_000:.6f} ADA")
         
         return balances
-    
-    def interactive_menu(self):
-        """Interactive menu for dApp operations"""
-        while True:
-            print("\n" + "="*60)
-            print("CARDANO DAPP INTERACTIVE MENU")
-            print("="*60)
-            print("1. Display Wallet Info & Balances")
-            print("2. Generate New Addresses")
-            print("3. Send ADA")
-            print("4. Lock Funds (Simple Contract)")
-            print("5. Check Contract Balances")
-            print("6. Export Wallet Data")
-            print("7. Test Smart Contracts")
-            print("0. Exit")
-            print("-"*60)
-            
-            choice = input("Select an option (0-7): ").strip()
-            
-            if choice == "0":
-                print("Exiting dApp...")
-                break
-            elif choice == "1":
-                self.display_wallet_info()
-            elif choice == "2":
-                count = int(input("How many new addresses to generate? "))
-                self._generate_addresses(count)
-                print(f"Generated {count} new addresses!")
-            elif choice == "3":
-                self._send_ada_menu()
-            elif choice == "4":
-                self._lock_funds_menu()
-            elif choice == "5":
-                self._check_contracts_menu()
-            elif choice == "6":
-                self._export_wallet_menu()
-            elif choice == "7":
-                self._test_contracts_menu()
-            else:
-                print("Invalid option. Please try again.")
     
     def _send_ada_menu(self):
         """Send ADA submenu"""
@@ -593,8 +410,11 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
         print("-" * 40)
         
         for name, contract in self.contracts.items():
-            contract_address = pc.Address(pc.ScriptHash(contract.hash()), network=self.cardano_network)
             try:
+                if self.cardano_network == "mainnet":
+                    contract_address = contract.mainnet_addr
+                else:
+                    contract_address = contract.testnet_addr
                 utxos = self.api.address_utxos(str(contract_address))
                 balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == 'lovelace')
                 print(f"{name:15s}: {balance/1_000_000:.6f} ADA")
@@ -635,7 +455,47 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
             json.dump(wallet_data, f, indent=2)
         
         print(f"Wallet data exported to: {filename}")
-    
+
+    def interactive_menu(self):
+        """Interactive menu for dApp operations"""
+        while True:
+            print("\n" + "="*60)
+            print("CARDANO DAPP INTERACTIVE MENU")
+            print("="*60)
+            print("1. Display Wallet Info & Balances")
+            print("2. Generate New Addresses")
+            print("3. Send ADA")
+            print("4. Lock Funds (Simple Contract)")
+            print("5. Check Contract Balances")
+            print("6. Export Wallet Data")
+            print("7. Test Smart Contracts")
+            print("0. Exit")
+            print("-"*60)
+            
+            choice = input("Select an option (0-7): ").strip()
+            
+            if choice == "0":
+                print("Exiting dApp...")
+                break
+            elif choice == "1":
+                self.display_wallet_info()
+            elif choice == "2":
+                count = int(input("How many new addresses to generate? "))
+                self._generate_addresses(count)
+                print(f"Generated {count} new addresses!")
+            elif choice == "3":
+                self._send_ada_menu()
+            elif choice == "4":
+                self._lock_funds_menu()
+            elif choice == "5":
+                self._check_contracts_menu()
+            elif choice == "6":
+                self._export_wallet_menu()
+            elif choice == "7":
+                self._test_contracts_menu()
+            else:
+                print("Invalid option. Please try again.")
+
     def _test_contracts_menu(self):
         """Test smart contracts submenu"""
         print("\nTEST SMART CONTRACTS")
@@ -643,6 +503,142 @@ def validator(redeemer: MintingRedeemer, context: ScriptContext) -> bool:
         print("Contract testing functionality would go here.")
         print("This would include unit tests for each contract validator function.")
 
+        for name, contract in self.contracts.items():
+            print(f"Testing contract: {name}")
+            # Here you would call the test functions for each contract
+            # For example: test_contract(contract)
+            # test_minting_contract(contract)
+            self.test_minting_contract(contract)
+
+    def test_minting_contract(self, contract: PlutusContract):
+        """Test the minting functionality of the contract"""
+        # print(f"Testing minting contract: {self.contracts['protocol_nfts'].blueprint}")
+        # Here you would call the actual test functions for the contract
+        # For example: assert contract.mint() == expected_result
+        
+        # Create transaction builder
+        builder = pc.TransactionBuilder(self.context)
+
+        # Get contract info
+        minting_script: pc.PlutusV2Script = contract.cbor
+        minting_policy_id = pc.ScriptHash(bytes.fromhex(contract.policy_id))
+        contract_address = contract.testnet_addr
+        
+
+        from_address = self.addresses[0]['enterprise_address']
+        utxos = self.context.utxos(from_address)
+        signing_key = self.addresses[0]['signing_key']
+
+        utxo_to_spend = None
+        for utxo in utxos:
+            if utxo.output.amount.coin > 3000000:
+                utxo_to_spend = utxo
+                break
+        assert utxo_to_spend is not None, "No suitable UTXO found for minting test"
+
+        builder.add_input(utxo_to_spend)
+        oref = TxOutRef(
+            id=TxId(utxo_to_spend.input.transaction_id.payload),
+            idx=utxo_to_spend.input.index,
+        )
+
+        # Create the tokens
+        # Generate token names using the actual utility function
+        protocol_token_name = unique_token_name(oref, PREFIX_PROTOCOL_NFT)
+        user_token_name = unique_token_name(oref, PREFIX_USER_NFT)
+        
+        # Create assets to mint
+        # protocol_nft_asset = pc.Asset({pc.AssetName(protocol_token_name): 1})
+        # user_nft_asset = pc.Asset({pc.AssetName(user_token_name): 1})
+
+        protocol_nft_asset = pc.MultiAsset({minting_policy_id: pc.Asset({pc.AssetName(protocol_token_name): 1})})
+        user_nft_asset = pc.MultiAsset({minting_policy_id: pc.Asset({pc.AssetName(user_token_name): 1})})
+
+        # protocol_nft_asset = pc.MultiAsset.from_primitive({bytes(minting_policy_id): { protocol_token_name: 1 }})
+        # user_nft_asset = pc.MultiAsset.from_primitive({bytes(minting_policy_id): { user_token_name: 1 }})
+
+        total_mint = protocol_nft_asset.union(user_nft_asset)
+
+        # total_mint = pc.MultiAsset({
+        #     minting_policy_id: { protocol_nft_asset, user_nft_asset }
+        # })
+        builder.mint = total_mint
+        
+        # Create contract output
+        builder.add_minting_script(
+            script=minting_script,
+            redeemer=pc.Redeemer(Mint())  # Mint redeemer
+        )
+
+        # Add protocol output (send protocol NFT to protocol address)
+        payment_vkey = self.payment_skey.to_verification_key().hash()
+        protocol_datum = DatumProtocol(
+            protocol_admin=[payment_vkey.payload],
+            protocol_fee=1000000,
+            oracle_id=b"oracle_integration_test",
+            project_id=b"project_integration_test",
+        )
+
+        protocol_value = pc.Value(0, protocol_nft_asset)
+
+        min_val = pc.min_lovelace(
+            self.context,
+            output=pc.TransactionOutput(
+                contract_address,
+                protocol_value,
+                datum=protocol_datum,
+            ),
+        )
+        protocol_output = pc.TransactionOutput(
+            address=contract_address,
+            amount=pc.Value(coin=min_val, multi_asset=protocol_nft_asset),
+            datum=protocol_datum,
+        )
+        builder.add_output(protocol_output)
+
+        user_value = pc.Value(0, user_nft_asset)
+
+        min_val = pc.min_lovelace(
+            self.context,
+            output=pc.TransactionOutput(
+                from_address,
+                user_value,
+                datum=protocol_datum,
+            ),
+        )
+        # Add user output (send user NFT to user address)
+        user_output = pc.TransactionOutput(
+            address=from_address,
+            amount=pc.Value(coin=min_val, multi_asset=user_nft_asset),
+            datum=None,
+        )
+        builder.add_output(user_output)
+
+        # Build transaction
+        signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+        return signed_tx
+
+
+class TestCardanoDApp:
+
+    def setup_method(self):
+        self.dapp = CardanoDApp()
+
+    def test_contracts_menu(self):
+
+        for name, contract in self.dapp.contracts.items():
+            print(f"Testing contract: {name}")
+            signed_tx = self.dapp.test_minting_contract(contract)
+
+            # Submit
+            tx_id = self.dapp.submit_transaction(signed_tx)
+            
+            if tx_id:
+                print(f"Funds locked successfully! Transaction ID: {tx_id}")
+                # print(f"Unlock time: {datetime.fromtimestamp(unlock_timestamp/1000)}")
+                
+            return tx_id
 
 def main():
     """Main function to run the dApp"""
@@ -661,21 +657,22 @@ def main():
         print("blockfrost_api_key=your blockfrost api key here")
         return
     
-    try:
-        # Initialize the dApp
-        print("Initializing Cardano dApp...")
-        dapp = CardanoDApp()
-        
-        # Display initial wallet info
-        dapp.display_wallet_info()
-        
-        # Start interactive menu
-        input("\nPress Enter to continue to interactive menu...")
-        dapp.interactive_menu()
-        
-    except Exception as e:
-        print(f"Error initializing dApp: {e}")
-        print("Please check your environment variables and network connection.")
+    # try:
+    # Initialize the dApp
+    print("Initializing Cardano dApp...")
+    dapp = CardanoDApp()
+    
+    # Display initial wallet info
+    dapp.display_wallet_info()
+    
+    # Start interactive menu
+    input("\nPress Enter to continue to interactive menu...")
+
+    dapp.interactive_menu()
+
+    # except Exception as e:
+    #     print(f"Error initializing dApp: {e}")
+    #     print("Please check your environment variables and network connection.")
 
 
 if __name__ == "__main__":
