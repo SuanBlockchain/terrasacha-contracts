@@ -117,3 +117,4 @@ tests/ledger/to_script_context_v2.py
 src/terrasacha_contracts/validators/protocol copy.py
 tests/offchain_protocol.py
 wallet_data_testnet_1756767651.json
+contracts_testnet.json

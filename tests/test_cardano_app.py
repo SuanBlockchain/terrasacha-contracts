@@ -16,6 +16,7 @@ import pathlib
 
 from terrasacha_contracts.types import PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, DatumProtocol, Mint
 from terrasacha_contracts.util import unique_token_name
+from menu_formatter import MenuFormatter
 
 # Load .env from project root (parent of tests directory)
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
@@ -60,6 +61,15 @@ class CardanoDApp:
         
         # Smart contract instances
         self.contracts = {}
+        self.contract_metadata = {}  # Store compilation metadata
+        self.compilation_utxo = None  # Store the UTXO used for compilation
+        
+        # Initialize menu formatter
+        self.menu = MenuFormatter()
+        
+        # Try to load existing contracts
+        self._load_contracts()
+        
         # self._compile_contracts()
 
 #############################################
@@ -219,6 +229,89 @@ class CardanoDApp:
         
         print(f"Wallet data exported to: {filename}")
 
+#############################################
+# Contract State Management and Persistence
+#############################################
+    def _get_contracts_file_path(self) -> pathlib.Path:
+        """Get the path for contracts storage file"""
+        return pathlib.Path(f"contracts_{self.network}.json")
+
+    def _save_contracts(self):
+        """Save compiled contracts to disk with metadata"""
+        if not self.contracts:
+            return
+            
+        contracts_data = {
+            'network': self.network,
+            'compilation_timestamp': time.time(),
+            'compilation_utxo': self.compilation_utxo,
+            'contracts': {}
+        }
+        
+        for name, contract in self.contracts.items():
+            contracts_data['contracts'][name] = {
+                'policy_id': contract.policy_id,
+                'testnet_addr': str(contract.testnet_addr),
+                'mainnet_addr': str(contract.mainnet_addr),
+                'cbor_hex': contract.cbor.hex()
+            }
+            
+        try:
+            with open(self._get_contracts_file_path(), 'w') as f:
+                json.dump(contracts_data, f, indent=2)
+            self.menu.print_success(f"Contracts saved to {self._get_contracts_file_path()}")
+        except Exception as e:
+            self.menu.print_error(f"Failed to save contracts: {e}")
+
+    def _load_contracts(self):
+        """Load compiled contracts from disk if available"""
+        contracts_file = self._get_contracts_file_path()
+        if not contracts_file.exists():
+            return
+            
+        try:
+            with open(contracts_file, 'r') as f:
+                contracts_data = json.load(f)
+            
+            # Validate network matches
+            if contracts_data.get('network') != self.network:
+                self.menu.print_warning(f"Contract network mismatch (saved: {contracts_data.get('network')}, current: {self.network})")
+                return
+                
+            # Load compilation UTXO
+            self.compilation_utxo = contracts_data.get('compilation_utxo')
+            
+            # Load contracts (we'll implement this when we have PlutusContract reconstruction)
+            self.menu.print_info(f"Found existing contracts from {contracts_file}")
+            
+        except Exception as e:
+            self.menu.print_error(f"Failed to load contracts: {e}")
+
+    def _is_compilation_utxo_available(self) -> bool:
+        """Check if the compilation UTXO is still available"""
+        if not self.compilation_utxo:
+            return False
+        try:
+            utxos = self.context.utxos(self.addresses[0]['enterprise_address'])
+            for utxo in utxos:
+                if (utxo.input.transaction_id.payload.hex() == self.compilation_utxo['tx_id'] and 
+                    utxo.input.index == self.compilation_utxo['index']):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _get_contract_status(self) -> str:
+        """Get current contract compilation status"""
+        if not self.contracts:
+            return "Not compiled"
+        elif not self.compilation_utxo:
+            return "Compiled (unknown UTXO)"
+        elif self._is_compilation_utxo_available():
+            return "✓ Ready"
+        else:
+            return "⚠ UTXO consumed"
+
     def check_balances(self) -> Dict[str, Any]:
         """Check balances for all wallet addresses"""
         balances = {
@@ -327,40 +420,68 @@ class CardanoDApp:
 # Functions specific to contracts
 #############################################
     def _display_contracts_info(self):
-        """Check contract balances submenu"""
-        print("\nSMART CONTRACT BALANCES")
-        print("-" * 40)
-
+        """Display comprehensive contract information with professional formatting"""
+        self.menu.print_header("CONTRACT INFORMATION", "Addresses, Balances & Status")
+        
         if not self.contracts:
-            print("Please Deploy first")
+            self.menu.print_error("No contracts compiled yet. Please compile contracts first.")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Display compilation info
+        if self.compilation_utxo:
+            utxo_status = "✓ Available" if self._is_compilation_utxo_available() else "✗ Consumed"
+            self.menu.print_section("COMPILATION INFORMATION")
+            print(f"│ Compilation UTXO: {self.compilation_utxo['tx_id'][:16]}...:{self.compilation_utxo['index']}")
+            print(f"│ UTXO Amount: {self.compilation_utxo['amount']/1_000_000:.6f} ADA")
+            print(f"│ UTXO Status: {utxo_status}")
+            print()
+        
+        # Display contract details
+        self.menu.print_section("CONTRACT DETAILS")
+        
         for name, contract in self.contracts.items():
             try:
-                if self.cardano_network == "mainnet":
-                    address_label = "Mainnet"
-                    contract_address = contract.mainnet_addr
-                else:
-                    address_label = "Testnet"
-                    contract_address = contract.testnet_addr
-                utxos = self.api.address_utxos(str(contract_address))
-                balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == 'lovelace')
-                print(f"{name:15s}: {contract_address} - {address_label}")
-                print(f"{name:15s}: {contract.policy_id} - PolicyId")
-                print(f"{name:15s}: {balance/1_000_000:.6f} ADA")
-            except:
-                print(f"{name:15s}: 0.000000 ADA (no UTXOs)")
-                print(f"{name:15s}: {contract_address} - {address_label}")
-                print(f"{name:15s}: {contract.policy_id} - PolicyId")
+                contract_address = contract.testnet_addr if self.cardano_network == pc.Network.TESTNET else contract.mainnet_addr
+                network_label = "Testnet" if self.cardano_network == pc.Network.TESTNET else "Mainnet"
+                
+                # Check balance
+                try:
+                    utxos = self.api.address_utxos(str(contract_address))
+                    balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == 'lovelace')
+                    balance_ada = balance / 1_000_000
+                    status = "✓" if balance > 0 else "○"
+                except:
+                    balance_ada = 0.0
+                    status = "○"
+                
+                self.menu.print_contract_info(
+                    name=name.upper(),
+                    policy_id=contract.policy_id,
+                    address=str(contract_address),
+                    balance=balance_ada,
+                    status=status
+                )
+                
+            except Exception as e:
+                self.menu.print_error(f"Error getting info for {name}: {e}")
+        
+        self.menu.print_footer()
+        input("\nPress Enter to continue...")
 
-    def _compile_contracts(self):
-        """Compile OpShin smart contracts"""
-        print("Compiling smart contracts...")
+    def _compile_contracts(self, force: bool = False):
+        """Compile OpShin smart contracts with smart recompilation logic"""
+        
+        # Check if we need to compile
+        if not force and self.contracts and self.compilation_utxo and self._is_compilation_utxo_available():
+            self.menu.print_info("Contracts already compiled and UTXO available - skipping compilation")
+            return
+        
+        self.menu.print_info("Compiling smart contracts...")
 
         ##############################################
-        # Section to build the protocol_nfts
+        # Find and validate UTXO for compilation
         ##############################################
-
-        protocol_nfts_path = self.minting_contracts_path.joinpath("protocol_nfts.py")
-
         utxos = self.context.utxos(self.addresses[0]['enterprise_address'])
 
         utxo_to_spend = None
@@ -368,32 +489,40 @@ class CardanoDApp:
             if utxo.output.amount.coin > 3000000:
                 utxo_to_spend = utxo
                 break
-        assert utxo_to_spend is not None, "No suitable UTXO found for minting test"
+        assert utxo_to_spend is not None, "No suitable UTXO found for compilation (need >3 ADA)"
         
-        utxo_json = {
-            "constructor": 0,
-            "fields": [
-                {"bytes": utxo_to_spend.input.transaction_id.payload.hex()},
-                {"int": utxo_to_spend.input.index}
-            ]
+        # Store compilation UTXO metadata
+        self.compilation_utxo = {
+            'tx_id': utxo_to_spend.input.transaction_id.payload.hex(),
+            'index': utxo_to_spend.input.index,
+            'amount': utxo_to_spend.output.amount.coin
         }
-        cli_compatible_oref = uplc.ast.data_from_json_dict(utxo_json)
+
+        oref = TxOutRef(
+            id=TxId(utxo_to_spend.input.transaction_id.payload),
+            idx=utxo_to_spend.input.index
+        )
         
-        print(f"Using UTXO: TxId: {utxo_to_spend.input.transaction_id} and Index: {utxo_to_spend.input.index}")
+        self.menu.print_info(f"Using UTXO: {self.compilation_utxo['tx_id'][:16]}...:{self.compilation_utxo['index']} ({self.compilation_utxo['amount']/1_000_000:.2f} ADA)")
 
-        protocol_nft_contract = build(protocol_nfts_path, cli_compatible_oref)
-
+        ##############################################
+        # Section to build the protocol_nfts
+        ##############################################
+        protocol_nfts_path = self.minting_contracts_path.joinpath("protocol_nfts.py")
+        protocol_nft_contract = build(protocol_nfts_path, oref)
         self.contracts["protocol_nfts"] = PlutusContract(protocol_nft_contract)
 
         ##############################################
         # Section to build the protocol
         ##############################################
         protocol_path = self.spending_contracts_path.joinpath("protocol.py")
-        protocol_contract = build(protocol_path, cli_compatible_oref)
-
+        protocol_contract = build(protocol_path, oref)
         self.contracts["protocol"] = PlutusContract(protocol_contract)
 
-        print("Smart contracts compiled successfully!")
+        self.menu.print_success("Smart contracts compiled successfully!")
+        
+        # Save contracts to disk
+        self._save_contracts()
 
 #############################################
 # Interactive main menu
@@ -402,28 +531,43 @@ class CardanoDApp:
     def interactive_menu(self):
         """Interactive menu for dApp operations"""
         while True:
-            print("\n" + "="*60)
-            print("CARDANO DAPP INTERACTIVE MENU")
-            print("="*60)
-            print("1. Display Wallet Info & Balances")
-            print("2. Generate New Addresses")
-            print("3. Send ADA")
-            print("4. Enter Contract Menu")
-            print("5. Export Wallet Data")
-            print("0. Exit")
-            print("-"*60)
+            # Get current status
+            balances = self.check_balances()
+            contract_status = self._get_contract_status()
+            
+            # Display header and status
+            self.menu.print_header("TERRASACHA CARDANO DAPP", "Smart Contract Management Interface")
+            self.menu.print_status_bar(
+                network=self.network.upper(),
+                balance=balances['total_balance'] / 1_000_000,
+                contracts_status=contract_status
+            )
+            
+            # Display menu options
+            self.menu.print_section("MAIN MENU")
+            self.menu.print_menu_option("1", "Display Wallet Info & Balances")
+            self.menu.print_menu_option("2", "Generate New Addresses")
+            self.menu.print_menu_option("3", "Send ADA")
+            self.menu.print_menu_option("4", "Enter Contract Menu", "💼" if self.contracts else "")
+            self.menu.print_menu_option("5", "Export Wallet Data")
+            self.menu.print_separator()
+            self.menu.print_menu_option("0", "Exit Application")
+            self.menu.print_footer()
 
-            choice = input("Select an option (0-5): ").strip()
+            choice = self.menu.get_input("Select an option (0-5)")
 
             if choice == "0":
-                print("Exiting dApp...")
+                self.menu.print_info("Goodbye! Thanks for using Terrasacha dApp")
                 break
             elif choice == "1":
                 self.display_wallet_info()
             elif choice == "2":
-                count = int(input("How many new addresses to generate? "))
-                self._generate_addresses(count)
-                print(f"Generated {count} new addresses!")
+                try:
+                    count = int(self.menu.get_input("How many new addresses to generate"))
+                    self._generate_addresses(count)
+                    self.menu.print_success(f"Generated {count} new addresses!")
+                except ValueError:
+                    self.menu.print_error("Please enter a valid number")
             elif choice == "3":
                 self._send_ada_menu()
             elif choice == "4":
@@ -431,20 +575,60 @@ class CardanoDApp:
             elif choice == "5":
                 self._export_wallet_menu()
             else:
-                print("Invalid option. Please try again.")
+                self.menu.print_error("Invalid option. Please try again.")
     
     def _test_contracts(self):
-        """Test smart contracts submenu"""
-
-        print("\nTEST SMART CONTRACTS")
-        print("-" * 30)
-        destin_address = input("\nPlease enter the destination address where the user token is sent: ")
-        signed_tx = self.test_minting_contract(destin_address)
-        print(f"Transaction built successfully tx_id: {signed_tx.id.payload.hex()}")
-
-        input("\nPress Enter to submit the transaction")
-
-        self.submit_transaction(signed_tx)
+        """Test smart contracts submenu with enhanced validation"""
+        self.menu.print_header("CONTRACT TESTING", "Mint Protocol & User NFTs")
+        
+        if not self.contracts:
+            self.menu.print_error("No contracts available for testing")
+            return
+        
+        # Validate UTXO availability
+        if self.compilation_utxo and not self._is_compilation_utxo_available():
+            self.menu.print_warning(
+                "⚠ WARNING: The UTXO used for compilation has been consumed!\n"
+                "Testing will use a different UTXO and may produce different token names."
+            )
+            if not self.menu.confirm_action("Continue with testing?"):
+                return
+        
+        self.menu.print_info("This will mint two NFTs: one protocol token and one user token")
+        destin_address = self.menu.get_input("Enter destination address for user token (or press Enter for default)")
+        
+        if not destin_address.strip():
+            destin_address = None
+            self.menu.print_info("Using default address (wallet address)")
+        
+        try:
+            self.menu.print_info("Building transaction...")
+            signed_tx = self.test_minting_contract(destin_address)
+            self.menu.print_success(f"Transaction built successfully!")
+            print(f"TX ID: {signed_tx.id.payload.hex()}")
+            
+            if self.menu.confirm_action("Submit transaction to network?"):
+                self.menu.print_info("Submitting transaction...")
+                tx_id = self.submit_transaction(signed_tx)
+                
+                if tx_id:
+                    self.menu.print_success("Transaction submitted successfully!")
+                    
+                    # Update UTXO status since it will be consumed
+                    if self.compilation_utxo and self._is_compilation_utxo_available():
+                        self.menu.print_warning(
+                            "Note: The compilation UTXO will be consumed after this transaction.\n"
+                            "Future contract operations will require recompilation with a new UTXO."
+                        )
+                else:
+                    self.menu.print_error("Failed to submit transaction")
+            else:
+                self.menu.print_info("Transaction cancelled by user")
+                
+        except Exception as e:
+            self.menu.print_error(f"Testing failed: {e}")
+        
+        input("\nPress Enter to continue...")
 
     def test_minting_contract(self, destin_address: pc.Address = None):
         """Test the minting functionality of the contract"""
@@ -564,31 +748,75 @@ class CardanoDApp:
 #############################################
     def contract_submenu(self):
         """Interactive menu for contract operations"""
-        self._compile_contracts()
+        
+        # Check if we need to compile contracts initially
+        if not self.contracts:
+            self.menu.print_info("No contracts found - compiling now...")
+            try:
+                self._compile_contracts()
+            except Exception as e:
+                self.menu.print_error(f"Failed to compile contracts: {e}")
+                return
+        
         while True:
-            print("\n" + "="*60)
-            print("CONTRACT MENU")
-            print("="*60)
-            print("1. Display Contracts Info")
-            print("2. Deploy Contracts")
-            print("3. Test Contracts")
-            print("0. Back to Main Menu")
-            print("-"*60)
+            # Get current status
+            contract_status = self._get_contract_status()
+            utxo_available = self._is_compilation_utxo_available() if self.compilation_utxo else False
+            
+            # Display header
+            self.menu.print_header("SMART CONTRACT MANAGEMENT", f"Status: {contract_status}")
+            self.menu.print_breadcrumb(["Main Menu", "Contract Menu"])
+            
+            # Show UTXO warning if needed
+            if self.compilation_utxo and not utxo_available:
+                self.menu.print_warning(
+                    f"Compilation UTXO consumed! Current contracts are preserved but new "
+                    f"compilation will use different UTXO and create new contract addresses."
+                )
+            
+            # Display menu options with status
+            self.menu.print_section("CONTRACT OPERATIONS")
+            
+            # Status indicators for each option
+            info_status = "✓" if self.contracts else "✗"
+            compile_status = "⚠" if self.compilation_utxo and not utxo_available else "✓" if self.contracts else ""
+            test_status = "✓" if self.contracts and utxo_available else "⚠" if self.contracts else "✗"
+            
+            self.menu.print_menu_option("1", "Display Contracts Info", info_status)
+            self.menu.print_menu_option("2", "Compile/Recompile Contracts", compile_status)
+            self.menu.print_menu_option("3", "Test Contracts (Mint NFTs)", test_status)
+            self.menu.print_separator()
+            self.menu.print_menu_option("0", "Back to Main Menu")
+            self.menu.print_footer()
 
-            choice = input("Select an option (0-3): ").strip()
+            choice = self.menu.get_input("Select an option (0-3)")
 
             if choice == "0":
-                print("Returning to main menu...")
+                self.menu.print_info("Returning to main menu...")
                 break
             elif choice == "1":
                 self._display_contracts_info()
             elif choice == "2":
-                self._compile_contracts()
-                input("\nPress Enter to continue to interactive menu...")
+                if self.contracts and self.compilation_utxo and self._is_compilation_utxo_available():
+                    if not self.menu.confirm_action("Contracts already compiled and ready. Force recompile?"):
+                        continue
+                
+                try:
+                    self._compile_contracts(force=True)
+                except Exception as e:
+                    self.menu.print_error(f"Compilation failed: {e}")
+                    
             elif choice == "3":
+                if not self.contracts:
+                    self.menu.print_error("No contracts compiled. Please compile contracts first.")
+                elif self.compilation_utxo and not self._is_compilation_utxo_available():
+                    self.menu.print_warning("Compilation UTXO consumed - testing may fail or create different tokens")
+                    if not self.menu.confirm_action("Continue with testing anyway?"):
+                        continue
+                
                 self._test_contracts()
             else:
-                print("Invalid option. Please try again.")
+                self.menu.print_error("Invalid option. Please try again.")
 
 class TestCardanoDApp:
 
