@@ -7,16 +7,16 @@ from typing import Dict, Optional, Any
 from blockfrost import ApiError, ApiUrls, BlockFrostApi
 from dotenv import load_dotenv
 import pycardano as pc
-import uplc.ast
 from opshin.builder import build, PlutusContract
 from opshin.prelude import *
 
 from dotenv import load_dotenv
 import pathlib
 
-from terrasacha_contracts.types import PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, DatumProtocol, Mint
+from terrasacha_contracts.types import PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, Burn, DatumProtocol, Mint, EndProtocol
 from terrasacha_contracts.util import unique_token_name
 from menu_formatter import MenuFormatter
+from tool import find_utxo_by_policy_id, extract_asset_from_utxo
 
 # Load .env from project root (parent of tests directory)
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
@@ -281,9 +281,46 @@ class CardanoDApp:
             # Load compilation UTXO
             self.compilation_utxo = contracts_data.get('compilation_utxo')
             
-            # Load contracts (we'll implement this when we have PlutusContract reconstruction)
-            self.menu.print_info(f"Found existing contracts from {contracts_file}")
+            # Reconstruct PlutusContract objects from saved data
+            saved_contracts = contracts_data.get('contracts', {})
+            self.contracts = {}
             
+            for name, contract_data in saved_contracts.items():
+                try:
+                    # Convert hex string back to bytes
+                    cbor_bytes = bytes.fromhex(contract_data['cbor_hex'])
+                    
+                    # Create PlutusV2Script from CBOR data
+                    script = pc.PlutusV2Script(cbor_bytes)
+                    
+                    # Create PlutusContract from the script
+                    plutus_contract = PlutusContract(script)
+                    
+                    # Validate addresses match (for integrity check)
+                    expected_testnet_addr = str(plutus_contract.testnet_addr)
+                    expected_mainnet_addr = str(plutus_contract.mainnet_addr)
+                    
+                    if (expected_testnet_addr != contract_data['testnet_addr'] or 
+                        expected_mainnet_addr != contract_data['mainnet_addr']):
+                        self.menu.print_warning(f"Address mismatch for contract {name} - skipping")
+                        continue
+                    
+                    # Validate policy ID matches
+                    if plutus_contract.policy_id != contract_data['policy_id']:
+                        self.menu.print_warning(f"Policy ID mismatch for contract {name} - skipping")
+                        continue
+                    
+                    self.contracts[name] = plutus_contract
+                    
+                except Exception as e:
+                    self.menu.print_warning(f"Failed to load contract {name}: {e}")
+                    continue
+            
+            if self.contracts:
+                self.menu.print_success(f"Successfully loaded {len(self.contracts)} contracts from {contracts_file}")
+            else:
+                self.menu.print_warning("No valid contracts could be loaded from saved data")
+
         except Exception as e:
             self.menu.print_error(f"Failed to load contracts: {e}")
 
@@ -328,11 +365,6 @@ class CardanoDApp:
             enterprise_utxos = self.api.address_utxos(str(self.enterprise_address))
             enterprise_balance = sum(int(utxo.amount[0].quantity) for utxo in enterprise_utxos if utxo.amount[0].unit == 'lovelace')
             balances['main_addresses']['enterprise']['balance'] = enterprise_balance
-            
-            # Check main staking address  
-            # staking_utxos = self.api.address_utxos(str(self.staking_address))
-            # staking_balance = sum(int(utxo.amount[0].quantity) for utxo in staking_utxos if utxo.amount[0].unit == 'lovelace')
-            # balances['main_addresses']['staking']['balance'] = staking_balance
             
             # Check derived addresses
             for addr_info in self.addresses[:5]:  # Check first 5 addresses
@@ -630,6 +662,64 @@ class CardanoDApp:
         
         input("\nPress Enter to continue...")
 
+    def _burn_tokens(self):
+        """Burn tokens submenu with enhanced validation"""
+        self.menu.print_header("TOKEN BURNING", "Burn Protocol & User NFTs")
+        
+        if not self.contracts:
+            self.menu.print_error("No contracts available for burning")
+            return
+        
+        # Validate UTXO availability
+        if self.compilation_utxo and not self._is_compilation_utxo_available():
+            self.menu.print_warning(
+                "⚠ WARNING: The UTXO used for compilation has been consumed!\n"
+                "Burning may fail if tokens were created with different compilation UTXO."
+            )
+            if not self.menu.confirm_action("Continue with burning?"):
+                return
+        
+        self.menu.print_info("This will burn protocol and user NFTs (tokens will be permanently destroyed)")
+        user_address_input = self.menu.get_input("Enter address containing tokens to burn (or press Enter for default wallet address)")
+        
+        user_address = None
+        if user_address_input.strip():
+            try:
+                user_address = pc.Address.from_primitive(user_address_input.strip())
+                self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
+            except Exception as e:
+                self.menu.print_error(f"Invalid address format: {e}")
+                return
+        else:
+            self.menu.print_info("Using default wallet address")
+        
+        try:
+            self.menu.print_info("Building burn transaction...")
+            signed_tx = self.test_burn_tokens(user_address)
+            if not signed_tx:
+                self.menu.print_error("Failed to build burn transaction")
+                return
+                
+            self.menu.print_success(f"Burn transaction built successfully!")
+            print(f"TX ID: {signed_tx.id.payload.hex()}")
+            
+            if self.menu.confirm_action("Submit burn transaction to network?"):
+                self.menu.print_info("Submitting burn transaction...")
+                tx_id = self.submit_transaction(signed_tx)
+                
+                if tx_id:
+                    self.menu.print_success("Burn transaction submitted successfully!")
+                    self.menu.print_info("Tokens have been permanently destroyed and removed from circulation.")
+                else:
+                    self.menu.print_error("Failed to submit burn transaction")
+            else:
+                self.menu.print_info("Burn transaction cancelled by user")
+                
+        except Exception as e:
+            self.menu.print_error(f"Token burning failed: {e}")
+        
+        input("\nPress Enter to continue...")
+
     def test_minting_contract(self, destin_address: pc.Address = None):
         """Test the minting functionality of the contract"""
         # Create transaction builder
@@ -729,8 +819,7 @@ class CardanoDApp:
 
         return signed_tx
 
-
-    def test_burn_tokens(self):
+    def test_burn_tokens(self, user_address: pc.Address = None):
         """Test burning tokens"""
         builder = pc.TransactionBuilder(self.context)
 
@@ -740,8 +829,73 @@ class CardanoDApp:
         minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
 
         protocol_contract = self.contracts["protocol"]
+        protocol_script: pc.PlutusV2Script = protocol_contract.cbor
         protocol_address = protocol_contract.testnet_addr
 
+        # Add scripts to builder
+        builder.add_minting_script(
+            script=minting_script,
+            redeemer=pc.Redeemer(Burn())
+        )
+
+        # Find the utxo that contains the protocol token and use it as input
+        protocol_utxos = self.context.utxos(protocol_address)
+        if not protocol_utxos:
+            self.menu.print_error("No UTXOs found for protocol address. Check that the right contract address is used")
+            return
+
+        protocol_utxo_to_spend = find_utxo_by_policy_id(protocol_utxos, minting_policy_id)
+        if not protocol_utxo_to_spend:
+            self.menu.print_error("No protocol UTXO found with the specified policy ID")
+            return
+        
+        # Add the protocol_utxo_to_spend as input at position 0
+        # builder.add_input(protocol_utxo_to_spend)
+        builder.add_script_input(
+            protocol_utxo_to_spend,
+            script=protocol_script,
+            redeemer=pc.Redeemer(EndProtocol(protocol_input_index=0)) # Utxo at index 0
+        )
+
+        if user_address is None:
+            user_address = self.addresses[0]['enterprise_address']
+
+        # Find a user utxo that contains the user token
+        utxos = self.context.utxos(user_address)
+
+        if not utxos:
+            self.menu.print_error("No UTXOs found for user address.")
+            return
+
+        user_utxo_to_spend = find_utxo_by_policy_id(utxos, minting_policy_id)
+        if not user_utxo_to_spend:
+            self.menu.print_error("No user UTXOs found with the specified policy ID")
+            return
+
+        # Add the user_utxo_to_spend as input at position 1
+        builder.add_input(user_utxo_to_spend)
+
+        # Extract user asset
+        user_asset = extract_asset_from_utxo(user_utxo_to_spend, minting_policy_id)
+
+        # Extract protocol asset
+        protocol_asset = extract_asset_from_utxo(protocol_utxo_to_spend, minting_policy_id)
+
+        total_mint = pc.MultiAsset({minting_policy_id: pc.Asset({
+            list(protocol_asset.keys())[0]: -1,
+            list(user_asset.keys())[0]: -1,
+        })})
+        builder.mint = total_mint
+
+        # Add user address to pay for transaction
+        builder.add_input_address(user_address)
+
+        builder.required_signers = [self.payment_skey.to_verification_key().hash()]
+
+        # Build transaction
+        signed_tx = builder.build_and_sign([self.payment_skey], change_address=user_address)
+
+        return signed_tx
 
 #############################################
 # Interactive contract submenu
@@ -781,15 +935,17 @@ class CardanoDApp:
             info_status = "✓" if self.contracts else "✗"
             compile_status = "⚠" if self.compilation_utxo and not utxo_available else "✓" if self.contracts else ""
             test_status = "✓" if self.contracts and utxo_available else "⚠" if self.contracts else "✗"
+            burn_status = "✓" if self.contracts and utxo_available else "⚠" if self.contracts else "✗"
             
             self.menu.print_menu_option("1", "Display Contracts Info", info_status)
             self.menu.print_menu_option("2", "Compile/Recompile Contracts", compile_status)
             self.menu.print_menu_option("3", "Test Contracts (Mint NFTs)", test_status)
+            self.menu.print_menu_option("4", "Burn Tokens", burn_status)
             self.menu.print_separator()
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-3)")
+            choice = self.menu.get_input("Select an option (0-4)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -815,6 +971,11 @@ class CardanoDApp:
                         continue
                 
                 self._test_contracts()
+            elif choice == "4":
+                if not self.contracts:
+                    self.menu.print_error("No contracts compiled. Please compile contracts first.")
+                else:
+                    self._burn_tokens()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
 
