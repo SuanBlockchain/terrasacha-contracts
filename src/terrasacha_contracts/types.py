@@ -31,5 +31,6 @@ class UpdateProtocol(PlutusData):
 @dataclass()
 class EndProtocol(PlutusData):
     CONSTR_ID = 2
+    protocol_input_index: int
 
 RedeemerProtocol = Union[UpdateProtocol, EndProtocol]

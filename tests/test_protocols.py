@@ -95,6 +95,7 @@ class MockCommon:
         outputs: List[TxOut] = None,
         mint: Dict[bytes, Dict[bytes, int]] = None,
         purpose_oref: TxOutRef = None,
+        signatories: List[bytes] = None,
     ) -> TxInfo:
         """Create a mock transaction info"""
         if inputs is None:
@@ -111,6 +112,9 @@ class MockCommon:
         if mint is None:
             mint = {}
 
+        if signatories is None:
+            signatories = [bytes.fromhex("d" * 56)]
+
         return TxInfo(
             inputs=inputs,
             reference_inputs=[],
@@ -123,7 +127,7 @@ class MockCommon:
                 LowerBoundPOSIXTime(FinitePOSIXTime(1672531200), TrueData()),
                 UpperBoundPOSIXTime(FinitePOSIXTime(1672534800), TrueData()),
             ),
-            signatories=[bytes.fromhex("d" * 56)],
+            signatories=signatories,
             redeemers={},
             data={},
             id=self.sample_tx_id,
@@ -691,7 +695,7 @@ class TestProtocol(MockCommon):
         )
         
         # Should not raise any exception
-        protocol_validator(old_datum, redeemer, context)
+        protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_missing_user_token_completely(self):
         """Test UpdateProtocol fails when user has no token at all for the policy"""
@@ -748,16 +752,8 @@ class TestProtocol(MockCommon):
             user_input_index=0,
             protocol_output_index=0
         )
-        
-        # This should fail because check_token_present returns False, but validator doesn't assert on it
-        # Actually, this test will reveal that your validator has a bug!
-        try:
-            protocol_validator(old_datum, redeemer, context)
-            # If this doesn't raise an exception, then your validator has a bug
-            pytest.fail("Validator should have failed when user has no required token")
-        except AssertionError:
-            # If it does raise an assertion, that's unexpected based on your current code
-            pass
+        with pytest.raises(AssertionError, match="User does not have required token"):
+            protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_user_has_different_policy_token(self):
         """Test UpdateProtocol when user has token from completely different policy"""
@@ -817,12 +813,8 @@ class TestProtocol(MockCommon):
             protocol_output_index=0
         )
         
-        # This should fail because user doesn't have token under the correct policy
-        try:
-            protocol_validator(old_datum, redeemer, context)
-            pytest.fail("Validator should have failed when user token is under wrong policy")
-        except AssertionError:
-            pass  # Expected to fail
+        with pytest.raises(AssertionError, match="User does not have required token"):
+            protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_invalid_datum_change(self):
         """Test UpdateProtocol fails with invalid datum changes"""
@@ -881,7 +873,7 @@ class TestProtocol(MockCommon):
         
         # Should fail due to invalid project ID change
         with pytest.raises(AssertionError, match="Project ID cannot be changed"):
-            protocol_validator(old_datum, redeemer, context)
+            protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_no_output_datum(self):
         """Test UpdateProtocol fails when output has no datum"""
@@ -934,23 +926,295 @@ class TestProtocol(MockCommon):
         
         # Should fail because output has no datum
         with pytest.raises(AssertionError):
-            protocol_validator(old_datum, redeemer, context)
+            protocol_validator(oref_protocol, old_datum, redeemer, context)
 
-    def test_validator_end_protocol(self):
-        """Test EndProtocol redeemer (currently just passes)"""
-        old_datum = self.create_mock_datum_protocol()
-        redeemer = EndProtocol()
+    def test_validator_end_protocol_single_admin_signature_success(self):
+        """Test EndProtocol succeeds when single admin signs the transaction"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         
-        # Create minimal context (EndProtocol doesn't use it currently)
-        spending_purpose = Spending(self.create_mock_oref())
-        tx_info = self.create_mock_tx_info()
+        # Create protocol datum with single admin
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with admin signature
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[admin_pkh]
+        )
         context = self.create_mock_script_context(spending_purpose, tx_info)
         
-        # Should not raise any exception (currently just passes)
-        protocol_validator(old_datum, redeemer, context)
+        # Should not raise any exception
+        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_multiple_admins_one_signs(self):
+        """Test EndProtocol succeeds when one of multiple admins signs"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with multiple admins
+        admin1_pkh = bytes.fromhex("abc123" + "0" * 50)
+        admin2_pkh = bytes.fromhex("def456" + "0" * 50)
+        admin3_pkh = bytes.fromhex("789fed" + "0" * 50)
+        
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
+            protocol_fee=1500,
+            oracle_id=b"oracle_456",
+            project_id=b"project_789",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with only admin2 signature (should be enough)
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[admin2_pkh]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should not raise any exception
+        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_multiple_admins_multiple_sign(self):
+        """Test EndProtocol succeeds when multiple admins sign"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with multiple admins
+        admin1_pkh = bytes.fromhex("abc123" + "0" * 50)
+        admin2_pkh = bytes.fromhex("def456" + "0" * 50)
+        admin3_pkh = bytes.fromhex("789fed" + "0" * 50)
+        
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
+            protocol_fee=2000,
+            oracle_id=b"oracle_789",
+            project_id=b"project_abc",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with multiple admin signatures
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[admin1_pkh, admin3_pkh]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should not raise any exception
+        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_no_signatures_fails(self):
+        """Test EndProtocol fails when no signatures provided"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with admin
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with no signatures
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should fail due to missing admin signature
+        with pytest.raises(AssertionError, match="EndProtocol requires signature from protocol admin"):
+            protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_wrong_signatures_fails(self):
+        """Test EndProtocol fails when non-admin signatures provided"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with admin
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with wrong (non-admin) signatures
+        wrong_pkh1 = bytes.fromhex("111111" + "0" * 50)
+        wrong_pkh2 = bytes.fromhex("222222" + "0" * 50)
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[wrong_pkh1, wrong_pkh2]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should fail due to no valid admin signature
+        with pytest.raises(AssertionError, match="EndProtocol requires signature from protocol admin"):
+            protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_empty_admin_list_fails(self):
+        """Test EndProtocol fails when protocol admin list is empty"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with empty admin list
+        protocol_datum = DatumProtocol(
+            protocol_admin=[],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with any signature (won't matter since admin list is empty)
+        random_pkh = bytes.fromhex("abcdef" + "0" * 50)
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[random_pkh]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should fail due to empty admin list
+        with pytest.raises(AssertionError, match="EndProtocol requires signature from protocol admin"):
+            protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_correct_protocol_input_index(self):
+        """Test EndProtocol succeeds with correct protocol_input_index"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        oref_other = self.create_mock_oref(bytes.fromhex("b" * 64), 1)
+        
+        # Create protocol datum with admin
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        protocol_datum = DatumProtocol(
+            protocol_admin=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        # Create other input (not protocol) with different address
+        other_address = Address(bytes.fromhex("0" * 56), None)
+        other_output = self.create_mock_tx_out(other_address)
+        other_input = self.create_mock_tx_in_info(oref_other, other_output)
+        
+        redeemer = EndProtocol(protocol_input_index=1)  # Protocol is at index 1
+        
+        # Create tx_info with inputs in specific order
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[other_input, protocol_input],  # Protocol at index 1
+            signatories=[admin_pkh]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should not raise any exception
+        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
+
+    def test_validator_end_protocol_large_admin_list_one_valid_signer(self):
+        """Test EndProtocol with large admin list but only one valid signer"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        
+        # Create protocol datum with many admins
+        valid_admin = bytes.fromhex("aabbcc" + "0" * 50)
+        admin_list = [bytes.fromhex(f"{i:06x}" + "0" * 50) for i in range(100)]
+        admin_list.append(valid_admin)  # Add our valid admin to the end
+        
+        protocol_datum = DatumProtocol(
+            protocol_admin=admin_list,
+            protocol_fee=1000,
+            oracle_id=b"oracle_123",
+            project_id=b"project_456",
+        )
+        
+        # Create protocol input with datum
+        protocol_output = self.create_mock_tx_out(
+            self.sample_address,
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        
+        redeemer = EndProtocol(protocol_input_index=0)
+        
+        # Create tx_info with valid admin signature
+        spending_purpose = Spending(oref_protocol)
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input],
+            signatories=[valid_admin]
+        )
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+        
+        # Should not raise any exception
+        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
 
     def test_validator_invalid_redeemer_type(self):
         """Test validator fails with invalid redeemer type"""
+        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         old_datum = self.create_mock_datum_protocol()
         invalid_redeemer = PlutusData()  # Invalid redeemer type
         
@@ -959,7 +1223,7 @@ class TestProtocol(MockCommon):
         context = self.create_mock_script_context(spending_purpose, tx_info)
         
         with pytest.raises(AssertionError, match="Invalid redeemer type"):
-            protocol_validator(old_datum, invalid_redeemer, context)
+            protocol_validator(oref_protocol, old_datum, invalid_redeemer, context)
 
 
 class TestMintingContract(MockCommon):
@@ -999,41 +1263,7 @@ class TestMintingContract(MockCommon):
         # Create redeemer
         redeemer = Mint()
 
-        protocol_nft_validator(0, redeemer, context)  # unique_utxo_index = 0
-
-    # TODO: Not possible to test has_utxo it always succeeds
-    # def test_mint_utxo_not_consumed_fails(self):
-    #     """Test minting fails when specified UTXO is not consumed"""
-    #     consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-    #     different_utxo_ref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
-        
-    #     # Create input with different UTXO reference
-    #     consumed_utxo = self.create_mock_tx_out(self.sample_address)
-    #     wrong_input = self.create_mock_tx_in_info(different_utxo_ref, consumed_utxo)
-        
-    #     # Generate token names based on consumed_utxo_ref (what validator expects)
-    #     protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
-    #     user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
-        
-    #     mint_value = {
-    #         self.sample_policy_id: {
-    #             protocol_token_name: 1,
-    #             user_token_name: 1
-    #         }
-    #     }
-        
-    #     tx_info = self.create_mock_tx_info(
-    #         inputs=[wrong_input],
-    #         mint=mint_value
-    #     )
-        
-    #     minting_purpose = Minting(self.sample_policy_id)
-    #     context = self.create_mock_script_context(minting_purpose, tx_info)
-        
-    #     redeemer = Mint()
-        
-    #     with pytest.raises(AssertionError, match="UTxO not consumed"):
-    #         protocol_nft_validator(0, redeemer, context)
+        protocol_nft_validator(consumed_utxo_ref, redeemer, context)  # unique_utxo_index = 0
     
     def test_mint_wrong_token_count_fails(self):
         """Test minting fails when not exactly 2 tokens are minted"""
@@ -1064,7 +1294,7 @@ class TestMintingContract(MockCommon):
         redeemer = Mint()
         
         with pytest.raises(AssertionError, match="Must mint exactly 2 tokens"):
-            protocol_nft_validator(0, redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
     
     def test_mint_wrong_protocol_token_amount_fails(self):
         """Test minting fails when protocol token amount is not 1"""
@@ -1094,7 +1324,7 @@ class TestMintingContract(MockCommon):
         redeemer = Mint()
         
         with pytest.raises(AssertionError, match="Must mint exactly 1 protocol token"):
-            protocol_nft_validator(0, redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
     
     def test_mint_wrong_user_token_amount_fails(self):
         """Test minting fails when user token amount is not 1"""
@@ -1124,7 +1354,7 @@ class TestMintingContract(MockCommon):
         redeemer = Mint()
         
         with pytest.raises(AssertionError, match="Must mint exactly 1 user token"):
-            protocol_nft_validator(0, redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
     
     def test_burn_successful_case(self):
         """Test successful burning of tokens"""
@@ -1161,7 +1391,55 @@ class TestMintingContract(MockCommon):
         redeemer = Burn()
         
         # Should not raise any exception
-        protocol_nft_validator(0, redeemer, context)
+        protocol_nft_validator(consumed_utxo_ref, redeemer, context)
+    
+    def test_burn_wrong_policy_fails(self):
+        """Test burning fails when burning with wrong policy"""
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        # wrong_oref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        wrong_policy_id = bytes.fromhex("a" * 56)
+        consumed_utxo = self.create_mock_tx_out(self.sample_address)
+        consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
+        
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+        
+        # Burn tokens (negative amounts)
+        mint_value = {
+            wrong_policy_id: {
+                protocol_token_name: -1,
+                user_token_name: -1
+            }
+        }
+        
+        
+        output_with_tokens = self.create_mock_tx_out(
+            self.sample_address,
+            value={
+                b"": 2000000,
+                self.sample_policy_id: {user_token_name: 1}  # Contains tokens!
+            }
+        )
+
+        # Create outputs with no tokens of this policy
+        # output_no_tokens = self.create_mock_tx_out(
+        #     self.sample_address,
+        #     value={b"": 2000000}  # Only ADA
+        # )
+        
+        tx_info = self.create_mock_tx_info(
+            inputs=[consumed_input],
+            outputs=[output_with_tokens],
+            mint=mint_value
+        )
+        
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
+        
+        redeemer = Burn()
+        
+        with pytest.raises(AssertionError, match="Must burn exactly 2 tokens \\(protocol \\+ user pair\\)"):
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
     
     def test_burn_positive_amount_fails(self):
         """Test burning fails when amounts are positive"""
@@ -1188,9 +1466,9 @@ class TestMintingContract(MockCommon):
         
         redeemer = Burn()
         
-        with pytest.raises(AssertionError, match="must be burned \\(negative amount\\)"):
-            protocol_nft_validator(0, redeemer, context)
-    
+        with pytest.raises(AssertionError, match="Must burn exactly 2 tokens \\(protocol \\+ user pair\\)"):
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
+
     def test_burn_tokens_in_outputs_fails(self):
         """Test burning fails when tokens are sent to outputs"""
         consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
@@ -1198,11 +1476,13 @@ class TestMintingContract(MockCommon):
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
         
         protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
         
         # Burn tokens (negative amounts)
         mint_value = {
             self.sample_policy_id: {
-                protocol_token_name: -1
+                protocol_token_name: -1,
+                user_token_name: -1
             }
         }
         
@@ -1227,7 +1507,7 @@ class TestMintingContract(MockCommon):
         redeemer = Burn()
         
         with pytest.raises(AssertionError, match="Cannot send tokens to outputs when burning"):
-            protocol_nft_validator(0, redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
     
     def test_invalid_redeemer_type_fails(self):
         """Test minting fails with invalid redeemer type"""
@@ -1245,44 +1525,41 @@ class TestMintingContract(MockCommon):
         with pytest.raises(AssertionError, match="Invalid redeemer type"):
             protocol_nft_validator(0, invalid_redeemer, context)
     
-    # TODO: Not possible to test has_utxo it always succeeds
-    # def test_wrong_unique_utxo_index_fails(self):
-    #     """Test minting fails when unique_utxo_index is wrong"""
-    #     consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-    #     other_utxo_ref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+    def test_wrong_utxo_reference_fails(self):
+        """Test minting fails when unique_utxo_index is wrong"""
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        other_utxo_ref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
         
-    #     consumed_utxo = self.create_mock_tx_out(self.sample_address)
-    #     other_utxo = self.create_mock_tx_out(self.sample_address)
+        consumed_utxo = self.create_mock_tx_out(self.sample_address)
+        other_utxo = self.create_mock_tx_out(self.sample_address)
         
-    #     consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
-    #     other_input = self.create_mock_tx_in_info(other_utxo_ref, other_utxo)
+        other_input = self.create_mock_tx_in_info(other_utxo_ref, other_utxo)
         
-    #     protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
-    #     user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+        protocol_token_name = unique_token_name(other_utxo_ref, PREFIX_PROTOCOL_NFT)
+        user_token_name = unique_token_name(other_utxo_ref, PREFIX_USER_NFT)
         
-    #     mint_value = {
-    #         self.sample_policy_id: {
-    #             protocol_token_name: 1,
-    #             user_token_name: 1
-    #         }
-    #     }
+        mint_value = {
+            self.sample_policy_id: {
+                protocol_token_name: 1,
+                user_token_name: 1
+            }
+        }
         
-    #     tx_info = self.create_mock_tx_info(
-    #         inputs=[other_input, consumed_input],  # consumed_input is at index 1
-    #         mint=mint_value
-    #     )
+        tx_info = self.create_mock_tx_info(
+            inputs=[other_input],  # consumed_input is at index 1
+            mint=mint_value
+        )
         
-    #     minting_purpose = Minting(self.sample_policy_id)
-    #     context = self.create_mock_script_context(minting_purpose, tx_info)
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
         
-    #     redeemer = Mint()
+        redeemer = Mint()
         
-    #     # Pass wrong index (0 instead of 1)
-    #     with pytest.raises(AssertionError, match="UTxO not consumed"):
-    #         protocol_nft_validator(0, redeemer, context)
+        with pytest.raises(AssertionError, match="UTxO not consumed"):
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
         
-    #     # Correct index should work
-    #     protocol_nft_validator(1, redeemer, context)  # Should not raise
+        # Correct index should work
+        protocol_nft_validator(other_utxo_ref, redeemer, context)  # Should not raise
     
     def test_mint_only_one_token_fails(self):
         """Test minting fails when only one token is minted"""
@@ -1311,7 +1588,7 @@ class TestMintingContract(MockCommon):
         redeemer = Mint()
         
         with pytest.raises(AssertionError, match="Must mint exactly 2 tokens"):
-            protocol_nft_validator(0, redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, redeemer, context)
 
 if __name__ == "__main__":
     # Run the tests

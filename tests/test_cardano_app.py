@@ -1,23 +1,13 @@
-"""
-Complete Cardano dApp with OpShin Smart Contracts
-This implementation creates a comprehensive dApp with wallet management,
-smart contracts, and transaction handling capabilities.
-"""
-
 import os
 import json
 import pathlib
 import time
-from typing import List, Dict, Optional, Any
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from typing import Dict, Optional, Any
 
 from blockfrost import ApiError, ApiUrls, BlockFrostApi
 from dotenv import load_dotenv
 import pycardano as pc
-# import opshin
-# from opshin import build_script
-# from opshin.prelude import *
+import uplc.ast
 from opshin.builder import build, PlutusContract
 from opshin.prelude import *
 
@@ -32,9 +22,6 @@ PROJECT_ROOT = pathlib.Path(__file__).parent.parent
 ENV_FILE = PROJECT_ROOT / 'tests/.env'
 load_dotenv(ENV_FILE)  # Load once with absolute path
 
-# Load environment variables
-# load_dotenv()
-
 class CardanoDApp:
     """Main dApp class that handles wallet management and smart contract interactions"""
     
@@ -42,7 +29,7 @@ class CardanoDApp:
         self.network = os.getenv("network", "testnet")
         self.wallet_mnemonic = os.getenv("wallet_mnemonic")
         self.blockfrost_api_key = os.getenv("blockfrost_api_key")
-        self.cardano_explorer_url = "https://preview.cexplorer.io" if self.network == "testnet" else "https://cexplorer.io"
+        self.cardanoscan = "https://preview.cardanoscan.io" if self.network == "testnet" else "https://cardanoscan.io"
         self.contracts_dir ="./src/terrasacha_contracts"
         
         # Set network configuration
@@ -73,11 +60,14 @@ class CardanoDApp:
         
         # Smart contract instances
         self.contracts = {}
-        self._compile_contracts()
+        # self._compile_contracts()
 
+#############################################
+# Generic functions
+#############################################
     def _get_chain_context(self) -> pc.ChainContext:
         return pc.BlockFrostChainContext(self.blockfrost_api_key, base_url=self.base_url)
-        
+
     def _setup_wallet(self):
         """Initialize the main wallet from mnemonic"""
         if not self.wallet_mnemonic:
@@ -104,7 +94,36 @@ class CardanoDApp:
             staking_part=self.staking_skey.to_verification_key().hash(),
             network=self.cardano_network
         )
+    
+    def display_wallet_info(self):
+        """Display comprehensive wallet information"""
+        print("\n" + "="*80)
+        print("CARDANO DAPP WALLET INFORMATION")
+        print("="*80)
         
+        print(f"Network: {self.network.upper()}")
+        print(f"Wallet Type: HD Wallet (BIP32)")
+        
+        print("\nMAIN ADDRESSES:")
+        print(f"Enterprise (Payment Only): {self.enterprise_address}")
+        print(f"Staking Enabled: {self.staking_address}")
+        
+        print(f"\nDERIVED ADDRESSES (First 10):")
+        for addr_info in self.addresses:
+            print(f"Index {addr_info['index']:2d} | {addr_info['derivation_path']:20s} | {str(addr_info['enterprise_address'])}")
+        
+        # Check and display balances
+        print(f"\nCHECKING BALANCES...")
+        balances = self.check_balances()
+        
+        print(f"\nBALANCE SUMMARY:")
+        print(f"Enterprise Address: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA")
+        print(f"Staking Address: {balances['main_addresses']['staking']['balance']/1_000_000:.6f} ADA")
+        
+        print(f"\nTOTAL WALLET BALANCE: {balances['total_balance']/1_000_000:.6f} ADA")
+        
+        return balances
+
     def _generate_addresses(self, count: int):
         """Generate multiple addresses for the wallet"""
         print(f"Generating {count} wallet addresses...")
@@ -138,19 +157,67 @@ class CardanoDApp:
             })
             
             self.signing_keys.append(payment_skey)
-    
-    def _compile_contracts(self):
-        """Compile OpShin smart contracts"""
-        print("Compiling smart contracts...")
 
-        protocol_nfts_path = self.minting_contracts_path.joinpath("protocol_nfts.py")
+    def _send_ada_menu(self):
+        """Send ADA submenu"""
+        try:
+            print("\nSEND ADA")
+            print("-" * 30)
+            
+            # Show available balances
+            balances = self.check_balances()
+            print("Available balances:")
+            print(f"Enterprise: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA")
+            
+            to_address = input("Recipient address: ").strip()
+            amount = float(input("Amount (ADA): "))
+            
+            print(f"Sending {amount} ADA to {to_address[:20]}...")
+            
+            tx = self.create_simple_transaction(to_address, amount)
+            if tx:
+                tx_id = self.submit_transaction(tx)
+                return tx_id
+            else:
+                print("Failed to create transaction.")
+                
+        except Exception as e:
+            print(f"Error in send ADA: {e}")
 
-        protocol_nft_contract = build(protocol_nfts_path)
-
-
-        self.contracts["protocol_nfts"] = PlutusContract(protocol_nft_contract)
+    def _export_wallet_menu(self):
+        """Export wallet data submenu"""
+        print("\nEXPORT WALLET DATA")
+        print("-" * 30)
         
-        print("Smart contracts compiled successfully!")
+        wallet_data = {
+            'network': self.network,
+            'main_addresses': {
+                'enterprise': str(self.enterprise_address),
+                'staking': str(self.staking_address)
+            },
+            'derived_addresses': [
+                {
+                    'index': addr['index'],
+                    'path': addr['derivation_path'],
+                    'enterprise_address': str(addr['enterprise_address']),
+                    'staking_address': str(addr['staking_address'])
+                }
+                for addr in self.addresses
+            ],
+            'smart_contracts': {
+                name: {
+                    'hash': contract.hash().hex(),
+                    'address': str(pc.Address(pc.ScriptHash(contract.hash()), network=self.cardano_network))
+                }
+                for name, contract in self.contracts.items()
+            }
+        }
+        
+        filename = f"wallet_data_{self.network}_{int(time.time())}.json"
+        with open(filename, 'w') as f:
+            json.dump(wallet_data, f, indent=2)
+        
+        print(f"Wallet data exported to: {filename}")
 
     def check_balances(self) -> Dict[str, Any]:
         """Check balances for all wallet addresses"""
@@ -247,214 +314,90 @@ class CardanoDApp:
         try:
             # tx_id = self.api.transaction_submit(signed_tx.to_cbor())
             self.context.submit_tx(signed_tx)
+            if signed_tx.id:
+                print(f"Transaction submitted successfully! TX ID: {signed_tx.id}")
+                print(f"Check your transaction at: {self.cardanoscan}/transaction/{signed_tx.id}")
+            else:
+                print("Failed to submit transaction.")
             return signed_tx.id
         except ApiError as e:
             print(f"Error submitting transaction: {e}")
             return None
-    
-    def lock_funds_simple(self, amount_ada: float, unlock_time_minutes: int = 60) -> Optional[str]:
-        """Lock funds in the simple lock contract"""
-        try:
-            # Calculate unlock time (current time + minutes)
-            unlock_timestamp = int(time.time() * 1000) + (unlock_time_minutes * 60 * 1000)
-            
-            # Create datum
-            datum = {
-                "constructor": 0,
-                "fields": [
-                    {"bytes": self.payment_skey.to_verification_key().hash().to_primitive().hex()},
-                    {"int": unlock_timestamp}
-                ]
-            }
-            
-            # Get contract address
-            contract_address = pc.Address(
-                payment_part=pc.ScriptHash(self.contracts['simple_lock'].hash()),
-                network=self.cardano_network
-            )
-            
-            # Create transaction to lock funds
-            builder = pc.TransactionBuilder(pc.ChainContext.from_blockfrost_api(self.api))
-            
-            # Add input from main address
-            utxos = self.api.address_utxos(str(self.enterprise_address))
-            if not utxos:
-                print("No UTXOs available")
-                return None
-                
-            # Add sufficient inputs
-            for utxo in utxos[:2]:  # Use first 2 UTXOs
-                tx_in = pc.TransactionInput.from_primitive([utxo.tx_hash, utxo.output_index])
-                builder.add_input(tx_in)
-            
-            # Add output to contract with datum
-            amount_lovelace = int(amount_ada * 1_000_000)
-            contract_output = pc.TransactionOutput(
-                address=contract_address,
-                amount=pc.Value(coin=amount_lovelace),
-                datum=pc.PlutusData.from_json(json.dumps(datum))
-            )
-            builder.add_output(contract_output)
-            
-            # Build and sign
-            signed_tx = builder.build_and_sign([self.payment_skey], change_address=self.enterprise_address)
-            
-            # Submit
-            tx_id = self.submit_transaction(signed_tx)
-            
-            if tx_id:
-                print(f"Funds locked successfully! Transaction ID: {tx_id}")
-                print(f"Unlock time: {datetime.fromtimestamp(unlock_timestamp/1000)}")
-                
-            return tx_id
-            
-        except Exception as e:
-            print(f"Error locking funds: {e}")
-            return None
-    
-    def display_wallet_info(self):
-        """Display comprehensive wallet information"""
-        print("\n" + "="*80)
-        print("CARDANO DAPP WALLET INFORMATION")
-        print("="*80)
-        
-        print(f"Network: {self.network.upper()}")
-        print(f"Wallet Type: HD Wallet (BIP32)")
-        
-        print("\nMAIN ADDRESSES:")
-        print(f"Enterprise (Payment Only): {self.enterprise_address}")
-        print(f"Staking Enabled: {self.staking_address}")
-        
-        print(f"\nDERIVED ADDRESSES (First 10):")
-        for addr_info in self.addresses:
-            print(f"Index {addr_info['index']:2d} | {addr_info['derivation_path']:20s} | {str(addr_info['enterprise_address'])}")
-        
-        print(f"\nSMART CONTRACTS:")
-        for name, contract in self.contracts.items():
-            policy_id = contract.policy_id
-            # contract_address = pc.Address(pc.ScriptHash(policy_id), network=self.cardano_network)
-            if self.cardano_network == "mainnet":
-                contract_address = contract.mainnet_addr
-            else:
-                contract_address = contract.testnet_addr
-            print(f"{name:15s} | PolicyId: {policy_id} | Address: {contract_address.encode()}")
-        
-        # Check and display balances
-        print(f"\nCHECKING BALANCES...")
-        balances = self.check_balances()
-        
-        print(f"\nBALANCE SUMMARY:")
-        print(f"Enterprise Address: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA")
-        print(f"Staking Address: {balances['main_addresses']['staking']['balance']/1_000_000:.6f} ADA")
-        
-        print(f"\nDerived Address Balances:")
-        for addr_balance in balances['derived_addresses']:
-            if addr_balance['balance'] > 0:
-                print(f"Index {addr_balance['index']:2d}: {addr_balance['balance']/1_000_000:.6f} ADA")
-        
-        print(f"\nTOTAL WALLET BALANCE: {balances['total_balance']/1_000_000:.6f} ADA")
-        
-        return balances
-    
-    def _send_ada_menu(self):
-        """Send ADA submenu"""
-        try:
-            print("\nSEND ADA")
-            print("-" * 30)
-            
-            # Show available balances
-            balances = self.check_balances()
-            print("Available balances:")
-            print(f"Enterprise: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA")
-            
-            to_address = input("Recipient address: ").strip()
-            amount = float(input("Amount (ADA): "))
-            
-            print(f"Sending {amount} ADA to {to_address[:20]}...")
-            
-            tx = self.create_simple_transaction(to_address, amount)
-            if tx:
-                tx_id = self.submit_transaction(tx)
-                if tx_id:
-                    print(f"Transaction submitted successfully! TX ID: {tx_id}")
-                    print(f"Check your transaction at: {self.cardano_explorer_url}/transaction/{tx_id}")
-                else:
-                    print("Failed to submit transaction.")
-            else:
-                print("Failed to create transaction.")
-                
-        except Exception as e:
-            print(f"Error in send ADA: {e}")
-    
-    def _lock_funds_menu(self):
-        """Lock funds submenu"""
-        try:
-            print("\nLOCK FUNDS")
-            print("-" * 30)
-            
-            amount = float(input("Amount to lock (ADA): "))
-            minutes = int(input("Lock duration (minutes): "))
-            
-            tx_id = self.lock_funds_simple(amount, minutes)
-            if tx_id:
-                print("Funds locked successfully!")
-            else:
-                print("Failed to lock funds.")
-                
-        except Exception as e:
-            print(f"Error in lock funds: {e}")
-    
-    def _check_contracts_menu(self):
+#############################################
+# Functions specific to contracts
+#############################################
+    def _display_contracts_info(self):
         """Check contract balances submenu"""
         print("\nSMART CONTRACT BALANCES")
         print("-" * 40)
-        
+
+        if not self.contracts:
+            print("Please Deploy first")
         for name, contract in self.contracts.items():
             try:
                 if self.cardano_network == "mainnet":
+                    address_label = "Mainnet"
                     contract_address = contract.mainnet_addr
                 else:
+                    address_label = "Testnet"
                     contract_address = contract.testnet_addr
                 utxos = self.api.address_utxos(str(contract_address))
                 balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == 'lovelace')
+                print(f"{name:15s}: {contract_address} - {address_label}")
+                print(f"{name:15s}: {contract.policy_id} - PolicyId")
                 print(f"{name:15s}: {balance/1_000_000:.6f} ADA")
             except:
                 print(f"{name:15s}: 0.000000 ADA (no UTXOs)")
-    
-    def _export_wallet_menu(self):
-        """Export wallet data submenu"""
-        print("\nEXPORT WALLET DATA")
-        print("-" * 30)
+                print(f"{name:15s}: {contract_address} - {address_label}")
+                print(f"{name:15s}: {contract.policy_id} - PolicyId")
+
+    def _compile_contracts(self):
+        """Compile OpShin smart contracts"""
+        print("Compiling smart contracts...")
+
+        ##############################################
+        # Section to build the protocol_nfts
+        ##############################################
+
+        protocol_nfts_path = self.minting_contracts_path.joinpath("protocol_nfts.py")
+
+        utxos = self.context.utxos(self.addresses[0]['enterprise_address'])
+
+        utxo_to_spend = None
+        for utxo in utxos:
+            if utxo.output.amount.coin > 3000000:
+                utxo_to_spend = utxo
+                break
+        assert utxo_to_spend is not None, "No suitable UTXO found for minting test"
         
-        wallet_data = {
-            'network': self.network,
-            'main_addresses': {
-                'enterprise': str(self.enterprise_address),
-                'staking': str(self.staking_address)
-            },
-            'derived_addresses': [
-                {
-                    'index': addr['index'],
-                    'path': addr['derivation_path'],
-                    'enterprise_address': str(addr['enterprise_address']),
-                    'staking_address': str(addr['staking_address'])
-                }
-                for addr in self.addresses
-            ],
-            'smart_contracts': {
-                name: {
-                    'hash': contract.hash().hex(),
-                    'address': str(pc.Address(pc.ScriptHash(contract.hash()), network=self.cardano_network))
-                }
-                for name, contract in self.contracts.items()
-            }
+        utxo_json = {
+            "constructor": 0,
+            "fields": [
+                {"bytes": utxo_to_spend.input.transaction_id.payload.hex()},
+                {"int": utxo_to_spend.input.index}
+            ]
         }
+        cli_compatible_oref = uplc.ast.data_from_json_dict(utxo_json)
         
-        filename = f"wallet_data_{self.network}_{int(time.time())}.json"
-        with open(filename, 'w') as f:
-            json.dump(wallet_data, f, indent=2)
-        
-        print(f"Wallet data exported to: {filename}")
+        print(f"Using UTXO: TxId: {utxo_to_spend.input.transaction_id} and Index: {utxo_to_spend.input.index}")
+
+        protocol_nft_contract = build(protocol_nfts_path, cli_compatible_oref)
+
+        self.contracts["protocol_nfts"] = PlutusContract(protocol_nft_contract)
+
+        ##############################################
+        # Section to build the protocol
+        ##############################################
+        protocol_path = self.spending_contracts_path.joinpath("protocol.py")
+        protocol_contract = build(protocol_path, cli_compatible_oref)
+
+        self.contracts["protocol"] = PlutusContract(protocol_contract)
+
+        print("Smart contracts compiled successfully!")
+
+#############################################
+# Interactive main menu
+#############################################
 
     def interactive_menu(self):
         """Interactive menu for dApp operations"""
@@ -465,15 +408,13 @@ class CardanoDApp:
             print("1. Display Wallet Info & Balances")
             print("2. Generate New Addresses")
             print("3. Send ADA")
-            print("4. Lock Funds (Simple Contract)")
-            print("5. Check Contract Balances")
-            print("6. Export Wallet Data")
-            print("7. Test Smart Contracts")
+            print("4. Enter Contract Menu")
+            print("5. Export Wallet Data")
             print("0. Exit")
             print("-"*60)
-            
-            choice = input("Select an option (0-7): ").strip()
-            
+
+            choice = input("Select an option (0-5): ").strip()
+
             if choice == "0":
                 print("Exiting dApp...")
                 break
@@ -486,44 +427,37 @@ class CardanoDApp:
             elif choice == "3":
                 self._send_ada_menu()
             elif choice == "4":
-                self._lock_funds_menu()
+                self.contract_submenu()
             elif choice == "5":
-                self._check_contracts_menu()
-            elif choice == "6":
                 self._export_wallet_menu()
-            elif choice == "7":
-                self._test_contracts_menu()
             else:
                 print("Invalid option. Please try again.")
-
-    def _test_contracts_menu(self):
+    
+    def _test_contracts(self):
         """Test smart contracts submenu"""
+
         print("\nTEST SMART CONTRACTS")
         print("-" * 30)
-        print("Contract testing functionality would go here.")
-        print("This would include unit tests for each contract validator function.")
+        destin_address = input("\nPlease enter the destination address where the user token is sent: ")
+        signed_tx = self.test_minting_contract(destin_address)
+        print(f"Transaction built successfully tx_id: {signed_tx.id.payload.hex()}")
 
-        for name, contract in self.contracts.items():
-            print(f"Testing contract: {name}")
-            # Here you would call the test functions for each contract
-            # For example: test_contract(contract)
-            # test_minting_contract(contract)
-            self.test_minting_contract(contract)
+        input("\nPress Enter to submit the transaction")
 
-    def test_minting_contract(self, contract: PlutusContract):
+        self.submit_transaction(signed_tx)
+
+    def test_minting_contract(self, destin_address: pc.Address = None):
         """Test the minting functionality of the contract"""
-        # print(f"Testing minting contract: {self.contracts['protocol_nfts'].blueprint}")
-        # Here you would call the actual test functions for the contract
-        # For example: assert contract.mint() == expected_result
-        
         # Create transaction builder
         builder = pc.TransactionBuilder(self.context)
 
         # Get contract info
-        minting_script: pc.PlutusV2Script = contract.cbor
-        minting_policy_id = pc.ScriptHash(bytes.fromhex(contract.policy_id))
-        contract_address = contract.testnet_addr
-        
+        protocol_nfts_contract = self.contracts["protocol_nfts"]
+        minting_script: pc.PlutusV2Script = protocol_nfts_contract.cbor
+        minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+
+        protocol_contract = self.contracts["protocol"]
+        protocol_address = protocol_contract.testnet_addr
 
         from_address = self.addresses[0]['enterprise_address']
         utxos = self.context.utxos(from_address)
@@ -542,26 +476,15 @@ class CardanoDApp:
             idx=utxo_to_spend.input.index,
         )
 
-        # Create the tokens
         # Generate token names using the actual utility function
         protocol_token_name = unique_token_name(oref, PREFIX_PROTOCOL_NFT)
         user_token_name = unique_token_name(oref, PREFIX_USER_NFT)
         
         # Create assets to mint
-        # protocol_nft_asset = pc.Asset({pc.AssetName(protocol_token_name): 1})
-        # user_nft_asset = pc.Asset({pc.AssetName(user_token_name): 1})
-
         protocol_nft_asset = pc.MultiAsset({minting_policy_id: pc.Asset({pc.AssetName(protocol_token_name): 1})})
         user_nft_asset = pc.MultiAsset({minting_policy_id: pc.Asset({pc.AssetName(user_token_name): 1})})
 
-        # protocol_nft_asset = pc.MultiAsset.from_primitive({bytes(minting_policy_id): { protocol_token_name: 1 }})
-        # user_nft_asset = pc.MultiAsset.from_primitive({bytes(minting_policy_id): { user_token_name: 1 }})
-
         total_mint = protocol_nft_asset.union(user_nft_asset)
-
-        # total_mint = pc.MultiAsset({
-        #     minting_policy_id: { protocol_nft_asset, user_nft_asset }
-        # })
         builder.mint = total_mint
         
         # Create contract output
@@ -584,13 +507,13 @@ class CardanoDApp:
         min_val = pc.min_lovelace(
             self.context,
             output=pc.TransactionOutput(
-                contract_address,
+                protocol_address,
                 protocol_value,
                 datum=protocol_datum,
             ),
         )
         protocol_output = pc.TransactionOutput(
-            address=contract_address,
+            address=protocol_address,
             amount=pc.Value(coin=min_val, multi_asset=protocol_nft_asset),
             datum=protocol_datum,
         )
@@ -598,17 +521,20 @@ class CardanoDApp:
 
         user_value = pc.Value(0, user_nft_asset)
 
+        if destin_address is None:
+            destin_address = from_address
+
         min_val = pc.min_lovelace(
             self.context,
             output=pc.TransactionOutput(
-                from_address,
+                destin_address,
                 user_value,
                 datum=protocol_datum,
             ),
         )
         # Add user output (send user NFT to user address)
         user_output = pc.TransactionOutput(
-            address=from_address,
+            address=destin_address,
             amount=pc.Value(coin=min_val, multi_asset=user_nft_asset),
             datum=None,
         )
@@ -620,10 +546,57 @@ class CardanoDApp:
         return signed_tx
 
 
+    def test_burn_tokens(self):
+        """Test burning tokens"""
+        builder = pc.TransactionBuilder(self.context)
+
+         # Get contract info
+        protocol_nfts_contract = self.contracts["protocol_nfts"]
+        minting_script: pc.PlutusV2Script = protocol_nfts_contract.cbor
+        minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+
+        protocol_contract = self.contracts["protocol"]
+        protocol_address = protocol_contract.testnet_addr
+
+
+#############################################
+# Interactive contract submenu
+#############################################
+    def contract_submenu(self):
+        """Interactive menu for contract operations"""
+        self._compile_contracts()
+        while True:
+            print("\n" + "="*60)
+            print("CONTRACT MENU")
+            print("="*60)
+            print("1. Display Contracts Info")
+            print("2. Deploy Contracts")
+            print("3. Test Contracts")
+            print("0. Back to Main Menu")
+            print("-"*60)
+
+            choice = input("Select an option (0-3): ").strip()
+
+            if choice == "0":
+                print("Returning to main menu...")
+                break
+            elif choice == "1":
+                self._display_contracts_info()
+            elif choice == "2":
+                self._compile_contracts()
+                input("\nPress Enter to continue to interactive menu...")
+            elif choice == "3":
+                self._test_contracts()
+            else:
+                print("Invalid option. Please try again.")
+
 class TestCardanoDApp:
 
     def setup_method(self):
         self.dapp = CardanoDApp()
+
+    def test_compile_contracts(self):
+        self.dapp.compile_contracts()
 
     def test_contracts_menu(self):
 
@@ -633,11 +606,6 @@ class TestCardanoDApp:
 
             # Submit
             tx_id = self.dapp.submit_transaction(signed_tx)
-            
-            if tx_id:
-                print(f"Funds locked successfully! Transaction ID: {tx_id}")
-                # print(f"Unlock time: {datetime.fromtimestamp(unlock_timestamp/1000)}")
-                
             return tx_id
 
 def main():
@@ -664,16 +632,8 @@ def main():
     
     # Display initial wallet info
     dapp.display_wallet_info()
-    
-    # Start interactive menu
-    input("\nPress Enter to continue to interactive menu...")
 
     dapp.interactive_menu()
-
-    # except Exception as e:
-    #     print(f"Error initializing dApp: {e}")
-    #     print("Please check your environment variables and network connection.")
-
 
 if __name__ == "__main__":
     main()
