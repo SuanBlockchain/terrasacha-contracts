@@ -25,7 +25,8 @@ from src.cardano_offchain import (
     ContractManager,
     TokenOperations
 )
-from menu_formatter import MenuFormatter
+from terrasacha_contracts.types import DatumProtocol
+from tests.menu.menu_formatter import MenuFormatter
 
 
 class CardanoCLI:
@@ -52,6 +53,9 @@ class CardanoCLI:
         
         # Initialize menu formatter
         self.menu = MenuFormatter()
+        
+        # Add context property for convenience
+        self.context = self.chain_context.get_context()
         
         # Generate initial addresses
         self.wallet.generate_addresses(10)
@@ -307,6 +311,220 @@ class CardanoCLI:
         
         input("\nPress Enter to continue...")
     
+    def update_protocol_menu(self):
+        """Update protocol datum submenu"""
+        self.menu.print_header("PROTOCOL UPDATE", "Update Protocol Parameters")
+        
+        contracts = self.contract_manager.list_contracts()
+        if not contracts:
+            self.menu.print_error("No contracts available for protocol update")
+            return
+        
+        # Display current protocol information
+        try:
+            # Get protocol contract address
+            protocol_contract = self.contract_manager.get_contract("protocol")
+            protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
+            
+            if not protocol_contract or not protocol_nfts_contract:
+                self.menu.print_error("Required contracts not found")
+                return
+            
+            protocol_address = protocol_contract.testnet_addr
+            minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+            
+            # Find current protocol UTXO and datum
+            protocol_utxos = self.context.utxos(protocol_address)
+            if not protocol_utxos:
+                self.menu.print_error("No protocol UTXOs found")
+                return
+            
+            protocol_utxo = None
+            for utxo in protocol_utxos:
+                if utxo.output.amount.multi_asset:
+                    for policy_id, assets in utxo.output.amount.multi_asset.data.items():
+                        if policy_id == minting_policy_id:
+                            protocol_utxo = utxo
+                            break
+                    if protocol_utxo:
+                        break
+            
+            if not protocol_utxo:
+                self.menu.print_error("No protocol UTXO found with expected policy ID")
+                return
+            
+            # Extract current datum
+            current_datum = DatumProtocol.from_cbor(protocol_utxo.output.datum.cbor)
+            if not current_datum:
+                self.menu.print_error("Protocol UTXO has no datum or invalid datum")
+                return
+            
+            # Display current protocol state
+            self.menu.print_section("CURRENT PROTOCOL STATE")
+            print(f"│ Protocol Fee: {current_datum.protocol_fee / 1_000_000:.6f} ADA")
+            print(f"│ Oracle ID: {current_datum.oracle_id.decode('utf-8', errors='ignore')}")
+            print(f"│ Admin Count: {len(current_datum.protocol_admin)}")
+            print(f"│ Admin PKHs: {[admin.hex()[:16] + '...' for admin in current_datum.protocol_admin]}")
+            print()
+            
+        except Exception as e:
+            self.menu.print_error(f"Failed to retrieve current protocol state: {e}")
+            return
+        
+        # Get user input for updates
+        self.menu.print_info("Protocol Update Options:")
+        
+        # Initialize new values with current values
+        new_fee_lovelace = current_datum.protocol_fee
+        new_oracle_id = current_datum.oracle_id
+        new_admin_list = current_datum.protocol_admin.copy()
+        
+        # Option to specify custom fee or use default increment
+        fee_input = self.menu.get_input("Enter new protocol fee in ADA (or press Enter for +0.5 ADA increment)")
+        
+        if fee_input.strip():
+            try:
+                new_fee_ada = float(fee_input.strip())
+                new_fee_lovelace = int(new_fee_ada * 1_000_000)
+                self.menu.print_info(f"New protocol fee will be: {new_fee_ada:.6f} ADA")
+            except ValueError:
+                self.menu.print_error("Invalid fee amount entered")
+                return
+        else:
+            new_fee_lovelace = current_datum.protocol_fee + 500_000  # +0.5 ADA
+            self.menu.print_info(f"Using default increment: {new_fee_lovelace / 1_000_000:.6f} ADA")
+        
+        # Option to update Oracle ID
+        oracle_input = self.menu.get_input("Enter new Oracle ID (or press Enter to keep current)")
+        if oracle_input.strip():
+            try:
+                new_oracle_id = oracle_input.strip().encode('utf-8')
+                self.menu.print_info(f"New Oracle ID: {oracle_input.strip()}")
+            except Exception as e:
+                self.menu.print_error(f"Invalid Oracle ID: {e}")
+                return
+        
+        # Option to update Admin list
+        admin_input = self.menu.get_input("Update admins? (add/remove/keep) [keep]")
+        if admin_input.strip().lower() in ['add', 'remove']:
+            if admin_input.strip().lower() == 'add':
+                new_admin_hex = self.menu.get_input("Enter new admin public key hash (hex)")
+                try:
+                    new_admin_bytes = bytes.fromhex(new_admin_hex.strip())
+                    if len(new_admin_bytes) != 28:
+                        self.menu.print_error("Admin public key hash must be 28 bytes (56 hex chars)")
+                        return
+                    new_admin_list.append(new_admin_bytes)
+                    self.menu.print_info(f"Added admin: {new_admin_hex.strip()}")
+                except ValueError:
+                    self.menu.print_error("Invalid hex format for admin public key hash")
+                    return
+                    
+            elif admin_input.strip().lower() == 'remove':
+                if len(current_datum.protocol_admin) <= 1:
+                    self.menu.print_error("Cannot remove admin - must have at least one admin")
+                    return
+                self.menu.print_info("Current admins:")
+                for i, admin in enumerate(current_datum.protocol_admin):
+                    print(f"  {i}: {admin.hex()}")
+                try:
+                    admin_index = int(self.menu.get_input("Enter index of admin to remove"))
+                    if 0 <= admin_index < len(current_datum.protocol_admin):
+                        removed_admin = new_admin_list.pop(admin_index)
+                        self.menu.print_info(f"Removed admin: {removed_admin.hex()}")
+                    else:
+                        self.menu.print_error("Invalid admin index")
+                        return
+                except ValueError:
+                    self.menu.print_error("Invalid admin index")
+                    return
+        
+        # Create new datum with all updates
+        new_datum = DatumProtocol(
+            protocol_admin=new_admin_list,
+            protocol_fee=new_fee_lovelace,
+            oracle_id=new_oracle_id,
+        )
+        
+        # Option to specify user address
+        user_address_input = self.menu.get_input("Enter address containing user tokens (or press Enter for default wallet address)")
+        
+        user_address = None
+        if user_address_input.strip():
+            try:
+                user_address = pc.Address.from_primitive(user_address_input.strip())
+                self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
+            except Exception as e:
+                self.menu.print_error(f"Invalid address format: {e}")
+                return
+        else:
+            self.menu.print_info("Using default wallet address")
+        
+        # Create and submit transaction
+        try:
+            self.menu.print_info("Creating protocol update transaction...")
+            result = self.token_operations.create_protocol_update_transaction(user_address, new_datum)
+            
+            if not result['success']:
+                self.menu.print_error(f"Failed to create update transaction: {result['error']}")
+                return
+            
+            self.menu.print_success("Protocol update transaction created successfully!")
+            print(f"TX ID: {result['tx_id']}")
+            
+            # Show datum changes
+            self.menu.print_section("PROTOCOL CHANGES")
+            old_datum = result['old_datum']
+            new_datum_result = result['new_datum']
+            
+            # Compare fee changes
+            fee_changed = old_datum.protocol_fee != new_datum_result.protocol_fee
+            fee_status = "changed" if fee_changed else "unchanged"
+            print(f"│ Protocol Fee: {old_datum.protocol_fee / 1_000_000:.6f} ADA → {new_datum_result.protocol_fee / 1_000_000:.6f} ADA ({fee_status})")
+            
+            # Compare Oracle ID changes
+            oracle_changed = old_datum.oracle_id != new_datum_result.oracle_id
+            oracle_status = "changed" if oracle_changed else "unchanged"
+            old_oracle_str = old_datum.oracle_id.decode('utf-8', errors='ignore')
+            new_oracle_str = new_datum_result.oracle_id.decode('utf-8', errors='ignore')
+            print(f"│ Oracle ID: {old_oracle_str} → {new_oracle_str} ({oracle_status})")
+            
+            # Compare Admin changes
+            old_admin_set = set(old_datum.protocol_admin)
+            new_admin_set = set(new_datum_result.protocol_admin)
+            admin_changed = old_admin_set != new_admin_set
+            admin_status = "changed" if admin_changed else "unchanged"
+            print(f"│ Admin Count: {len(old_datum.protocol_admin)} → {len(new_datum_result.protocol_admin)} ({admin_status})")
+            
+            if admin_changed:
+                added_admins = new_admin_set - old_admin_set
+                removed_admins = old_admin_set - new_admin_set
+                if added_admins:
+                    print(f"│   Added: {[admin.hex()[:16] + '...' for admin in added_admins]}")
+                if removed_admins:
+                    print(f"│   Removed: {[admin.hex()[:16] + '...' for admin in removed_admins]}")
+            
+            print()
+            
+            if self.menu.confirm_action("Submit protocol update transaction to network?"):
+                self.menu.print_info("Submitting protocol update transaction...")
+                tx_id = self.transactions.submit_transaction(result['transaction'])
+                
+                if tx_id:
+                    self.menu.print_success("Protocol update transaction submitted successfully!")
+                    self.menu.print_info("Protocol parameters have been updated.")
+                    tx_info = self.transactions.get_transaction_info(tx_id)
+                    print(f"Explorer: {tx_info['explorer_url']}")
+                else:
+                    self.menu.print_error("Failed to submit protocol update transaction")
+            else:
+                self.menu.print_info("Protocol update transaction cancelled by user")
+                
+        except Exception as e:
+            self.menu.print_error(f"Protocol update failed: {e}")
+        
+        input("\nPress Enter to continue...")
+    
     def contract_submenu(self):
         """Interactive menu for contract operations"""
         
@@ -341,11 +559,12 @@ class CardanoCLI:
             self.menu.print_menu_option("2", "Compile/Recompile Contracts", "✓")
             self.menu.print_menu_option("3", "Mint Tokens", "✓")
             self.menu.print_menu_option("4", "Burn Tokens", "✓")
+            self.menu.print_menu_option("5", "Update Protocol Datum", "✓")
             self.menu.print_separator()
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-4)")
+            choice = self.menu.get_input("Select an option (0-5)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -366,6 +585,8 @@ class CardanoCLI:
                 self.test_contracts_menu()
             elif choice == "4":
                 self.burn_tokens_menu()
+            elif choice == "5":
+                self.update_protocol_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
     

@@ -119,6 +119,60 @@ class CardanoTransactions:
             'network': self.chain_context.network
         }
     
+    def find_utxo_by_policy_id(self, utxos: List[pc.UTxO], policy_id: pc.ScriptHash) -> pc.UTxO:
+        """Find UTXOs that contain tokens from a specific policy ID.
+        
+        Args:
+            utxos: List of UTXOs to search through
+            policy_id: The minting policy ID to match against
+            
+        Returns:
+            List of UTXOs containing tokens from the specified policy (typically one item)
+        """
+        
+        for utxo in utxos:
+            # Check if the UTXO contains any tokens from the specified policy
+            if utxo.output.amount.multi_asset:
+                for pi, assets in utxo.output.amount.multi_asset.data.items():
+                    if pi == policy_id:
+                        utxo_to_spend = utxo
+                        break  # Found a match, no need to check other policies in this UTXO
+        
+        return utxo_to_spend
+    
+    def extract_asset_from_utxo(self, utxo: pc.UTxO, policy_id: pc.ScriptHash) -> pc.Asset:
+        """Extract the Asset from a UTXO for a specific policy ID.
+        
+        Assumes the UTXO contains exactly one token with quantity 1 for the given policy ID.
+        
+        Args:
+            utxo: The UTXO to extract the asset from
+            policy_id: The minting policy ID to match against
+            
+        Returns:
+            The Asset object containing the asset name and quantity
+            
+        Raises:
+            ValueError: If no token is found or multiple tokens are found
+        """
+        if not utxo.output.amount.multi_asset:
+            raise ValueError("UTXO contains no multi-asset tokens")
+        
+        for pi, assets in utxo.output.amount.multi_asset.data.items():
+            if pi == policy_id:
+                # Should contain exactly one token with quantity 1
+                asset_items = list(assets.data.items())
+                if len(asset_items) != 1:
+                    raise ValueError(f"Expected exactly 1 token, found {len(asset_items)}")
+                
+                asset_name, quantity = asset_items[0]
+                if quantity != 1:
+                    raise ValueError(f"Expected token quantity 1, found {quantity}")
+                    
+                return pc.Asset({asset_name: quantity})
+        
+        raise ValueError(f"No token found for policy ID {policy_id.payload.hex()}")
+    
     def build_contract_transaction(self, builder_config: dict) -> pc.TransactionBuilder:
         """
         Create a transaction builder for contract operations

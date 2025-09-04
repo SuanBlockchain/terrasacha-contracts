@@ -70,11 +70,15 @@ def extract_protocol_token_from_input(protocol_input: TxOut) -> Token:
 def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) -> None:
     """
     Validate the update of a datum.
+    Now allows updates to protocol_admin, oracle_id, and protocol_fee with proper validations.
     """
-    assert new_datum.protocol_admin == old_datum.protocol_admin, "Protocol admin cannot be changed"
-    assert new_datum.oracle_id == old_datum.oracle_id, "Oracle ID cannot be changed"
-    assert new_datum.project_id == old_datum.project_id, "Project ID cannot be changed"
+    # Validate protocol_fee
     assert new_datum.protocol_fee >= 0, "Protocol fee must be non-negative"
+    
+    # Validate protocol_admin updates
+    assert len(new_datum.protocol_admin) > 0, "Protocol must have at least one admin"
+    assert len(new_datum.protocol_admin) <= 3, "Protocol cannot have more than 10 admins"
+    
 
 def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
     """

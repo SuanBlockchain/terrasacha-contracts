@@ -9,10 +9,9 @@ from typing import Optional, Dict, Any
 from opshin.prelude import TxOutRef, TxId
 import pycardano as pc
 from terrasacha_contracts.types import (
-    PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, Burn, DatumProtocol, Mint, EndProtocol
+    PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, Burn, DatumProtocol, Mint, EndProtocol, UpdateProtocol
 )
 from terrasacha_contracts.util import unique_token_name
-from tests.tool import find_utxo_by_policy_id, extract_asset_from_utxo
 from .wallet import CardanoWallet
 from .chain_context import CardanoChainContext
 from .contracts import ContractManager
@@ -125,8 +124,7 @@ class TokenOperations:
             protocol_datum = DatumProtocol(
                 protocol_admin=[payment_vkey],
                 protocol_fee=1000000,
-                oracle_id=b"oracle_integration_test",
-                project_id=b"project_integration_test",
+                oracle_id=b"oracle_integration_test"
             )
             
             # Add protocol output
@@ -227,7 +225,7 @@ class TokenOperations:
                     'error': 'No protocol UTXOs found'
                 }
             
-            protocol_utxo_to_spend = find_utxo_by_policy_id(protocol_utxos, minting_policy_id)
+            protocol_utxo_to_spend = self.transactions.find_utxo_by_policy_id(protocol_utxos, minting_policy_id)
             if not protocol_utxo_to_spend:
                 return {
                     'success': False,
@@ -252,7 +250,7 @@ class TokenOperations:
                     'error': 'No user UTXOs found'
                 }
             
-            user_utxo_to_spend = find_utxo_by_policy_id(user_utxos, minting_policy_id)
+            user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(user_utxos, minting_policy_id)
             if not user_utxo_to_spend:
                 return {
                     'success': False,
@@ -263,8 +261,8 @@ class TokenOperations:
             builder.add_input(user_utxo_to_spend)
             
             # Extract assets for burning
-            user_asset = extract_asset_from_utxo(user_utxo_to_spend, minting_policy_id)
-            protocol_asset = extract_asset_from_utxo(protocol_utxo_to_spend, minting_policy_id)
+            user_asset = self.transactions.extract_asset_from_utxo(user_utxo_to_spend, minting_policy_id)
+            protocol_asset = self.transactions.extract_asset_from_utxo(protocol_utxo_to_spend, minting_policy_id)
             
             # Set burn amounts (negative minting)
             total_mint = pc.MultiAsset({minting_policy_id: pc.Asset({
@@ -298,59 +296,139 @@ class TokenOperations:
                 'success': False,
                 'error': f'Burn transaction creation failed: {e}'
             }
-    
-    def submit_minting_transaction(self, destination_address: Optional[pc.Address] = None) -> Dict[str, Any]:
+
+    def create_protocol_update_transaction(self, user_address: Optional[pc.Address] = None, new_datum: DatumProtocol = None) -> Dict[str, Any]:
         """
-        Create and submit a minting transaction
+        Create a transaction to update the protocol datum
         
         Args:
-            destination_address: Optional destination for user token
+            user_address: Optional address containing user tokens
             
         Returns:
-            Combined result dictionary
+            Transaction creation result dictionary
         """
-        # Create transaction
-        mint_result = self.create_minting_transaction(destination_address)
-        if not mint_result['success']:
-            return mint_result
-        
-        # Submit transaction
         try:
-            tx_id = self.transactions.submit_transaction(mint_result['transaction'])
-            mint_result['submitted'] = True
-            mint_result['explorer_url'] = self.chain_context.get_explorer_url(tx_id)
-            return mint_result
+            # Get protocol contract
+            protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
+            protocol_contract = self.contract_manager.get_contract("protocol")
+
+            if not protocol_contract or not protocol_nfts_contract:
+                return {
+                    'success': False,
+                    'error': 'Required contract not compiled'
+                }
             
+            # Get contract info
+            minting_script = protocol_nfts_contract.cbor
+            protocol_script = protocol_contract.cbor
+            minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+            protocol_address = protocol_contract.testnet_addr
+            
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+            
+            # Find protocol UTXO
+            protocol_utxos = self.context.utxos(protocol_address)
+            if not protocol_utxos:
+                return {
+                    'success': False,
+                    'error': 'No protocol UTXOs found'
+                }
+            
+            protocol_utxo_to_spend = self.transactions.find_utxo_by_policy_id(protocol_utxos, minting_policy_id)
+            if not protocol_utxo_to_spend:
+                return {
+                    'success': False,
+                    'error': 'No protocol UTXO found with specified policy ID'
+                }
+            
+            # Add protocol UTXO as script input
+            builder.add_script_input(
+                protocol_utxo_to_spend,
+                script=protocol_script,
+                redeemer=pc.Redeemer(UpdateProtocol(
+                    protocol_input_index=0,
+                    user_input_index=1,
+                    protocol_output_index=0
+                ))
+            )
+            # Find user UTXO
+            if user_address is None:
+                user_address = self.wallet.get_address(0)
+
+            user_utxos = self.context.utxos(user_address)
+            if not user_utxos:
+                return {
+                    'success': False,
+                    'error': 'No user UTXOs found'
+                }
+            
+            user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(user_utxos, minting_policy_id)
+            if not user_utxo_to_spend:
+                return {
+                    'success': False,
+                    'error': 'No user UTXO found with specified policy ID'
+                }
+            
+            # Add user UTXO as input
+            builder.add_input(user_utxo_to_spend)
+
+            # Add user address to pay for transaction
+            builder.add_input_address(user_address)
+            
+
+            # Update protocol datum
+            old_datum = DatumProtocol.from_cbor(protocol_utxo_to_spend.output.datum.cbor)
+            if not isinstance(old_datum, DatumProtocol):
+                return {
+                    'success': False,
+                    'error': 'Protocol UTXO datum is not of expected type'
+                }
+            if new_datum is None:
+                # Create new datum with updated fee
+                new_datum = DatumProtocol(
+                    protocol_admin=old_datum.protocol_admin,
+                    protocol_fee=old_datum.protocol_fee + 500000,  # Increase fee by 0.5 ADA
+                    oracle_id=old_datum.oracle_id
+                )
+            
+            # Validate datum update
+            # self.validate_datum_update(old_datum, new_datum)
+
+            # Add protocol output
+            protocol_asset = self.transactions.extract_asset_from_utxo(protocol_utxo_to_spend, minting_policy_id)
+            protocol_multi_asset = pc.MultiAsset({minting_policy_id: protocol_asset})
+            protocol_value = pc.Value(0, protocol_multi_asset)
+            min_val_protocol = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    protocol_address,
+                    protocol_value,
+                    datum=new_datum,
+                ),
+            )
+            protocol_output = pc.TransactionOutput(
+                address=protocol_address,
+                amount=pc.Value(coin=min_val_protocol, multi_asset=protocol_multi_asset),
+                datum=new_datum,
+            )
+            builder.add_output(protocol_output)
+
+            # Build transaction
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=user_address)
+
+            return {
+                'success': True,
+                'transaction': signed_tx,
+                'tx_id': signed_tx.id.payload.hex(),
+                'old_datum': old_datum,
+                'new_datum': new_datum
+            }
+            
+            # Add protocol
         except Exception as e:
-            mint_result['success'] = False
-            mint_result['error'] = f'Transaction submission failed: {e}'
-            mint_result['submitted'] = False
-            return mint_result
-    
-    def submit_burn_transaction(self, user_address: Optional[pc.Address] = None) -> Dict[str, Any]:
-        """
-        Create and submit a burn transaction
-        
-        Args:
-            user_address: Optional address containing user tokens to burn
-            
-        Returns:
-            Combined result dictionary
-        """
-        # Create transaction
-        burn_result = self.create_burn_transaction(user_address)
-        if not burn_result['success']:
-            return burn_result
-        
-        # Submit transaction
-        try:
-            tx_id = self.transactions.submit_transaction(burn_result['transaction'])
-            burn_result['submitted'] = True
-            burn_result['explorer_url'] = self.chain_context.get_explorer_url(tx_id)
-            return burn_result
-            
-        except Exception as e:
-            burn_result['success'] = False
-            burn_result['error'] = f'Transaction submission failed: {e}'
-            burn_result['submitted'] = False
-            return burn_result
+            return {
+                'success': False,
+                'error': f'Protocol update transaction creation failed: {e}'
+            }
