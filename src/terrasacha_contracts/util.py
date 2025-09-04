@@ -1,7 +1,9 @@
 from opshin.prelude import *
 from opshin.std.builtins import *
 
-from terrasacha_contracts.types import *
+# Constants
+PREFIX_PROTOCOL_NFT = b"PROTO_"
+PREFIX_USER_NFT = b"USER_"
 
 def get_minting_purpose(context: ScriptContext) -> Minting:
     purpose = context.purpose

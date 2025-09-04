@@ -8,10 +8,17 @@ Handles minting, burning, and token management operations.
 from typing import Optional, Dict, Any
 from opshin.prelude import TxOutRef, TxId
 import pycardano as pc
-from terrasacha_contracts.types import (
-    PREFIX_PROTOCOL_NFT, PREFIX_USER_NFT, Burn, DatumProtocol, Mint, EndProtocol, UpdateProtocol
+from terrasacha_contracts.validators.protocol import (
+    DatumProtocol, EndProtocol, UpdateProtocol
 )
-from terrasacha_contracts.util import unique_token_name
+from terrasacha_contracts.minting_policies.authentication_nfts import (
+    Mint, Burn
+)
+from terrasacha_contracts.util import (
+    unique_token_name,
+    PREFIX_PROTOCOL_NFT,
+    PREFIX_USER_NFT,
+)
 from .wallet import CardanoWallet
 from .chain_context import CardanoChainContext
 from .contracts import ContractManager

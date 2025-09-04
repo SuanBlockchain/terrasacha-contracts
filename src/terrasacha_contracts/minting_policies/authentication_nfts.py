@@ -1,7 +1,14 @@
 #!opshin
 from opshin.prelude import *
 from terrasacha_contracts.util import *
-from terrasacha_contracts.types import *
+
+@dataclass()
+class Mint(PlutusData):
+    CONSTR_ID = 0
+
+@dataclass()
+class Burn(PlutusData):
+    CONSTR_ID = 1
 
 def validator(
     oref: TxOutRef,

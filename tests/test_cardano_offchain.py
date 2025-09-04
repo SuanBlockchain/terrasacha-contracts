@@ -23,7 +23,7 @@ from src.cardano_offchain import (
     ContractManager,
     TokenOperations
 )
-from tests.cardano_cli import CardanoCLI
+# from tests.cardano_cli import CardanoCLI
 
 # Load .env from project root
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent

@@ -1,6 +1,26 @@
 from opshin.prelude import *
 from terrasacha_contracts.util import *
-from terrasacha_contracts.types import *
+
+@dataclass()
+class DatumProtocol(PlutusData):
+    CONSTR_ID = 0
+    protocol_admin: List[bytes]  # List of admin public key hashes
+    protocol_fee: int           # Protocol fee in lovelace
+    oracle_id: bytes           # Oracle identifier
+
+@dataclass()
+class UpdateProtocol(PlutusData):
+    CONSTR_ID = 1
+    protocol_input_index: int
+    user_input_index: int
+    protocol_output_index: int
+
+@dataclass()
+class EndProtocol(PlutusData):
+    CONSTR_ID = 2
+    protocol_input_index: int
+
+RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
 
 def validate_protocol_nft_continues(
     protocol_output: TxOut,

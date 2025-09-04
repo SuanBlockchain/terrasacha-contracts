@@ -25,7 +25,7 @@ from src.cardano_offchain import (
     ContractManager,
     TokenOperations
 )
-from terrasacha_contracts.types import DatumProtocol
+from terrasacha_contracts.validators.protocol import DatumProtocol
 from tests.menu.menu_formatter import MenuFormatter
 
 

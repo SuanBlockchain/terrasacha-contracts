@@ -225,7 +225,7 @@ class ContractManager:
             compiled_contracts = {}
             
             # Build protocol_nfts minting policy
-            protocol_nfts_path = self.minting_contracts_path / "protocol_nfts.py"
+            protocol_nfts_path = self.minting_contracts_path / "authentication_nfts.py"
             if protocol_nfts_path.exists():
                 protocol_nft_contract = build(protocol_nfts_path, oref)
                 compiled_contracts["protocol_nfts"] = PlutusContract(protocol_nft_contract)

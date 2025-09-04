@@ -17,18 +17,21 @@ from src.terrasacha_contracts.validators.protocol import (
     validate_datum_update,
     
 )
-from src.terrasacha_contracts.minting_policies.protocol_nfts import (
+from src.terrasacha_contracts.minting_policies.authentication_nfts import (
     validator as protocol_nft_validator
 )
 
-from src.terrasacha_contracts.types import (
-    Burn,
+from src.terrasacha_contracts.validators.protocol import (
     DatumProtocol,
+    UpdateProtocol,
+    EndProtocol
+)
+from src.terrasacha_contracts.minting_policies.authentication_nfts import (
     Mint,
-    PREFIX_PROTOCOL_NFT,
-    PREFIX_USER_NFT
+    Burn
 )
 from src.terrasacha_contracts.util import *
+import pycardano as pc
 
 class MockCommon:
     """Common Mock class used in tests"""
@@ -59,13 +62,12 @@ class MockCommon:
             return DatumProtocol(
                 protocol_admin=[bytes.fromhex("d" * 56)],
                 protocol_fee=1000,
-                oracle_id=b"oracle_123",
-                project_id=b"project_456",
+                oracle_id=b"oracle_123"
             )
         else:
             # Invalid datum (empty admin list)
             return DatumProtocol(
-                protocol_admin=[], protocol_fee=0, oracle_id=b"", project_id=b""
+                protocol_admin=[], protocol_fee=0, oracle_id=b""
             )
 
     def create_mock_tx_out(
@@ -538,96 +540,122 @@ class TestProtocol(MockCommon):
         old_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         # Create new datum with only fee change
         new_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],  # Same
             protocol_fee=2000,  # Changed
-            oracle_id=b"oracle_123",  # Same
-            project_id=b"project_456"  # Same
+            oracle_id=b"oracle_123",  # Sam  # Same
         )
         
         # Should not raise any exception
         validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_admin_change_fails(self):
-        """Test datum update fails when admin is changed"""
+    def test_validate_datum_update_admin_change_success(self):
+        """Test successful admin update validation"""
         old_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("b" * 56)],  # Changed admin
+            protocol_admin=[bytes.fromhex("b" * 56), bytes.fromhex("c" * 56)],  # Changed admin list
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
-        with pytest.raises(AssertionError, match="Protocol admin cannot be changed"):
-            validate_datum_update(old_datum, new_datum)
+        # Should not raise any exception
+        validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_oracle_change_fails(self):
-        """Test datum update fails when oracle ID is changed"""
+    def test_validate_datum_update_oracle_change_success(self):
+        """Test successful oracle ID update validation"""
         old_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         new_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_456",  # Changed oracle
-            project_id=b"project_456"
+            oracle_id=b"oracle_456"  # Changed oracle
         )
         
-        with pytest.raises(AssertionError, match="Oracle ID cannot be changed"):
-            validate_datum_update(old_datum, new_datum)
-
-    def test_validate_datum_update_project_change_fails(self):
-        """Test datum update fails when project ID is changed"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
-        )
-        
-        new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_789"  # Changed project
-        )
-        
-        with pytest.raises(AssertionError, match="Project ID cannot be changed"):
-            validate_datum_update(old_datum, new_datum)
+        # Should not raise any exception
+        validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_negative_fee_fails(self):
         """Test datum update fails with negative fee"""
         old_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         new_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=-100,  # Negative fee
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         with pytest.raises(AssertionError, match="Protocol fee must be non-negative"):
             validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_empty_admin_list_fails(self):
+        """Test datum update fails with empty admin list"""
+        old_datum = DatumProtocol(
+            protocol_admin=[bytes.fromhex("a" * 56)],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        new_datum = DatumProtocol(
+            protocol_admin=[],  # Empty admin list
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        with pytest.raises(AssertionError, match="Protocol must have at least one admin"):
+            validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_too_many_admins_fails(self):
+        """Test datum update fails with too many admins"""
+        old_datum = DatumProtocol(
+            protocol_admin=[bytes.fromhex("a" * 56)],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        new_datum = DatumProtocol(
+            protocol_admin=[bytes.fromhex("a" * 56), bytes.fromhex("b" * 56), 
+                           bytes.fromhex("c" * 56), bytes.fromhex("d" * 56)],  # 4 admins (too many)
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        with pytest.raises(AssertionError, match="Protocol cannot have more than"):
+            validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_max_admins_success(self):
+        """Test datum update succeeds with maximum allowed admins (3)"""
+        old_datum = DatumProtocol(
+            protocol_admin=[bytes.fromhex("a" * 56)],
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        new_datum = DatumProtocol(
+            protocol_admin=[bytes.fromhex("a" * 56), bytes.fromhex("b" * 56), 
+                           bytes.fromhex("c" * 56)],  # 3 admins (maximum allowed)
+            protocol_fee=1000,
+            oracle_id=b"oracle_123"
+        )
+        
+        # Should not raise any exception
+        validate_datum_update(old_datum, new_datum)
 
     def test_validator_update_protocol_success(self):
         """Test successful UpdateProtocol validation"""
@@ -643,16 +671,14 @@ class TestProtocol(MockCommon):
         old_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         # Create new datum (only fee changed)
         new_datum = DatumProtocol(
             protocol_admin=[bytes.fromhex("a" * 56)],
             protocol_fee=2000,
-            oracle_id=b"oracle_123",
-            project_id=b"project_456"
+            oracle_id=b"oracle_123"
         )
         
         # Create UTxOs
@@ -712,8 +738,7 @@ class TestProtocol(MockCommon):
         new_datum = DatumProtocol(
             protocol_admin=old_datum.protocol_admin,
             protocol_fee=2000,  # Only fee changed
-            oracle_id=old_datum.oracle_id,
-            project_id=old_datum.project_id
+            oracle_id=old_datum.oracle_id
         )
         
         # Create UTxOs
@@ -772,8 +797,7 @@ class TestProtocol(MockCommon):
         new_datum = DatumProtocol(
             protocol_admin=old_datum.protocol_admin,
             protocol_fee=2000,
-            oracle_id=old_datum.oracle_id,
-            project_id=old_datum.project_id
+            oracle_id=old_datum.oracle_id
         )
         
         # Create UTxOs
@@ -817,7 +841,7 @@ class TestProtocol(MockCommon):
             protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_invalid_datum_change(self):
-        """Test UpdateProtocol fails with invalid datum changes"""
+        """Test UpdateProtocol fails with invalid admin count"""
         # Create test data
         oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
@@ -826,13 +850,13 @@ class TestProtocol(MockCommon):
         protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
         user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)
         
-        # Create datums with invalid change (project ID change)
+        # Create datums with invalid change (too many admins)
         old_datum = self.create_mock_datum_protocol()
         new_datum = DatumProtocol(
-            protocol_admin=old_datum.protocol_admin,
+            protocol_admin=[bytes.fromhex("a" * 56), bytes.fromhex("b" * 56), 
+                           bytes.fromhex("c" * 56), bytes.fromhex("d" * 56)],  # 4 admins (too many)
             protocol_fee=old_datum.protocol_fee,
-            oracle_id=old_datum.oracle_id,
-            project_id=b"different_project"  # Invalid change
+            oracle_id=old_datum.oracle_id
         )
         
         # Create UTxOs
@@ -871,8 +895,8 @@ class TestProtocol(MockCommon):
             protocol_output_index=0
         )
         
-        # Should fail due to invalid project ID change
-        with pytest.raises(AssertionError, match="Project ID cannot be changed"):
+        # Should fail due to too many admins
+        with pytest.raises(AssertionError, match="Protocol cannot have more than"):
             protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_no_output_datum(self):
@@ -938,7 +962,6 @@ class TestProtocol(MockCommon):
             protocol_admin=[admin_pkh],
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
@@ -973,8 +996,7 @@ class TestProtocol(MockCommon):
         protocol_datum = DatumProtocol(
             protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
             protocol_fee=1500,
-            oracle_id=b"oracle_456",
-            project_id=b"project_789",
+            oracle_id=b"oracle_456"
         )
         
         # Create protocol input with datum
@@ -1009,8 +1031,7 @@ class TestProtocol(MockCommon):
         protocol_datum = DatumProtocol(
             protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
             protocol_fee=2000,
-            oracle_id=b"oracle_789",
-            project_id=b"project_abc",
+            oracle_id=b"oracle_789"
         )
         
         # Create protocol input with datum
@@ -1043,7 +1064,6 @@ class TestProtocol(MockCommon):
             protocol_admin=[admin_pkh],
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
@@ -1077,7 +1097,6 @@ class TestProtocol(MockCommon):
             protocol_admin=[admin_pkh],
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
@@ -1112,7 +1131,6 @@ class TestProtocol(MockCommon):
             protocol_admin=[],
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
@@ -1148,7 +1166,6 @@ class TestProtocol(MockCommon):
             protocol_admin=[admin_pkh],
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
@@ -1189,7 +1206,6 @@ class TestProtocol(MockCommon):
             protocol_admin=admin_list,
             protocol_fee=1000,
             oracle_id=b"oracle_123",
-            project_id=b"project_456",
         )
         
         # Create protocol input with datum
