@@ -14,7 +14,7 @@ import pycardano as pc
 
 # Load environment variables
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
-ENV_FILE = PROJECT_ROOT / 'tests/.env'
+ENV_FILE = PROJECT_ROOT / 'menu/.env'
 load_dotenv(ENV_FILE)
 
 # Import core Cardano functionality
@@ -25,7 +25,7 @@ from src.cardano_offchain import (
     ContractManager,
     TokenOperations
 )
-from tests.menu_formatter import MenuFormatter
+from menu_formatter import MenuFormatter
 
 
 class CardanoCLI:

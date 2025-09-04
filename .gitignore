@@ -104,17 +104,6 @@ node_modules/
 # Cardano CLI generated files
 *.signed
 *.raw
-protocol.json
-utxo.json
-tests/mock.py
-tests/protocol_params.py
-tests/tool.py
-tests/tx_tools.py
-tests/ledger/api_v1.py
-tests/ledger/api_v2.py
-tests/ledger/to_script_context_v1.py
-tests/ledger/to_script_context_v2.py
-src/terrasacha_contracts/validators/protocol copy.py
-tests/offchain_protocol.py
 wallet_data_testnet_1756767651.json
 contracts_testnet.json
+temp-helper-tools/
