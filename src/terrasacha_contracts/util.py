@@ -96,4 +96,43 @@ def check_token_present(policy_id: PolicyId, output: TxOut) -> bool:
             return True
     return False
 
+def extract_token_from_input(tx_input: TxOut) -> Token:
+    """
+    Extract protocol NFT - Version 3: Flag-based approach
+    """
+    found = False
+    result_policy = b""
+    result_token = b""
+    
+    for policy_id in tx_input.value.keys():
+        if policy_id != b"" and not found:  # Skip ADA and only take first
+            for token_name in tx_input.value[policy_id].keys():
+                if not found:  # Only take the first token
+                    result_policy = policy_id
+                    result_token = token_name
+                    found = True
 
+    assert found, "Token not found in transaction input"
+    return Token(result_policy, result_token)
+
+def validate_nft_continues(
+    tx_output: TxOut,
+    expected_token: Token
+) -> None:
+    """
+    Validate that the NFT continues to the output UTxO.
+
+    Args:
+        tx_output: Output TxOut
+        expected_token: Expected NFT token name
+
+    Raises:
+        AssertionError: If NFT is not found in output
+    """
+
+    minting_policy_id = expected_token.policy_id
+    expected_token_name = expected_token.token_name
+    tx_output_tokens = tx_output.value.get(minting_policy_id, {b"": 0})
+    token_amount = tx_output_tokens.get(expected_token_name, 0)
+
+    assert token_amount == 1, f"NFT {expected_token_name.hex()} must continue to output"
