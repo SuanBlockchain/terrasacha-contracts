@@ -144,6 +144,9 @@ def validator(protocol_policy_id: PolicyId, datum_project: DatumProject, redeeme
         user_input = tx_info.inputs[redeemer.user_input_index].resolved
 
         assert check_token_present(project_token.policy_id, user_input), "User does not have required token"
+        
+        # Additional validation: ensure user has token from the correct protocol
+        assert check_token_present(protocol_policy_id, user_input), "User must have token from the correct protocol"
 
         validate_nft_continues(project_output, project_token)
 
@@ -159,3 +162,5 @@ def validator(protocol_policy_id: PolicyId, datum_project: DatumProject, redeeme
         input_datum: DatumProject = project_datum.datum
 
         validate_signatories(input_datum, tx_info)
+    else:
+        assert False, "Invalid redeemer type"
