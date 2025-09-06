@@ -107,3 +107,7 @@ node_modules/
 wallet_data_testnet_1756767651.json
 contracts_testnet.json
 temp-helper-tools/
+quick_performance_check.json
+src/scripts/evaluate_project_validator.py
+src/scripts/quick_validator_check.py
+src/scripts/README_evaluation.md
