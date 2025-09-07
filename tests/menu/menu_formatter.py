@@ -48,9 +48,14 @@ class MenuFormatter:
             )
         print(Colors.HEADER + "╚" + "═" * (self.width - 2) + "╝" + Colors.ENDC)
 
-    def print_status_bar(self, network: str, balance: float, contracts_status: str = None):
+    def print_status_bar(
+        self, network: str, balance: float, contracts_status: str = None, wallet_name: str = None
+    ):
         """Print a status information bar"""
-        status_line = f"Network: {network} | Balance: {balance:.6f} ADA"
+        status_line = f"Network: {network}"
+        if wallet_name:
+            status_line += f" | Wallet: {wallet_name}"
+        status_line += f" | Balance: {balance:.6f} ADA"
         if contracts_status:
             status_line += f" | Contracts: {contracts_status}"
 

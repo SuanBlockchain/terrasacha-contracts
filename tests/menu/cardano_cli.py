@@ -12,6 +12,7 @@ import time
 
 import pycardano as pc
 from dotenv import load_dotenv
+from typing import Optional
 
 # Load environment variables
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
@@ -33,6 +34,30 @@ from tests.menu.menu_formatter import MenuFormatter
 
 class CardanoCLI:
     """Console interface for Cardano dApp operations"""
+
+    def resolve_address_input(self, input_str: str) -> Optional[str]:
+        """
+        Resolve address input - if it's a wallet name, return the main address
+
+        Args:
+            input_str: Address string or wallet name
+
+        Returns:
+            Valid Cardano address string or None if invalid
+        """
+        input_str = input_str.strip()
+
+        # Check if it's a wallet name
+        if input_str in self.wallet_manager.get_wallet_names():
+            wallet = self.wallet_manager.get_wallet(input_str)
+            return str(wallet.enterprise_address)
+
+        # Try to validate as a regular Cardano address
+        try:
+            pc.Address.from_primitive(input_str)
+            return input_str
+        except Exception:
+            return None
 
     def __init__(self):
         """Initialize the CLI interface"""
@@ -72,22 +97,32 @@ class CardanoCLI:
         for wallet in self.wallet_manager.wallets.values():
             wallet.generate_addresses(10)
 
-    def display_wallet_info(self):
-        """Display comprehensive wallet information for all wallets"""
-        print("\n" + "=" * 80)
-        print("CARDANO DAPP MULTI-WALLET INFORMATION")
-        print("=" * 80)
+    def display_wallet_info(self, show_all_wallets: bool = False):
+        """Display wallet information for active wallet or all wallets"""
+        active_wallet_name = self.wallet_manager.get_default_wallet_name()
+
+        if show_all_wallets:
+            print("\n" + "=" * 80)
+            print("CARDANO DAPP MULTI-WALLET INFORMATION")
+            print("=" * 80)
+            wallets_to_show = self.wallet_manager.get_wallet_names()
+        else:
+            print("\n" + "=" * 80)
+            print("ACTIVE WALLET INFORMATION")
+            print("=" * 80)
+            wallets_to_show = [active_wallet_name] if active_wallet_name else []
 
         print(f"Network: {self.network.upper()}")
         print(f"Wallet Type: HD Wallet (BIP32)")
-        print(f"Active Wallet: {self.wallet_manager.get_default_wallet_name()}")
-        print(f"Total Wallets: {len(self.wallet_manager.get_wallet_names())}")
+        print(f"Active Wallet: {active_wallet_name}")
+        if show_all_wallets:
+            print(f"Total Wallets: {len(self.wallet_manager.get_wallet_names())}")
 
-        # Display each wallet
-        for wallet_name in self.wallet_manager.get_wallet_names():
+        # Display selected wallet(s)
+        for wallet_name in wallets_to_show:
             wallet = self.wallet_manager.get_wallet(wallet_name)
             wallet_info = wallet.get_wallet_info()
-            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
+            is_active = wallet_name == active_wallet_name
             status = " (ACTIVE)" if is_active else ""
 
             print(f"\n{'='*20} WALLET: {wallet_name.upper()}{status} {'='*20}")
@@ -102,19 +137,29 @@ class CardanoCLI:
                     f"  {addr_info['index']:2d} | {addr_info['path']:20s} | {addr_info['enterprise_address']}"
                 )
 
-        # Check and display balances for all wallets
+        # Check and display balances for selected wallet(s)
         print(f"\n{'='*20} CHECKING BALANCES {'='*20}")
-        all_balances = self.transactions.check_all_wallet_balances()
 
-        for wallet_name, balances in all_balances.items():
-            if wallet_name == "total_across_all_wallets":
-                continue
+        if show_all_wallets:
+            all_balances = self.transactions.check_all_wallet_balances()
+            balances_to_show = {
+                k: v for k, v in all_balances.items() if k != "total_across_all_wallets"
+            }
+        else:
+            # Only check balance for active wallet
+            active_wallet = self.wallet_manager.get_wallet(active_wallet_name)
+            if active_wallet:
+                balances = active_wallet.check_balances(self.chain_context.get_api())
+                balances_to_show = {active_wallet_name: balances}
+            else:
+                balances_to_show = {}
 
+        for wallet_name, balances in balances_to_show.items():
             if "error" in balances:
                 print(f"\n{wallet_name.upper()}: ERROR - {balances['error']}")
                 continue
 
-            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
+            is_active = wallet_name == active_wallet_name
             status = " (ACTIVE)" if is_active else ""
             print(f"\n{wallet_name.upper()}{status}:")
             print(
@@ -159,7 +204,7 @@ class CardanoCLI:
             elif choice == "3":
                 self.show_wallet_details()
             elif choice == "4":
-                self.display_wallet_info()
+                self.display_wallet_info(show_all_wallets=True)
             else:
                 print("Invalid choice. Please try again.")
 
@@ -181,7 +226,14 @@ class CardanoCLI:
             if 0 <= choice < len(wallets):
                 wallet_name = wallets[choice]
                 if self.transactions.set_active_wallet(wallet_name):
+                    # Update the wallet manager's default wallet
+                    self.wallet_manager.set_default_wallet(wallet_name)
+                    # Update the CLI's wallet reference
                     self.wallet = self.wallet_manager.get_wallet(wallet_name)
+                    # Recreate TokenOperations with the new wallet
+                    self.token_operations = TokenOperations(
+                        self.wallet, self.chain_context, self.contract_manager, self.transactions
+                    )
                     print(f"\nActive wallet switched to: {wallet_name}")
                 else:
                     print("Failed to switch wallet.")
@@ -253,8 +305,9 @@ class CardanoCLI:
     def send_ada_menu(self):
         """Send ADA submenu"""
         try:
-            print("\nSEND ADA")
-            print("-" * 30)
+            active_wallet_name = self.wallet_manager.get_default_wallet_name()
+            print(f"\nSEND ADA (From: {active_wallet_name})")
+            print("-" * 40)
 
             # Show available balances
             balances = self.wallet.check_balances(self.chain_context.get_api())
@@ -262,8 +315,20 @@ class CardanoCLI:
             print(
                 f"Enterprise: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA"
             )
+            print(f"Available Wallets: {', '.join(self.wallet_manager.get_wallet_names())}")
 
-            to_address = input("Recipient address: ").strip()
+            to_address_input = input("Recipient address (or wallet name): ").strip()
+
+            # Resolve address input (could be wallet name or address)
+            to_address = self.resolve_address_input(to_address_input)
+            if not to_address:
+                print(f"Invalid address or wallet name: {to_address_input}")
+                return
+
+            # Show resolved address if it was a wallet name
+            if to_address_input != to_address:
+                print(f"Resolved wallet '{to_address_input}' to address: {to_address[:20]}...")
+
             amount = float(input("Amount (ADA): "))
 
             print(f"Sending {amount} ADA to {to_address[:20]}...")
@@ -1205,6 +1270,7 @@ class CardanoCLI:
                 network=self.network.upper(),
                 balance=balances["total_balance"] / 1_000_000,
                 contracts_status=contract_status,
+                wallet_name=self.wallet_manager.get_default_wallet_name(),
             )
 
             # Display menu options
