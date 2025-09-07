@@ -5,16 +5,17 @@ This module provides core Cardano functionality separated from console interface
 Contains pure business logic for wallet management, transactions, and contracts.
 """
 
-from .wallet import CardanoWallet
-from .chain_context import CardanoChainContext  
-from .transactions import CardanoTransactions
+from .chain_context import CardanoChainContext
 from .contracts import ContractManager
 from .tokens import TokenOperations
+from .transactions import CardanoTransactions
+from .wallet import CardanoWallet, WalletManager
 
 __all__ = [
-    'CardanoWallet',
-    'CardanoChainContext',
-    'CardanoTransactions', 
-    'ContractManager',
-    'TokenOperations'
+    "CardanoWallet",
+    "WalletManager",
+    "CardanoChainContext",
+    "CardanoTransactions",
+    "ContractManager",
+    "TokenOperations",
 ]

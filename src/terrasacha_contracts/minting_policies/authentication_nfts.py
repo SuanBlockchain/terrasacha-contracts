@@ -1,14 +1,18 @@
 #!opshin
 from opshin.prelude import *
+
 from terrasacha_contracts.util import *
+
 
 @dataclass()
 class Mint(PlutusData):
     CONSTR_ID = 0
 
+
 @dataclass()
 class Burn(PlutusData):
     CONSTR_ID = 1
+
 
 def validator(
     oref: TxOutRef,
@@ -38,14 +42,12 @@ def validator(
 
         # Validate exactly 2 tokens are minted (1 protocol + 1 user)
         assert len(our_minted) == 2, "Must mint exactly 2 tokens"
-        
+
         # Generate unique token names based on UTXO reference
-        protocol_token_name = unique_token_name(oref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(oref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(oref, PREFIX_USER_NFT)
 
-        assert (
-            our_minted.get(protocol_token_name, 0) == 1
-        ), "Must mint exactly 1 protocol token"
+        assert our_minted.get(protocol_token_name, 0) == 1, "Must mint exactly 1 protocol token"
         assert our_minted.get(user_token_name, 0) == 1, "Must mint exactly 1 user token"
 
     elif isinstance(redeemer, Burn):

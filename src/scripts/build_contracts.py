@@ -11,9 +11,7 @@ from typing import Any, Optional
 from opshin import build
 
 
-def build_contract(
-    contract_path: str, output_dir: str, contract_name: str
-) -> Optional[Any]:
+def build_contract(contract_path: str, output_dir: str, contract_name: str) -> Optional[Any]:
     """
     Build a single OpShin contract
     """

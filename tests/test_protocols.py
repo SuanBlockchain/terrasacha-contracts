@@ -187,13 +187,11 @@ class TestUtilityFunctions(MockCommon):
         """Test that unique token names are generated correctly"""
         oref1 = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         oref2 = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
-        oref3 = self.create_mock_oref(
-            bytes.fromhex("a" * 64), 1
-        )  # Same tx, different index
+        oref3 = self.create_mock_oref(bytes.fromhex("a" * 64), 1)  # Same tx, different index
 
-        token1 = unique_token_name(oref1, PREFIX_PROTOCOL_NFT)
-        token2 = unique_token_name(oref2, PREFIX_PROTOCOL_NFT)
-        token3 = unique_token_name(oref3, PREFIX_PROTOCOL_NFT)
+        token1 = unique_token_name(oref1, PREFIX_REFERENCE_NFT)
+        token2 = unique_token_name(oref2, PREFIX_REFERENCE_NFT)
+        token3 = unique_token_name(oref3, PREFIX_REFERENCE_NFT)
 
         # All tokens should be different
         assert token1 != token2
@@ -201,39 +199,27 @@ class TestUtilityFunctions(MockCommon):
         assert token2 != token3
 
         # All should start with the prefix
-        assert token1.startswith(PREFIX_PROTOCOL_NFT)
-        assert token2.startswith(PREFIX_PROTOCOL_NFT)
-        assert token3.startswith(PREFIX_PROTOCOL_NFT)
+        assert token1.startswith(PREFIX_REFERENCE_NFT)
+        assert token2.startswith(PREFIX_REFERENCE_NFT)
+        assert token3.startswith(PREFIX_REFERENCE_NFT)
 
         expected_token_name1 = append_byte_string(
-            PREFIX_PROTOCOL_NFT,
-            sha3_256(
-                append_byte_string(
-                    oref1.id.tx_id, cons_byte_string(oref1.idx % 256, b"")
-                )
-            ),
+            PREFIX_REFERENCE_NFT,
+            sha3_256(append_byte_string(oref1.id.tx_id, cons_byte_string(oref1.idx % 256, b""))),
         )
         if len(expected_token_name1) > 32:
             expected_token_name1 = slice_byte_string(0, 32, expected_token_name1)
 
         expected_token_name2 = append_byte_string(
-            PREFIX_PROTOCOL_NFT,
-            sha3_256(
-                append_byte_string(
-                    oref2.id.tx_id, cons_byte_string(oref2.idx % 256, b"")
-                )
-            ),
+            PREFIX_REFERENCE_NFT,
+            sha3_256(append_byte_string(oref2.id.tx_id, cons_byte_string(oref2.idx % 256, b""))),
         )
         if len(expected_token_name2) > 32:
             expected_token_name2 = slice_byte_string(0, 32, expected_token_name2)
 
         expected_token_name3 = append_byte_string(
-            PREFIX_PROTOCOL_NFT,
-            sha3_256(
-                append_byte_string(
-                    oref3.id.tx_id, cons_byte_string(oref3.idx % 256, b"")
-                )
-            ),
+            PREFIX_REFERENCE_NFT,
+            sha3_256(append_byte_string(oref3.id.tx_id, cons_byte_string(oref3.idx % 256, b""))),
         )
         if len(expected_token_name3) > 32:
             expected_token_name3 = slice_byte_string(0, 32, expected_token_name3)
@@ -248,18 +234,14 @@ class TestUtilityFunctions(MockCommon):
         oref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
 
         # Create context with the UTXO
-        address = Address(
-            PubKeyCredential(bytes.fromhex("c" * 56)), NoStakingCredential()
-        )
+        address = Address(PubKeyCredential(bytes.fromhex("c" * 56)), NoStakingCredential())
         consumed_output = self.create_mock_tx_out(address)
 
         input_info = self.create_mock_tx_in_info(oref, consumed_output)
         # input_info = TxInInfo(oref, consumed_output)
         tx_info = self.create_mock_tx_info(inputs=[input_info])
 
-        context = self.create_mock_script_context(
-            Minting(bytes.fromhex("c" * 56)), tx_info
-        )
+        context = self.create_mock_script_context(Minting(bytes.fromhex("c" * 56)), tx_info)
 
         # Should find the UTXO
         assert has_utxo(context, oref) == True
@@ -272,9 +254,7 @@ class TestUtilityFunctions(MockCommon):
     def test_only_one_input_from_address(self):
         """Test only_one_input_from_address utility function"""
         address1 = self.sample_address
-        address2 = Address(
-            PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential()
-        )
+        address2 = Address(PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential())
 
         # Create inputs
         input1 = self.create_mock_tx_in_info(
@@ -305,9 +285,7 @@ class TestUtilityFunctions(MockCommon):
     def test_only_one_output_to_address(self):
         """Test only_one_output_to_address utility function"""
         address1 = self.sample_address
-        address2 = Address(
-            PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential()
-        )
+        address2 = Address(PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential())
 
         # Create outputs
         output1 = self.create_mock_tx_out(address1)
@@ -318,9 +296,7 @@ class TestUtilityFunctions(MockCommon):
         assert only_one_output_to_address(address1, [output1, output2]) == True
 
         # Test with two outputs to address1
-        assert (
-            only_one_output_to_address(address1, [output1, output2, output3]) == False
-        )
+        assert only_one_output_to_address(address1, [output1, output2, output3]) == False
 
         # Test with no outputs to address1
         assert only_one_output_to_address(address1, [output2]) == False
@@ -341,9 +317,7 @@ class TestUtilityFunctions(MockCommon):
         assert amount_of_token_in_output(token, output_with_token) == 5
 
         # Test output without the token
-        output_without_token = self.create_mock_tx_out(
-            self.sample_address, value={b"": 2000000}
-        )
+        output_without_token = self.create_mock_tx_out(self.sample_address, value={b"": 2000000})
         assert amount_of_token_in_output(token, output_without_token) == 0
 
         # Test output with different policy
@@ -393,13 +367,9 @@ class TestUtilityFunctions(MockCommon):
             self.create_mock_tx_out(contract_address),  # Same address
         )
 
-        tx_info_duplicate = self.create_mock_tx_info(
-            inputs=[correct_input, duplicate_input]
-        )
+        tx_info_duplicate = self.create_mock_tx_info(inputs=[correct_input, duplicate_input])
 
-        with pytest.raises(
-            AssertionError, match="More than one input from the contract address"
-        ):
+        with pytest.raises(AssertionError, match="More than one input from the contract address"):
             resolve_linear_input(tx_info_duplicate, 0, spending_purpose)
 
     def test_resolve_linear_output(self):
@@ -428,13 +398,9 @@ class TestUtilityFunctions(MockCommon):
 
         # Test failure case - multiple outputs to same address
         duplicate_output = self.create_mock_tx_out(contract_address)  # Same address
-        tx_info_duplicate = self.create_mock_tx_info(
-            outputs=[correct_output, duplicate_output]
-        )
+        tx_info_duplicate = self.create_mock_tx_info(outputs=[correct_output, duplicate_output])
 
-        with pytest.raises(
-            AssertionError, match="More than one output to the contract address"
-        ):
+        with pytest.raises(AssertionError, match="More than one output to the contract address"):
             resolve_linear_output(previous_input, tx_info_duplicate, 0)
 
     def test_check_token_present(self):
@@ -450,9 +416,7 @@ class TestUtilityFunctions(MockCommon):
         assert check_token_present(policy_id, output_with_token) == True
 
         # Test token not present - no policy
-        output_no_policy = self.create_mock_tx_out(
-            self.sample_address, value={b"": 2000000}
-        )
+        output_no_policy = self.create_mock_tx_out(self.sample_address, value={b"": 2000000})
         assert check_token_present(policy_id, output_no_policy) == False
 
         # Test token present with amount 1 (minimum positive)
@@ -553,9 +517,7 @@ class TestProtocol(MockCommon):
             self.script_address, value={b"": 2000000}  # Only ADA
         )
 
-        with pytest.raises(
-            AssertionError, match="Token not found in transaction input"
-        ):
+        with pytest.raises(AssertionError, match="Token not found in transaction input"):
             extract_token_from_input(protocol_input)
 
     def test_validate_datum_update_success(self):
@@ -654,9 +616,7 @@ class TestProtocol(MockCommon):
             projects=[bytes.fromhex("b" * 56)],
         )
 
-        with pytest.raises(
-            AssertionError, match="Protocol must have at least one admin"
-        ):
+        with pytest.raises(AssertionError, match="Protocol must have at least one admin"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_too_many_admins_fails(self):
@@ -722,9 +682,7 @@ class TestProtocol(MockCommon):
             projects=[],  # Empty projects list
         )
 
-        with pytest.raises(
-            AssertionError, match="Protocol must have at least one project"
-        ):
+        with pytest.raises(AssertionError, match="Protocol must have at least one project"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_too_many_projects_fails(self):
@@ -745,9 +703,7 @@ class TestProtocol(MockCommon):
             projects=too_many_projects,
         )
 
-        with pytest.raises(
-            AssertionError, match="Protocol cannot have more than 10 projects"
-        ):
+        with pytest.raises(AssertionError, match="Protocol cannot have more than 10 projects"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_projects_change_success(self):
@@ -779,10 +735,8 @@ class TestProtocol(MockCommon):
         oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
         policy_id = self.sample_policy_id
-        protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
-        user_token_name = unique_token_name(
-            oref_protocol, PREFIX_USER_NFT
-        )  # Same oref for pairing
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)  # Same oref for pairing
 
         # Create old datum
         old_datum = DatumProtocol(
@@ -846,10 +800,8 @@ class TestProtocol(MockCommon):
         oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
         policy_id = self.sample_policy_id
-        protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
-        user_token_name = unique_token_name(
-            oref_protocol, PREFIX_USER_NFT
-        )  # Correct pairing
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)  # Correct pairing
 
         # Create datums
         old_datum = self.create_mock_datum_protocol()
@@ -905,7 +857,7 @@ class TestProtocol(MockCommon):
         policy_id = self.sample_policy_id
         different_policy_id = bytes.fromhex("f" * 56)  # Completely different policy
 
-        protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(
             oref_protocol, PREFIX_USER_NFT
         )  # Correct name but will be under wrong policy
@@ -966,7 +918,7 @@ class TestProtocol(MockCommon):
         oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
         policy_id = self.sample_policy_id
-        protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)
 
         # Create datums with invalid change (too many admins)
@@ -1026,7 +978,7 @@ class TestProtocol(MockCommon):
         oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
         policy_id = self.sample_policy_id
-        protocol_token_name = unique_token_name(oref_protocol, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)
 
         old_datum = self.create_mock_datum_protocol()
@@ -1091,9 +1043,7 @@ class TestProtocol(MockCommon):
 
         # Create tx_info with admin signature
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[admin_pkh]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[admin_pkh])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should not raise any exception
@@ -1125,9 +1075,7 @@ class TestProtocol(MockCommon):
 
         # Create tx_info with only admin2 signature (should be enough)
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[admin2_pkh]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[admin2_pkh])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should not raise any exception
@@ -1258,9 +1206,7 @@ class TestProtocol(MockCommon):
         # Create tx_info with any signature (won't matter since admin list is empty)
         random_pkh = bytes.fromhex("abcdef" + "0" * 50)
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[random_pkh]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[random_pkh])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should fail due to empty admin list
@@ -1333,9 +1279,7 @@ class TestProtocol(MockCommon):
 
         # Create tx_info with valid admin signature
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[valid_admin]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[valid_admin])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should not raise any exception
@@ -1368,13 +1312,11 @@ class TestMintingContract(MockCommon):
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
         # Generate expected token names
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Create mint value
-        mint_value = {
-            self.sample_policy_id: {protocol_token_name: 1, user_token_name: 1}
-        }
+        mint_value = {self.sample_policy_id: {protocol_token_name: 1, user_token_name: 1}}
 
         # Create transaction info
         tx_info = self.create_mock_tx_info(inputs=[consumed_input], mint=mint_value)
@@ -1386,9 +1328,7 @@ class TestMintingContract(MockCommon):
         # Create redeemer
         redeemer = Mint()
 
-        protocol_nft_validator(
-            consumed_utxo_ref, redeemer, context
-        )  # unique_utxo_index = 0
+        protocol_nft_validator(consumed_utxo_ref, redeemer, context)  # unique_utxo_index = 0
 
     def test_mint_wrong_token_count_fails(self):
         """Test minting fails when not exactly 2 tokens are minted"""
@@ -1396,7 +1336,7 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Try minting 3 tokens instead of 2
@@ -1424,7 +1364,7 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Mint 2 protocol tokens instead of 1
@@ -1451,7 +1391,7 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Mint 0 user tokens
@@ -1478,13 +1418,11 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Burn tokens (negative amounts)
-        mint_value = {
-            self.sample_policy_id: {protocol_token_name: -1, user_token_name: -1}
-        }
+        mint_value = {self.sample_policy_id: {protocol_token_name: -1, user_token_name: -1}}
 
         # Create outputs with no tokens of this policy
         output_no_tokens = self.create_mock_tx_out(
@@ -1511,7 +1449,7 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Burn tokens (negative amounts)
@@ -1552,13 +1490,11 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
 
         # Try to burn with positive amount
         mint_value = {
-            self.sample_policy_id: {
-                protocol_token_name: 1  # Positive amount (should be negative)
-            }
+            self.sample_policy_id: {protocol_token_name: 1}  # Positive amount (should be negative)
         }
 
         tx_info = self.create_mock_tx_info(inputs=[consumed_input], mint=mint_value)
@@ -1580,13 +1516,11 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
 
         # Burn tokens (negative amounts)
-        mint_value = {
-            self.sample_policy_id: {protocol_token_name: -1, user_token_name: -1}
-        }
+        mint_value = {self.sample_policy_id: {protocol_token_name: -1, user_token_name: -1}}
 
         # Create output that contains tokens of this policy
         output_with_tokens = self.create_mock_tx_out(
@@ -1606,9 +1540,7 @@ class TestMintingContract(MockCommon):
 
         redeemer = Burn()
 
-        with pytest.raises(
-            AssertionError, match="Cannot send tokens to outputs when burning"
-        ):
+        with pytest.raises(AssertionError, match="Cannot send tokens to outputs when burning"):
             protocol_nft_validator(consumed_utxo_ref, redeemer, context)
 
     def test_invalid_redeemer_type_fails(self):
@@ -1637,12 +1569,10 @@ class TestMintingContract(MockCommon):
 
         other_input = self.create_mock_tx_in_info(other_utxo_ref, other_utxo)
 
-        protocol_token_name = unique_token_name(other_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(other_utxo_ref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(other_utxo_ref, PREFIX_USER_NFT)
 
-        mint_value = {
-            self.sample_policy_id: {protocol_token_name: 1, user_token_name: 1}
-        }
+        mint_value = {self.sample_policy_id: {protocol_token_name: 1, user_token_name: 1}}
 
         tx_info = self.create_mock_tx_info(
             inputs=[other_input], mint=mint_value  # consumed_input is at index 1
@@ -1665,7 +1595,7 @@ class TestMintingContract(MockCommon):
         consumed_utxo = self.create_mock_tx_out(self.sample_address)
         consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
 
-        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_PROTOCOL_NFT)
+        protocol_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
 
         # Mint only protocol token, not user token
         mint_value = {
