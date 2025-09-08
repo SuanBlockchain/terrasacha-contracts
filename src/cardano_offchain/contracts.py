@@ -7,6 +7,7 @@ Handles contract compilation, state management, and persistence.
 
 import json
 import pathlib
+import sys
 import time
 from typing import Any, Dict, List, Optional
 
@@ -163,6 +164,16 @@ class ContractManager:
         except Exception:
             return False
 
+    def _set_recursion_limit(self, limit: int = 2000):
+
+        # Check if the new limit is greater than the current one
+        if limit > sys.getrecursionlimit():
+            # Set the new recursion limit
+            sys.setrecursionlimit(limit)
+            print("Recursion limit updated successfully.")
+        else:
+            print("New limit must be greater than the current limit.")
+
     def get_contract_status(self, address: pc.Address) -> str:
         """
         Get current contract compilation status
@@ -250,6 +261,7 @@ class ContractManager:
                     compiled_contracts["protocol"].policy_id,
                 )
                 if protocol_policy_id:
+                    self._set_recursion_limit(2000)
                     project_contract = build(project_path, protocol_policy_id)
                     compiled_contracts["project"] = PlutusContract(project_contract)
 

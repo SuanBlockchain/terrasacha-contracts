@@ -2,7 +2,6 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
-
 @dataclass()
 class DatumProjectParams(PlutusData):
     CONSTR_ID = 1
@@ -50,7 +49,7 @@ class DatumProject(PlutusData):
 @dataclass()
 class UpdateProject(PlutusData):
     CONSTR_ID = 1
-    protocol_input_index: int
+    # protocol_input_index: int
     project_input_index: int
     user_input_index: int
     project_output_index: int
@@ -61,9 +60,7 @@ class EndProject(PlutusData):
     CONSTR_ID = 2
     project_input_index: int
 
-
 RedeemerProject = Union[UpdateProject, EndProject]
-
 
 def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> None:
     """
@@ -152,14 +149,13 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
 
     # 3. Total supply and current supply must be > 0
     assert new_datum.project_token.total_supply > 0, "Total supply must be greater than zero"
-    assert new_datum.project_token.current_supply > 0, "Current supply must be greater than zero"
+    assert new_datum.project_token.current_supply >= 0, "Current supply must be greater than zero"
 
     # 4. Project state can only move forward (0->1->2->3)
     assert (
         new_datum.params.project_state >= old_datum.params.project_state
     ), "Project state can only move forward"
     assert new_datum.params.project_state <= 3, "Invalid project state (must be 0, 1, 2, or 3)"
-
 
 def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
     """
@@ -170,7 +166,6 @@ def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
     project_owner = input_datum.params.owner
 
     assert project_owner in signatories, "EndProject requires signature from project owner"
-
 
 def validator(
     protocol_policy_id: PolicyId,
@@ -201,6 +196,12 @@ def validator(
         ), "User does not have required token"
 
         validate_nft_continues(project_output, project_token)
+
+        protocol_reference_input = tx_info.reference_inputs[0].resolved
+        protocol_datum = protocol_reference_input.datum
+        assert isinstance(protocol_datum, SomeOutputDatum)
+        protocol_datum_value: DatumProtocol = protocol_datum.datum
+        assert any([project == datum_project.params.project_id for project in protocol_datum_value.projects]), "Project must be listed in protocol datum"
 
         project_datum = project_output.datum
         assert isinstance(project_datum, SomeOutputDatum)

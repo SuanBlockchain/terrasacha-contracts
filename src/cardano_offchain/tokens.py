@@ -349,13 +349,10 @@ class TokenOperations:
                 return {"success": False, "error": "Required contract not compiled"}
 
             # Get contract info
-            minting_script = protocol_nfts_contract.cbor
             protocol_script = protocol_contract.cbor
             minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
             protocol_address = protocol_contract.testnet_addr
 
-            # Create transaction builder
-            builder = pc.TransactionBuilder(self.context)
 
             # Find protocol UTXO
             protocol_utxos = self.context.utxos(protocol_address)
@@ -370,19 +367,7 @@ class TokenOperations:
                     "success": False,
                     "error": "No protocol UTXO found with specified policy ID",
                 }
-
-            # Add protocol UTXO as script input
-            builder.add_script_input(
-                protocol_utxo_to_spend,
-                script=protocol_script,
-                redeemer=pc.Redeemer(
-                    UpdateProtocol(
-                        protocol_input_index=0,
-                        user_input_index=1,
-                        protocol_output_index=0,
-                    )
-                ),
-            )
+            
             # Find user UTXO
             if user_address is None:
                 user_address = self.wallet.get_address(0)
@@ -399,12 +384,30 @@ class TokenOperations:
                     "success": False,
                     "error": "No user UTXO found with specified policy ID",
                 }
+            
+            payment_utxos = user_utxos
+            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [protocol_utxo_to_spend, user_utxo_to_spend])
+            protocol_index = all_inputs_utxos.index(protocol_utxo_to_spend)
+            user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
-            # Add user UTXO as input
-            builder.add_input(user_utxo_to_spend)
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
 
-            # Add user address to pay for transaction
-            builder.add_input_address(user_address)
+            for u in payment_utxos:
+                builder.add_input(u)
+
+            # Add protocol UTXO as script input
+            builder.add_script_input(
+                protocol_utxo_to_spend,
+                script=protocol_script,
+                redeemer=pc.Redeemer(
+                    UpdateProtocol(
+                        protocol_input_index=protocol_index,
+                        user_input_index=user_index,
+                        protocol_output_index=0,
+                    )
+                ),
+            )
 
             # Update protocol datum
             old_datum = DatumProtocol.from_cbor(protocol_utxo_to_spend.output.datum.cbor)
@@ -421,9 +424,6 @@ class TokenOperations:
                     oracle_id=old_datum.oracle_id,
                     projects=old_datum.projects,
                 )
-
-            # Validate datum update
-            # self.validate_datum_update(old_datum, new_datum)
 
             # Add protocol output
             protocol_asset = self.transactions.extract_asset_from_utxo(
@@ -800,17 +800,19 @@ class TokenOperations:
             project_nfts_contract = self.contract_manager.get_contract("project_nfts")
             project_contract = self.contract_manager.get_contract("project")
 
-            if not project_contract or not project_nfts_contract:
+            protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
+            protocol_contract = self.contract_manager.get_contract("protocol")
+
+            if not project_contract or not project_nfts_contract or not protocol_contract:
                 return {"success": False, "error": "Required contract not compiled"}
 
             # Get contract info
-            minting_script = project_nfts_contract.cbor
             project_script = project_contract.cbor
             minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
-            project_address = project_contract.testnet_addr
+            protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
 
-            # Create transaction builder
-            builder = pc.TransactionBuilder(self.context)
+            project_address = project_contract.testnet_addr
+            protocol_address = protocol_contract.testnet_addr
 
             # Find project UTXO
             project_utxos = self.context.utxos(project_address)
@@ -825,21 +827,7 @@ class TokenOperations:
                     "success": False,
                     "error": "No project UTXO found with specified policy ID",
                 }
-
-            # Add project UTXO as script input
-            builder.add_script_input(
-                project_utxo_to_spend,
-                script=project_script,
-                redeemer=pc.Redeemer(
-                    UpdateProject(
-                        protocol_input_index=0,  # This might need adjustment based on actual usage
-                        project_input_index=0,
-                        user_input_index=1,
-                        project_output_index=0,
-                    )
-                ),
-            )
-
+            
             # Find user UTXO
             if user_address is None:
                 user_address = self.wallet.get_address(0)
@@ -857,11 +845,46 @@ class TokenOperations:
                     "error": "No user UTXO found with specified policy ID",
                 }
 
-            # Add user UTXO as input
-            builder.add_input(user_utxo_to_spend)
+            payment_utxos = user_utxos
+            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend, user_utxo_to_spend])
+            project_index = all_inputs_utxos.index(project_utxo_to_spend)
+            user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
-            # Add user address to pay for transaction
-            builder.add_input_address(user_address)
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+            for u in payment_utxos:
+                builder.add_input(u)
+
+            # Add project UTXO as script input
+            builder.add_script_input(
+                project_utxo_to_spend,
+                script=project_script,
+                redeemer=pc.Redeemer(
+                    UpdateProject(
+                        project_input_index=project_index,
+                        user_input_index=user_index,
+                        project_output_index=0,
+                    )
+                ),
+            )
+
+            # Add protocol UTXO as input
+            protocol_utxos = self.context.utxos(protocol_address)
+            if not protocol_utxos:
+                return {"success": False, "error": "No protocol UTXOs found"}
+            
+            protocol_utxo = self.transactions.find_utxo_by_policy_id(
+                protocol_utxos, protocol_minting_policy_id
+            )
+            if not protocol_utxo:
+                return {
+                    "success": False,
+                    "error": "No protocol UTXO found with specified policy ID",
+                }
+            # # builder.add_input(protocol_utxo)
+            builder.reference_inputs.add(protocol_utxo)
 
             # Update project datum
             old_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)
@@ -872,7 +895,6 @@ class TokenOperations:
                 }
 
             if new_datum is None:
-                # Create new datum with updated project state (move forward one state)
                 new_project_state = min(old_datum.params.project_state + 1, 3)
                 new_datum = DatumProject(
                     protocol_policy_id=old_datum.protocol_policy_id,

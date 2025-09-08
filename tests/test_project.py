@@ -247,6 +247,32 @@ class MockCommonProject:
 
         return ScriptContext(tx_info=tx_info, purpose=purpose)
 
+    def create_mock_protocol_datum(
+        self,
+        protocol_admin: List[bytes] = None,
+        protocol_fee: int = 100000,
+        oracle_id: bytes = None,
+        projects: List[bytes] = None,
+    ):
+        """Create a mock protocol datum from the protocol validator"""
+        from src.terrasacha_contracts.validators.project import DatumProtocol
+        
+        if protocol_admin is None:
+            protocol_admin = [bytes.fromhex("a" * 56)]
+        
+        if oracle_id is None:
+            oracle_id = bytes.fromhex("b" * 56)
+        
+        if projects is None:
+            projects = []
+            
+        return DatumProtocol(
+            protocol_admin=protocol_admin,
+            protocol_fee=protocol_fee,
+            oracle_id=oracle_id,
+            projects=projects,
+        )
+
 
 class TestProjectValidationFunctions(MockCommonProject):
     """Test standalone project validation functions"""
@@ -903,7 +929,8 @@ class TestProjectValidator(MockCommonProject):
         """Test successful UpdateProject validation"""
         # Create test data
         oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
         protocol_token_name = b"PROTO_token"
         user_token_name = b"USER_token"
 
@@ -926,7 +953,18 @@ class TestProjectValidator(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
+        # Create protocol datum WITH the project ID
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[old_datum.params.project_id]  # Include the project ID
+        )
+
         # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
         project_input_utxo = self.create_mock_tx_out(
             self.project_script_address,
             value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
@@ -949,12 +987,13 @@ class TestProjectValidator(MockCommonProject):
         )
 
         # Create transaction inputs
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
         # Create transaction info
         tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input],  # user at index 0, project at index 1
+            inputs=[protocol_input, project_input, user_input],  # protocol at 0, project at 1, user at 2
             outputs=[project_output_utxo],
         )
 
@@ -966,7 +1005,7 @@ class TestProjectValidator(MockCommonProject):
         redeemer = UpdateProject(
             protocol_input_index=0,
             project_input_index=1,
-            user_input_index=0,
+            user_input_index=2,
             project_output_index=0,
         )
 
@@ -977,13 +1016,25 @@ class TestProjectValidator(MockCommonProject):
         """Test UpdateProject fails when user doesn't have required project token"""
         # Create test data
         oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
         protocol_token_name = b"PROTO_token"
 
         old_datum = self.create_mock_datum_project()
         new_datum = old_datum  # Same datum for simplicity
 
+        # Create protocol datum with the project ID
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[old_datum.params.project_id]
+        )
+
         # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
         project_input_utxo = self.create_mock_tx_out(
             self.project_script_address,
             value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
@@ -1002,11 +1053,12 @@ class TestProjectValidator(MockCommonProject):
         )
 
         # Create transaction
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
         tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input], outputs=[project_output_utxo]
+            inputs=[protocol_input, project_input, user_input], outputs=[project_output_utxo]
         )
 
         spending_purpose = Spending(oref_project)
@@ -1015,7 +1067,7 @@ class TestProjectValidator(MockCommonProject):
         redeemer = UpdateProject(
             protocol_input_index=0,
             project_input_index=1,
-            user_input_index=0,
+            user_input_index=2,
             project_output_index=0,
         )
 
@@ -1026,14 +1078,26 @@ class TestProjectValidator(MockCommonProject):
         """Test UpdateProject fails when user doesn't have protocol token"""
         # Create test data
         oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
         protocol_token_name = b"PROTO_token"
         user_token_name = b"USER_token"
 
         old_datum = self.create_mock_datum_project()
         new_datum = old_datum
 
+        # Create protocol datum with the project ID
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[old_datum.params.project_id]
+        )
+
         # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
         project_input_utxo = self.create_mock_tx_out(
             self.project_script_address,
             value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
@@ -1057,11 +1121,12 @@ class TestProjectValidator(MockCommonProject):
         )
 
         # Create transaction
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
         tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input], outputs=[project_output_utxo]
+            inputs=[protocol_input, project_input, user_input], outputs=[project_output_utxo]
         )
 
         spending_purpose = Spending(oref_project)
@@ -1070,7 +1135,7 @@ class TestProjectValidator(MockCommonProject):
         redeemer = UpdateProject(
             protocol_input_index=0,
             project_input_index=1,
-            user_input_index=0,
+            user_input_index=2,
             project_output_index=0,
         )
 
@@ -1082,7 +1147,8 @@ class TestProjectValidator(MockCommonProject):
         """Test UpdateProject fails with invalid datum update (owner change)"""
         # Create test data
         oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
         protocol_token_name = b"PROTO_token"
         user_token_name = b"USER_token"
 
@@ -1106,7 +1172,18 @@ class TestProjectValidator(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
+        # Create protocol datum with the project ID
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[old_datum.params.project_id]
+        )
+
         # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
         project_input_utxo = self.create_mock_tx_out(
             self.project_script_address,
             value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
@@ -1129,11 +1206,12 @@ class TestProjectValidator(MockCommonProject):
         )
 
         # Create transaction
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
         tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input], outputs=[project_output_utxo]
+            inputs=[protocol_input, project_input, user_input], outputs=[project_output_utxo]
         )
 
         spending_purpose = Spending(oref_project)
@@ -1142,7 +1220,7 @@ class TestProjectValidator(MockCommonProject):
         redeemer = UpdateProject(
             protocol_input_index=0,
             project_input_index=1,
-            user_input_index=0,
+            user_input_index=2,
             project_output_index=0,
         )
 
@@ -1201,6 +1279,164 @@ class TestProjectValidator(MockCommonProject):
             AssertionError, match="EndProject requires signature from project owner"
         ):
             project_validator(self.protocol_policy_id, project_datum, redeemer, context)
+
+    def test_validator_update_project_not_listed_in_protocol_fails(self):
+        """Test UpdateProject fails when project ID is not listed in protocol datum"""
+        # Create test data
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+        user_token_name = b"USER_token"
+
+        old_datum = self.create_mock_datum_project()
+        new_datum = old_datum  # Same datum for simplicity
+
+        # Create protocol datum WITHOUT the project ID
+        different_project_id = bytes.fromhex("abcdef123456789a" * 4)  # 64 hex chars = 32 bytes
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[different_project_id]  # Different project ID
+        )
+
+        # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address,
+            value={
+                b"": 2000000,
+                self.sample_policy_id: {user_token_name: 1},
+                self.protocol_policy_id: {b"USER_NFT": 1},
+            },
+        )
+
+        # Create transaction inputs
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
+        project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
+        user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
+
+        # Create transaction info
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input, project_input, user_input],  # protocol at 0, project at 1, user at 2
+            outputs=[project_output_utxo],
+        )
+
+        # Create script context
+        spending_purpose = Spending(oref_project)
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = UpdateProject(
+            protocol_input_index=0,
+            project_input_index=1,
+            user_input_index=2,
+            project_output_index=0,
+        )
+
+        with pytest.raises(AssertionError, match="Project must be listed in protocol datum"):
+            project_validator(self.protocol_policy_id, old_datum, redeemer, context)
+
+    def test_validator_update_project_listed_in_protocol_succeeds(self):
+        """Test UpdateProject succeeds when project ID is properly listed in protocol datum"""
+        # Create test data
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        oref_protocol = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("c" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+        user_token_name = b"USER_token"
+
+        old_datum = self.create_mock_datum_project()
+
+        # Create new datum with metadata change
+        new_params = DatumProjectParams(
+            owner=old_datum.params.owner,
+            project_id=old_datum.params.project_id,
+            project_metadata=b"https://updated-metadata.com/project.json",  # Changed
+            project_state=old_datum.params.project_state,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=new_params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        # Create protocol datum WITH the project ID
+        protocol_datum = self.create_mock_protocol_datum(
+            projects=[old_datum.params.project_id]  # Include the project ID
+        )
+
+        # Create UTxOs
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.protocol_script_address,
+            value={b"": 5000000, self.protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum),
+        )
+
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address,
+            value={
+                b"": 2000000,
+                self.sample_policy_id: {user_token_name: 1},
+                self.protocol_policy_id: {b"USER_NFT": 1},
+            },
+        )
+
+        # Create transaction inputs
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
+        project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
+        user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
+
+        # Create transaction info
+        tx_info = self.create_mock_tx_info(
+            inputs=[protocol_input, project_input, user_input],  # protocol at 0, project at 1, user at 2
+            outputs=[project_output_utxo],
+        )
+
+        # Create script context
+        spending_purpose = Spending(oref_project)
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = UpdateProject(
+            protocol_input_index=0,
+            project_input_index=1,
+            user_input_index=2,
+            project_output_index=0,
+        )
+
+        # Should not raise any exception
+        project_validator(self.protocol_policy_id, old_datum, redeemer, context)
 
     def test_validator_invalid_redeemer_type(self):
         """Test validator fails with invalid redeemer type"""

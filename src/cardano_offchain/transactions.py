@@ -187,6 +187,12 @@ class CardanoTransactions:
             "explorer_url": self.chain_context.get_explorer_url(tx_id),
             "network": self.chain_context.network,
         }
+    
+    def sorted_utxos(self, txs: List[pc.UTxO]):
+        return sorted(
+            txs,
+            key=lambda u: (u.input.transaction_id.payload, u.input.index),
+        )
 
     def find_utxo_by_policy_id(self, utxos: List[pc.UTxO], policy_id: pc.ScriptHash) -> pc.UTxO:
         """Find UTXOs that contain tokens from a specific policy ID.

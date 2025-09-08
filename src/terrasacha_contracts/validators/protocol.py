@@ -4,15 +4,6 @@ from terrasacha_contracts.util import *
 
 
 @dataclass()
-class DatumProtocol(PlutusData):
-    CONSTR_ID = 0
-    protocol_admin: List[bytes]  # List of admin public key hashes
-    protocol_fee: int  # Protocol fee in lovelace
-    oracle_id: PolicyId  # Oracle identifier
-    projects: List[bytes]  # List of project IDs registered
-
-
-@dataclass()
 class UpdateProtocol(PlutusData):
     CONSTR_ID = 1
     protocol_input_index: int
@@ -64,7 +55,6 @@ def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) ->
     # Validate protocol_admin updates
     assert len(new_datum.protocol_admin) > 0, "Protocol must have at least one admin"
     assert len(new_datum.protocol_admin) <= 3, "Protocol cannot have more than 10 admins"
-    assert len(new_datum.projects) > 0, "Protocol must have at least one project"
 
     # Validate project list updates
     assert len(new_datum.projects) <= 10, "Protocol cannot have more than 10 projects"
