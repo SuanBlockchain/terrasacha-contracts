@@ -35,12 +35,43 @@ from tests.menu.menu_formatter import MenuFormatter
 class CardanoCLI:
     """Console interface for Cardano dApp operations"""
 
-    def resolve_address_input(self, input_str: str) -> Optional[str]:
+    def switch_to_wallet(self, wallet_name: str) -> bool:
+        """
+        Switch the active wallet and update all necessary references
+        
+        Args:
+            wallet_name: Name of the wallet to switch to
+            
+        Returns:
+            True if switch was successful, False otherwise
+        """
+        if wallet_name not in self.wallet_manager.get_wallet_names():
+            return False
+            
+        try:
+            if self.transactions.set_active_wallet(wallet_name):
+                # Update the wallet manager's default wallet
+                self.wallet_manager.set_default_wallet(wallet_name)
+                # Update the CLI's wallet reference
+                self.wallet = self.wallet_manager.get_wallet(wallet_name)
+                # Recreate TokenOperations with the new wallet
+                self.token_operations = TokenOperations(
+                    self.wallet, self.chain_context, self.contract_manager, self.transactions
+                )
+                return True
+        except Exception:
+            pass
+            
+        return False
+
+    def resolve_address_input(self, input_str: str, switch_wallet: bool = False) -> Optional[str]:
         """
         Resolve address input - if it's a wallet name, return the main address
+        Optionally switch to that wallet if it's a wallet name
 
         Args:
             input_str: Address string or wallet name
+            switch_wallet: If True, switch active wallet when wallet name is provided
 
         Returns:
             Valid Cardano address string or None if invalid
@@ -49,6 +80,13 @@ class CardanoCLI:
 
         # Check if it's a wallet name
         if input_str in self.wallet_manager.get_wallet_names():
+            if switch_wallet:
+                if self.switch_to_wallet(input_str):
+                    print(f"ℹ Switched to wallet: {input_str}")
+                else:
+                    print(f"⚠ Failed to switch to wallet: {input_str}")
+                    return None
+            
             wallet = self.wallet_manager.get_wallet(input_str)
             return str(wallet.enterprise_address)
 
@@ -225,15 +263,7 @@ class CardanoCLI:
             choice = int(input(f"\nSelect wallet (1-{len(wallets)}): ")) - 1
             if 0 <= choice < len(wallets):
                 wallet_name = wallets[choice]
-                if self.transactions.set_active_wallet(wallet_name):
-                    # Update the wallet manager's default wallet
-                    self.wallet_manager.set_default_wallet(wallet_name)
-                    # Update the CLI's wallet reference
-                    self.wallet = self.wallet_manager.get_wallet(wallet_name)
-                    # Recreate TokenOperations with the new wallet
-                    self.token_operations = TokenOperations(
-                        self.wallet, self.chain_context, self.contract_manager, self.transactions
-                    )
+                if self.switch_to_wallet(wallet_name):
                     print(f"\nActive wallet switched to: {wallet_name}")
                 else:
                     print("Failed to switch wallet.")
@@ -315,7 +345,7 @@ class CardanoCLI:
             print(
                 f"Enterprise: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA"
             )
-            print(f"Available Wallets: {', '.join(self.wallet_manager.get_wallet_names())}")
+            print("ℹ Available wallets: default, project, investor")
 
             to_address_input = input("Recipient address (or wallet name): ").strip()
 
@@ -400,14 +430,32 @@ class CardanoCLI:
         self.menu.print_section("CONTRACT DETAILS")
 
         for name, info in contracts_info["contracts"].items():
-            status = "✓" if info["balance"] > 0 else "○"
-            self.menu.print_contract_info(
-                name=name.upper(),
-                policy_id=info["policy_id"],
-                address=info["address"],
-                balance=info["balance_ada"],
-                status=status,
-            )
+            if info.get("type") == "minting_policy":
+                # For minting policies, only show policy ID
+                self.menu.print_minting_policy_info(
+                    name=name.upper(),
+                    policy_id=info["policy_id"]
+                )
+            else:
+                # For spending validators, show balance info
+                status = "✓" if info["balance"] > 0 else "○"
+                self.menu.print_contract_info(
+                    name=name.upper(),
+                    policy_id=info["policy_id"],
+                    address=info["address"],
+                    balance=info["balance_ada"],
+                    status=status,
+                )
+
+        # Display available project contracts
+        project_contracts = self.contract_manager.list_project_contracts()
+        if len(project_contracts) > 1:
+            self.menu.print_section("AVAILABLE PROJECT CONTRACTS")
+            for i, contract_name in enumerate(project_contracts, 1):
+                is_default = contract_name == "project" or (contract_name == project_contracts[0] and "project" not in project_contracts)
+                status = " (default)" if is_default else ""
+                print(f"│ {i}. {contract_name.upper()}{status}")
+            print()
 
         self.menu.print_footer()
         input("\nPress Enter to continue...")
@@ -436,16 +484,29 @@ class CardanoCLI:
                 return
 
         self.menu.print_info("This will mint two NFTs: one protocol token and one user token")
+        
+        # Show available wallets for user convenience
+        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        
         destin_address_str = self.menu.get_input(
-            "Enter destination address for user token (or press Enter for default)"
+            "Enter destination address or wallet name (or press Enter for default)"
         )
 
         destination_address = None
         if destin_address_str.strip():
-            try:
-                destination_address = pc.Address.from_primitive(destin_address_str.strip())
-            except Exception as e:
-                self.menu.print_error(f"Invalid address format: {e}")
+            # Use the existing resolve_address_input method that supports wallet names
+            resolved_address = self.resolve_address_input(destin_address_str.strip())
+            if resolved_address:
+                try:
+                    destination_address = pc.Address.from_primitive(resolved_address)
+                    # Show resolved address if it was a wallet name
+                    if destin_address_str.strip() in self.wallet_manager.get_wallet_names():
+                        self.menu.print_info(f"Resolved wallet '{destin_address_str.strip()}' to: {resolved_address}")
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address format: {e}")
+                    return
+            else:
+                self.menu.print_error(f"Invalid address or wallet name: {destin_address_str.strip()}")
                 return
         else:
             self.menu.print_info("Using default address (wallet address)")
@@ -485,9 +546,38 @@ class CardanoCLI:
         """Create project submenu"""
         self.menu.print_header("PROJECT CREATION", "Create Project NFTs and Smart Contract")
 
-        # First, check if protocol is deployed
+        # First, check if protocol and project contracts are deployed
         contracts = self.contract_manager.list_contracts()
-        if not contracts or "protocol" not in contracts or "project" not in contracts:
+        
+        # Check for project contract availability and allow selection
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            project_contract = None
+        elif len(project_contracts) == 1:
+            # Only one project contract available
+            project_contract = self.contract_manager.get_project_contract(project_contracts[0])
+            self.menu.print_info(f"Using project contract: {project_contracts[0].upper()}")
+        else:
+            # Multiple project contracts - let user choose
+            self.menu.print_section("PROJECT CONTRACT SELECTION")
+            self.menu.print_info("Multiple project contracts available:")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+            
+            try:
+                choice = int(self.menu.get_input(f"Select project contract (1-{len(project_contracts)})")) - 1
+                if 0 <= choice < len(project_contracts):
+                    selected_project = project_contracts[choice]
+                    project_contract = self.contract_manager.get_project_contract(selected_project)
+                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                else:
+                    self.menu.print_error("Invalid project selection")
+                    return
+            except (ValueError, IndexError):
+                self.menu.print_error("Invalid input for project selection")
+                return
+        
+        if not contracts or "protocol" not in contracts or not project_contract:
             self.menu.print_error("❌ Protocol or Project contracts not available")
             self.menu.print_info("Please compile contracts first (Option 2 in Contract Menu)")
             input("\nPress Enter to continue...")
@@ -594,16 +684,29 @@ class CardanoCLI:
 
         # Destination address
         self.menu.print_section("DESTINATION SETUP")
+        
+        # Show available wallets for user convenience
+        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        
         destin_address_str = self.menu.get_input(
-            "Enter destination address for user token (or press Enter for default)"
+            "Enter destination address or wallet name (or press Enter for default)"
         )
 
         destination_address = None
         if destin_address_str.strip():
-            try:
-                destination_address = pc.Address.from_primitive(destin_address_str.strip())
-            except Exception as e:
-                self.menu.print_error(f"Invalid address format: {e}")
+            # Use the existing resolve_address_input method that supports wallet names
+            resolved_address = self.resolve_address_input(destin_address_str.strip())
+            if resolved_address:
+                try:
+                    destination_address = pc.Address.from_primitive(resolved_address)
+                    # Show resolved address if it was a wallet name
+                    if destin_address_str.strip() in self.wallet_manager.get_wallet_names():
+                        self.menu.print_info(f"Resolved wallet '{destin_address_str.strip()}' to: {resolved_address}")
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address format: {e}")
+                    return
+            else:
+                self.menu.print_error(f"Invalid address or wallet name: {destin_address_str.strip()}")
                 return
         else:
             self.menu.print_info("Using default address (wallet address)")
@@ -666,17 +769,28 @@ class CardanoCLI:
         self.menu.print_info(
             "This will burn protocol and user NFTs (tokens will be permanently destroyed)"
         )
+        self.menu.print_info("ℹ Available wallets: default, project, investor")
         user_address_input = self.menu.get_input(
-            "Enter address containing tokens to burn (or press Enter for default wallet address)"
+            "Enter address or wallet name containing tokens to burn (or press Enter for default wallet address)"
         )
 
         user_address = None
         if user_address_input.strip():
-            try:
-                user_address = pc.Address.from_primitive(user_address_input.strip())
-                self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
-            except Exception as e:
-                self.menu.print_error(f"Invalid address format: {e}")
+            # Use the existing resolve_address_input method that supports wallet names
+            # For burn operations, switch to the wallet if a wallet name is provided
+            resolved_address = self.resolve_address_input(user_address_input.strip(), switch_wallet=True)
+            if resolved_address:
+                try:
+                    user_address = pc.Address.from_primitive(resolved_address)
+                    if user_address_input.strip() in self.wallet_manager.get_wallet_names():
+                        self.menu.print_info(f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}...")
+                    else:
+                        self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address format: {e}")
+                    return
+            else:
+                self.menu.print_error(f"Invalid address or wallet name: {user_address_input.strip()}")
                 return
         else:
             self.menu.print_info("Using default wallet address")
@@ -911,17 +1025,28 @@ class CardanoCLI:
         )
 
         # Option to specify user address
+        self.menu.print_info("ℹ Available wallets: default, project, investor")
         user_address_input = self.menu.get_input(
-            "Enter address containing user tokens (or press Enter for default wallet address)"
+            "Enter address or wallet name containing user tokens (or press Enter for default wallet address)"
         )
 
         user_address = None
         if user_address_input.strip():
-            try:
-                user_address = pc.Address.from_primitive(user_address_input.strip())
-                self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
-            except Exception as e:
-                self.menu.print_error(f"Invalid address format: {e}")
+            # Use the existing resolve_address_input method that supports wallet names
+            # For protocol update operations, switch to the wallet if a wallet name is provided
+            resolved_address = self.resolve_address_input(user_address_input.strip(), switch_wallet=True)
+            if resolved_address:
+                try:
+                    user_address = pc.Address.from_primitive(resolved_address)
+                    if user_address_input.strip() in self.wallet_manager.get_wallet_names():
+                        self.menu.print_info(f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}...")
+                    else:
+                        self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address format: {e}")
+                    return
+            else:
+                self.menu.print_error(f"Invalid address or wallet name: {user_address_input.strip()}")
                 return
         else:
             self.menu.print_info("Using default wallet address")
@@ -1027,27 +1152,66 @@ class CardanoCLI:
             self.menu.print_error("No contracts available for burning")
             return
 
+        # Project contract selection
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            self.menu.print_error("No project contracts found")
+            return
+        elif len(project_contracts) == 1:
+            # Only one project contract available
+            selected_project = project_contracts[0]
+            self.menu.print_info(f"Using project contract: {selected_project.upper()}")
+        else:
+            # Multiple project contracts - let user choose
+            self.menu.print_section("PROJECT CONTRACT SELECTION")
+            self.menu.print_info("Multiple project contracts available:")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+            
+            try:
+                choice = int(self.menu.get_input(f"Select project contract to burn tokens from (1-{len(project_contracts)})")) - 1
+                if 0 <= choice < len(project_contracts):
+                    selected_project = project_contracts[choice]
+                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                else:
+                    self.menu.print_error("Invalid project selection")
+                    return
+            except (ValueError, IndexError):
+                self.menu.print_error("Invalid input for project selection")
+                return
+
         self.menu.print_info(
             "This will burn project and user NFTs (tokens will be permanently destroyed)"
         )
+        self.menu.print_info("ℹ Available wallets: default, project, investor")
         user_address_input = self.menu.get_input(
-            "Enter address containing tokens to burn (or press Enter for default wallet address)"
+            "Enter address or wallet name containing tokens to burn (or press Enter for default wallet address)"
         )
 
         user_address = None
         if user_address_input.strip():
-            try:
-                user_address = pc.Address.from_primitive(user_address_input.strip())
-                self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
-            except Exception as e:
-                self.menu.print_error(f"Invalid address format: {e}")
+            # Use the existing resolve_address_input method that supports wallet names
+            # For project burn operations, switch to the wallet if a wallet name is provided
+            resolved_address = self.resolve_address_input(user_address_input.strip(), switch_wallet=True)
+            if resolved_address:
+                try:
+                    user_address = pc.Address.from_primitive(resolved_address)
+                    if user_address_input.strip() in self.wallet_manager.get_wallet_names():
+                        self.menu.print_info(f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}...")
+                    else:
+                        self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address format: {e}")
+                    return
+            else:
+                self.menu.print_error(f"Invalid address or wallet name: {user_address_input.strip()}")
                 return
         else:
             self.menu.print_info("Using default wallet address")
 
         try:
             self.menu.print_info("Creating project burn transaction...")
-            result = self.token_operations.create_project_burn_transaction(user_address)
+            result = self.token_operations.create_project_burn_transaction(user_address, selected_project)
 
             if not result["success"]:
                 self.menu.print_error(f"Failed to create transaction: {result['error']}")
@@ -1081,8 +1245,36 @@ class CardanoCLI:
 
         # Display current project information
         try:
-            # Get project contracts
-            project_contract = self.contract_manager.get_contract("project")
+            # Get project contracts with selection
+            project_contracts = self.contract_manager.list_project_contracts()
+            if not project_contracts:
+                self.menu.print_error("No project contracts found")
+                return
+            elif len(project_contracts) == 1:
+                # Only one project contract available
+                selected_project = project_contracts[0]
+                project_contract = self.contract_manager.get_project_contract(selected_project)
+                self.menu.print_info(f"Using project contract: {selected_project.upper()}")
+            else:
+                # Multiple project contracts - let user choose
+                self.menu.print_section("PROJECT CONTRACT SELECTION")
+                self.menu.print_info("Multiple project contracts available:")
+                for i, contract_name in enumerate(project_contracts, 1):
+                    print(f"│ {i}. {contract_name.upper()}")
+                
+                try:
+                    choice = int(self.menu.get_input(f"Select project contract to update (1-{len(project_contracts)})")) - 1
+                    if 0 <= choice < len(project_contracts):
+                        selected_project = project_contracts[choice]
+                        project_contract = self.contract_manager.get_project_contract(selected_project)
+                        self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                    else:
+                        self.menu.print_error("Invalid project selection")
+                        return
+                except (ValueError, IndexError):
+                    self.menu.print_error("Invalid input for project selection")
+                    return
+            
             project_nfts_contract = self.contract_manager.get_contract("project_nfts")
 
             if not project_contract or not project_nfts_contract:
@@ -1131,17 +1323,28 @@ class CardanoCLI:
             print(f"│ Certification Count: {len(current_datum.certifications)}")
 
             # Ask for user address
+            self.menu.print_info("ℹ Available wallets: default, project, investor")
             user_address_input = self.menu.get_input(
-                "Enter address containing user tokens (or press Enter for default wallet address)"
+                "Enter address or wallet name containing user tokens (or press Enter for default wallet address)"
             )
 
             user_address = None
             if user_address_input.strip():
-                try:
-                    user_address = pc.Address.from_primitive(user_address_input.strip())
-                    self.menu.print_info(f"Using specified address: {str(user_address)[:50]}...")
-                except Exception as e:
-                    self.menu.print_error(f"Invalid address format: {e}")
+                # Use the existing resolve_address_input method that supports wallet names
+                # For project update operations, switch to the wallet if a wallet name is provided
+                resolved_address = self.resolve_address_input(user_address_input.strip(), switch_wallet=True)
+                if resolved_address:
+                    try:
+                        user_address = pc.Address.from_primitive(resolved_address)
+                        if user_address_input.strip() in self.wallet_manager.get_wallet_names():
+                            self.menu.print_info(f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}...")
+                        else:
+                            self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
+                    except Exception as e:
+                        self.menu.print_error(f"Invalid address format: {e}")
+                        return
+                else:
+                    self.menu.print_error(f"Invalid address or wallet name: {user_address_input.strip()}")
                     return
             else:
                 self.menu.print_info("Using default wallet address")
@@ -1152,7 +1355,7 @@ class CardanoCLI:
                 return
 
             self.menu.print_info("Creating project update transaction...")
-            result = self.token_operations.create_project_update_transaction(user_address)
+            result = self.token_operations.create_project_update_transaction(user_address, None, selected_project)
 
             if not result["success"]:
                 self.menu.print_error(f"Failed to create transaction: {result['error']}")
@@ -1212,18 +1415,19 @@ class CardanoCLI:
             # Display menu options
             self.menu.print_section("CONTRACT OPERATIONS")
             self.menu.print_menu_option("1", "Display Contracts Info", "✓")
-            self.menu.print_menu_option("2", "Compile/Recompile Contracts", "✓")
-            self.menu.print_menu_option("3", "Mint Protocol Tokens", "✓")
-            self.menu.print_menu_option("4", "Burn Tokens", "✓")
-            self.menu.print_menu_option("5", "Update Protocol Datum", "✓")
-            self.menu.print_menu_option("6", "Create Project", "✓")
-            self.menu.print_menu_option("7", "Burn Project Tokens", "✓")
-            self.menu.print_menu_option("8", "Update Project Datum", "✓")
+            self.menu.print_menu_option("2", "Compile/Recompile All Contracts", "✓")
+            self.menu.print_menu_option("3", "Compile New Project Contract Only", "✓")
+            self.menu.print_menu_option("4", "Mint Protocol Tokens", "✓")
+            self.menu.print_menu_option("5", "Burn Tokens", "✓")
+            self.menu.print_menu_option("6", "Update Protocol Datum", "✓")
+            self.menu.print_menu_option("7", "Create Project", "✓")
+            self.menu.print_menu_option("8", "Burn Project Tokens", "✓")
+            self.menu.print_menu_option("9", "Update Project Datum", "✓")
             self.menu.print_separator()
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-8)")
+            choice = self.menu.get_input("Select an option (0-9)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -1241,19 +1445,75 @@ class CardanoCLI:
                 except Exception as e:
                     self.menu.print_error(f"Compilation failed: {e}")
             elif choice == "3":
-                self.test_contracts_menu()
+                self.compile_project_only_menu()
             elif choice == "4":
-                self.burn_tokens_menu()
+                self.test_contracts_menu()
             elif choice == "5":
-                self.update_protocol_menu()
+                self.burn_tokens_menu()
             elif choice == "6":
-                self.create_project_menu()
+                self.update_protocol_menu()
             elif choice == "7":
-                self.burn_project_tokens_menu()
+                self.create_project_menu()
             elif choice == "8":
+                self.burn_project_tokens_menu()
+            elif choice == "9":
                 self.update_project_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
+
+    def compile_project_only_menu(self):
+        """Compile only a new project contract using existing protocol"""
+        self.menu.print_header("PROJECT CONTRACT COMPILATION", "Compile New Project Only")
+        
+        # Check if protocol contract exists
+        if "protocol" not in self.contract_manager.list_contracts():
+            self.menu.print_error("❌ Protocol contract not found!")
+            self.menu.print_info("You must compile the full contract suite first (Option 2)")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Show current project contracts
+        project_contracts = self.contract_manager.list_project_contracts()
+        if project_contracts:
+            self.menu.print_section("EXISTING PROJECT CONTRACTS")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+            print()
+        
+        self.menu.print_info("This will compile a new project contract using the existing protocol contract.")
+        self.menu.print_info("The new project contract will be automatically assigned the next available index.")
+        
+        if not self.menu.confirm_action("Proceed with project contract compilation?"):
+            self.menu.print_info("Compilation cancelled")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Compile project contract
+        try:
+            self.menu.print_info("Compiling project contract...")
+            main_address = self.wallet.get_address(0)
+            result = self.contract_manager.compile_project_contract_only(main_address)
+            
+            if result["success"]:
+                self.menu.print_success("✅ Project contract compiled successfully!")
+                self.menu.print_section("COMPILATION RESULTS")
+                print(f"│ Contract Name: {result['project_name'].upper()}")
+                print(f"│ Policy ID: {result['policy_id']}")
+                print(f"│ Used UTXO: {result.get('used_utxo', 'N/A')}")
+                print(f"│ Saved to Disk: {'✓' if result['saved'] else '✗'}")
+                print()
+                
+                if result["saved"]:
+                    self.menu.print_info("Contract files saved to artifacts/ directory")
+                else:
+                    self.menu.print_warning("⚠ Contract compiled but not saved to disk")
+            else:
+                self.menu.print_error(f"❌ Compilation failed: {result['error']}")
+                
+        except Exception as e:
+            self.menu.print_error(f"❌ Compilation error: {e}")
+            
+        input("\nPress Enter to continue...")
 
     def interactive_menu(self):
         """Main interactive menu for dApp operations"""

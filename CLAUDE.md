@@ -14,6 +14,10 @@ poetry shell
 # Build all contracts
 poetry run python src/scripts/build_contracts.py
 
+# Alternative: Use the CLI menu for interactive contract compilation
+# - Option 2: Compile/Recompile All Contracts (full compilation)
+# - Option 3: Compile New Project Contract Only (fast, protocol must exist)
+
 # Run tests
 poetry run pytest
 

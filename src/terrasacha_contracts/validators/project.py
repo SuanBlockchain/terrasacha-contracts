@@ -168,6 +168,7 @@ def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
     assert project_owner in signatories, "EndProject requires signature from project owner"
 
 def validator(
+    oref: TxOutRef,
     protocol_policy_id: PolicyId,
     datum_project: DatumProject,
     redeemer: RedeemerProject,

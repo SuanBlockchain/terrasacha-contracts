@@ -386,7 +386,7 @@ class TokenOperations:
                 }
             
             payment_utxos = user_utxos
-            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [protocol_utxo_to_spend, user_utxo_to_spend])
+            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [protocol_utxo_to_spend])
             protocol_index = all_inputs_utxos.index(protocol_utxo_to_spend)
             user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
@@ -483,10 +483,10 @@ class TokenOperations:
             Transaction creation result dictionary
         """
         try:
-            # Get project contract
-            project_contract = self.contract_manager.get_contract("project")
+            # Get project contract (uses default or first available)
+            project_contract = self.contract_manager.get_project_contract()
             if not project_contract:
-                return {"success": False, "error": "Project contract not compiled"}
+                return {"success": False, "error": "No project contract compiled"}
 
             project_address = project_contract.testnet_addr
 
@@ -666,13 +666,14 @@ class TokenOperations:
             }
 
     def create_project_burn_transaction(
-        self, user_address: Optional[pc.Address] = None
+        self, user_address: Optional[pc.Address] = None, project_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a burn transaction for project and user NFTs
 
         Args:
             user_address: Optional address containing user tokens to burn
+            project_name: Optional specific project contract name to use
 
         Returns:
             Transaction creation result dictionary
@@ -680,7 +681,7 @@ class TokenOperations:
         try:
             # Get contracts
             project_nfts_contract = self.contract_manager.get_contract("project_nfts")
-            project_contract = self.contract_manager.get_contract("project")
+            project_contract = self.contract_manager.get_project_contract(project_name)
 
             if not project_nfts_contract or not project_contract:
                 return {"success": False, "error": "Required contracts not compiled"}
@@ -690,12 +691,6 @@ class TokenOperations:
             project_script = project_contract.cbor
             minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
             project_address = project_contract.testnet_addr
-
-            # Create transaction builder
-            builder = pc.TransactionBuilder(self.context)
-
-            # Add minting script for burning
-            builder.add_minting_script(script=minting_script, redeemer=pc.Redeemer(Burn()))
 
             # Find project UTXO
             project_utxos = self.context.utxos(project_address)
@@ -710,14 +705,7 @@ class TokenOperations:
                     "success": False,
                     "error": "No project UTXO found with specified policy ID",
                 }
-
-            # Add project UTXO as script input
-            builder.add_script_input(
-                project_utxo_to_spend,
-                script=project_script,
-                redeemer=pc.Redeemer(EndProject(project_input_index=0)),
-            )
-
+            
             # Find user UTXO
             if user_address is None:
                 user_address = self.wallet.get_address(0)
@@ -734,6 +722,40 @@ class TokenOperations:
                     "success": False,
                     "error": "No user UTXO found with specified policy ID",
                 }
+            
+            # Find suitable UTXO
+            utxo_to_spend = None
+            for utxo in user_utxos:
+                if utxo.output.amount.coin > 3000000:
+                    utxo_to_spend = utxo
+                    break
+
+            if not utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for minting (need >3 ADA)",
+                }
+            
+            
+            payment_utxos = utxo_to_spend
+            all_inputs_utxos = self.transactions.sorted_utxos([payment_utxos, project_utxo_to_spend, user_utxo_to_spend])
+            project_index = all_inputs_utxos.index(project_utxo_to_spend)
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+            # for u in payment_utxos:
+            #     builder.add_input(u)
+
+            # Add minting script for burning
+            builder.add_minting_script(script=minting_script, redeemer=pc.Redeemer(Burn()))
+
+            # Add project UTXO as script input
+            builder.add_script_input(
+                project_utxo_to_spend,
+                script=project_script,
+                redeemer=pc.Redeemer(EndProject(project_input_index=project_index)),
+            )
 
             # Add user UTXO as input
             builder.add_input(user_utxo_to_spend)
@@ -783,7 +805,7 @@ class TokenOperations:
             return {"success": False, "error": f"Project burn transaction creation failed: {e}"}
 
     def create_project_update_transaction(
-        self, user_address: Optional[pc.Address] = None, new_datum: DatumProject = None
+        self, user_address: Optional[pc.Address] = None, new_datum: DatumProject = None, project_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a transaction to update the project datum
@@ -791,6 +813,7 @@ class TokenOperations:
         Args:
             user_address: Optional address containing user tokens
             new_datum: New project datum to set (optional)
+            project_name: Optional specific project contract name to use
 
         Returns:
             Transaction creation result dictionary
@@ -798,7 +821,7 @@ class TokenOperations:
         try:
             # Get project contracts
             project_nfts_contract = self.contract_manager.get_contract("project_nfts")
-            project_contract = self.contract_manager.get_contract("project")
+            project_contract = self.contract_manager.get_project_contract(project_name)
 
             protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
             protocol_contract = self.contract_manager.get_contract("protocol")
@@ -846,10 +869,9 @@ class TokenOperations:
                 }
 
             payment_utxos = user_utxos
-            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend, user_utxo_to_spend])
+            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend])
             project_index = all_inputs_utxos.index(project_utxo_to_spend)
             user_index = all_inputs_utxos.index(user_utxo_to_spend)
-
 
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)

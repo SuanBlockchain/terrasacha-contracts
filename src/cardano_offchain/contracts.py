@@ -262,13 +262,39 @@ class ContractManager:
                 )
                 if protocol_policy_id:
                     self._set_recursion_limit(2000)
-                    project_contract = build(project_path, protocol_policy_id)
-                    compiled_contracts["project"] = PlutusContract(project_contract)
+                    project_contract = build(project_path, oref, protocol_policy_id)
+                    
+                    # Determine project contract name (support multiple projects)
+                    project_name = "project"
+                    
+                    if not force:
+                        # When not forcing (incremental compilation), check for existing projects
+                        existing_projects = [name for name in self.contracts.keys() if name == "project" or name.startswith("project_")]
+                        if existing_projects:
+                            # Find next available index
+                            index = 1
+                            while f"{project_name}_{index}" in self.contracts:
+                                index += 1
+                            project_name = f"{project_name}_{index}"
+                            print(f"Project contract will be stored as: {project_name}")
+                    else:
+                        # When forcing (full recompilation), start fresh with "project"
+                        print(f"Starting fresh - project contract will be stored as: {project_name}")
+                    
+                    compiled_contracts[project_name] = PlutusContract(project_contract)
 
             if not compiled_contracts:
                 return {"success": False, "error": "No contract files found to compile"}
 
-            self.contracts = compiled_contracts
+            # Handle contract replacement based on force flag
+            if not force:
+                # If not forcing, merge with existing contracts (preserve existing projects)
+                for name, contract in compiled_contracts.items():
+                    self.contracts[name] = contract
+            else:
+                # If forcing recompilation, completely replace all contracts (start fresh)
+                # This compiles protocol + one new project contract only
+                self.contracts = compiled_contracts
 
             # Save contracts to disk
             save_success = self._save_contracts()
@@ -284,6 +310,96 @@ class ContractManager:
         except Exception as e:
             return {"success": False, "error": f"Compilation failed: {e}"}
 
+    def compile_project_contract_only(self, address: pc.Address = None) -> Dict[str, Any]:
+        """
+        Compile only a new project contract using existing protocol contract.
+        This allows creating additional project contracts without recompiling everything.
+        
+        Args:
+            address: Address to get UTXOs from (defaults to first wallet address)
+        
+        Returns:
+            Dictionary containing compilation results
+        """
+        try:
+            # Check if protocol contract exists
+            if "protocol" not in self.contracts:
+                return {
+                    "success": False, 
+                    "error": "Protocol contract must be compiled first. Use compile_contracts() to compile the full suite."
+                }
+            
+            # Check if project.py exists
+            project_path = self.spending_contracts_path / "project.py"
+            if not project_path.exists():
+                return {"success": False, "error": "Project contract file not found"}
+            
+            # Get protocol policy ID from existing contract
+            protocol_contract = self.contracts["protocol"]
+            protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
+            
+            # Get a UTXO for unique contract compilation
+            if address is None:
+                return {"success": False, "error": "Address required to find UTXOs for unique project compilation"}
+            
+            utxos = self.context.utxos(address)
+            utxo_to_spend = None
+            for utxo in utxos:
+                if utxo.output.amount.coin > 3000000:
+                    utxo_to_spend = utxo
+                    break
+
+            if not utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for compilation (need >3 ADA)",
+                }
+            
+            # utxos = self.api.address_utxos(str(address))
+            # if not utxos:
+            #     return {"success": False, "error": "No UTXOs found at address for project compilation"}
+            
+            # Use the first available UTXO for compilation
+            # selected_utxo = utxos[0]
+            oref = TxOutRef(
+                id=TxId(utxo_to_spend.input.transaction_id.payload), idx=utxo_to_spend.input.index
+            )
+            
+            print(f"Compiling project contract using Protocol Policy ID: {protocol_contract.policy_id}")
+            print(f"Using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}")
+            
+            # Determine project contract name (support multiple projects)
+            project_name = "project"
+            if project_name in self.contracts:
+                # Find next available index
+                index = 1
+                while f"{project_name}_{index}" in self.contracts:
+                    index += 1
+                project_name = f"{project_name}_{index}"
+                print(f"Project contract will be stored as: {project_name}")
+            
+            # Compile project contract with oref and protocol_policy_id
+            self._set_recursion_limit(2000)
+            project_contract = build(project_path, oref, protocol_policy_id)
+            
+            # Add to contracts
+            self.contracts[project_name] = PlutusContract(project_contract)
+            
+            # Save updated contracts to disk
+            save_success = self._save_contracts()
+            
+            return {
+                "success": True,
+                "message": f"Successfully compiled project contract as '{project_name}'",
+                "project_name": project_name,
+                "policy_id": PlutusContract(project_contract).policy_id,
+                "used_utxo": f"{utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}",
+                "saved": save_success,
+            }
+            
+        except Exception as e:
+            return {"success": False, "error": f"Project compilation failed: {e}"}
+
     def get_contract(self, name: str) -> Optional[PlutusContract]:
         """
         Get compiled contract by name
@@ -295,6 +411,41 @@ class ContractManager:
             PlutusContract instance or None if not found
         """
         return self.contracts.get(name)
+    
+    def get_project_contract(self, project_name: str = None) -> Optional[PlutusContract]:
+        """
+        Get a project contract by name. If no specific name is provided,
+        returns the default project contract for backward compatibility.
+        
+        Args:
+            project_name: Specific project contract name (e.g., "project_1", "project_2")
+                         If None, returns the default "project" contract
+        
+        Returns:
+            PlutusContract or None if not found
+        """
+        if project_name:
+            return self.contracts.get(project_name)
+        
+        # For backward compatibility, return "project" if it exists, 
+        # otherwise return the first available project contract
+        if "project" in self.contracts:
+            return self.contracts["project"]
+        
+        # Find first project contract (project_1, project_2, etc.)
+        for name in sorted(self.contracts.keys()):
+            if name.startswith("project_"):
+                return self.contracts[name]
+        
+        return None
+    
+    def list_project_contracts(self) -> list:
+        """List all available project contract names"""
+        project_contracts = []
+        for name in sorted(self.contracts.keys()):
+            if name == "project" or name.startswith("project_"):
+                project_contracts.append(name)
+        return project_contracts
 
     def get_contracts_info(self) -> Dict[str, Any]:
         """
@@ -314,23 +465,34 @@ class ContractManager:
                 else contract.mainnet_addr
             )
 
-            # Check balance
-            try:
-                utxos = self.api.address_utxos(str(contract_address))
-                balance = sum(
-                    int(utxo.amount[0].quantity)
-                    for utxo in utxos
-                    if utxo.amount[0].unit == "lovelace"
-                )
-            except:
-                balance = 0
+            # Check if this is a minting policy (NFT contract) or spending validator
+            is_minting_policy = name.endswith("_nfts")
+            
+            if is_minting_policy:
+                # For minting policies, only policy ID matters (no balance)
+                contracts_info[name] = {
+                    "policy_id": contract.policy_id,
+                    "type": "minting_policy"
+                }
+            else:
+                # For spending validators, check balance
+                try:
+                    utxos = self.api.address_utxos(str(contract_address))
+                    balance = sum(
+                        int(utxo.amount[0].quantity)
+                        for utxo in utxos
+                        if utxo.amount[0].unit == "lovelace"
+                    )
+                except:
+                    balance = 0
 
-            contracts_info[name] = {
-                "policy_id": contract.policy_id,
-                "address": str(contract_address),
-                "balance": balance,
-                "balance_ada": balance / 1_000_000,
-            }
+                contracts_info[name] = {
+                    "policy_id": contract.policy_id,
+                    "address": str(contract_address),
+                    "balance": balance,
+                    "balance_ada": balance / 1_000_000,
+                    "type": "spending_validator"
+                }
 
         return {
             "contracts": contracts_info,

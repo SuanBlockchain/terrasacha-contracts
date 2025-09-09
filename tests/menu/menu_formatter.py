@@ -147,6 +147,13 @@ class MenuFormatter:
         )
         print(f"{Colors.OKBLUE}│{Colors.ENDC}")
 
+    def print_minting_policy_info(self, name: str, policy_id: str):
+        """Print formatted minting policy information (policy ID only)"""
+        print(f"{Colors.OKBLUE}│{Colors.ENDC} {Colors.BOLD}{name:<15}{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}│{Colors.ENDC}   Policy ID: {policy_id}")
+        print(f"{Colors.OKBLUE}│{Colors.ENDC}   Type:      Minting Policy")
+        print(f"{Colors.OKBLUE}│{Colors.ENDC}")
+
     def print_breadcrumb(self, path: list):
         """Print navigation breadcrumb"""
         breadcrumb = " > ".join(path)
