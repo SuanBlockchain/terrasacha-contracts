@@ -59,6 +59,7 @@ class UpdateProject(PlutusData):
 class EndProject(PlutusData):
     CONSTR_ID = 2
     project_input_index: int
+    user_input_index: int
 
 RedeemerProject = Union[UpdateProject, EndProject]
 
@@ -157,15 +158,15 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     ), "Project state can only move forward"
     assert new_datum.params.project_state <= 3, "Invalid project state (must be 0, 1, 2, or 3)"
 
-def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
-    """
-    Validate that the project owner has signed the transaction.
-    Required for EndProject operations.
-    """
-    signatories = tx_info.signatories
-    project_owner = input_datum.params.owner
+# def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
+#     """
+#     Validate that the project owner has signed the transaction.
+#     Required for EndProject operations.
+#     """
+#     signatories = tx_info.signatories
+#     project_owner = input_datum.params.owner
 
-    assert project_owner in signatories, "EndProject requires signature from project owner"
+#     assert project_owner in signatories, "EndProject requires signature from project owner"
 
 def validator(
     oref: TxOutRef,
@@ -211,10 +212,17 @@ def validator(
 
     elif isinstance(redeemer, EndProject):
         project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
-        project_datum = project_input.datum
-        assert isinstance(project_datum, SomeOutputDatum)
-        input_datum: DatumProject = project_datum.datum
+        project_token = extract_token_from_input(project_input)
+        user_input = tx_info.inputs[redeemer.user_input_index].resolved
 
-        validate_signatories(input_datum, tx_info)
+        assert check_token_present(
+            project_token.policy_id, user_input
+        ), "User does not have required token"
+
+        # project_datum = project_input.datum
+        # assert isinstance(project_datum, SomeOutputDatum)
+        # input_datum: DatumProject = project_datum.datum
+
+        # validate_signatories(input_datum, tx_info)
     else:
         assert False, "Invalid redeemer type"

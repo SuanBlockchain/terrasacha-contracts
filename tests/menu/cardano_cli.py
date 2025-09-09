@@ -460,7 +460,7 @@ class CardanoCLI:
         self.menu.print_footer()
         input("\nPress Enter to continue...")
 
-    def test_contracts_menu(self):
+    def mint_protocol_token(self):
         """Test smart contracts submenu"""
         self.menu.print_header("CONTRACT TESTING", "Mint Protocol & User NFTs")
 
@@ -495,7 +495,8 @@ class CardanoCLI:
         destination_address = None
         if destin_address_str.strip():
             # Use the existing resolve_address_input method that supports wallet names
-            resolved_address = self.resolve_address_input(destin_address_str.strip())
+            # Switch to the wallet if a wallet name is provided so transaction uses correct signing keys
+            resolved_address = self.resolve_address_input(destin_address_str.strip(), switch_wallet=True)
             if resolved_address:
                 try:
                     destination_address = pc.Address.from_primitive(resolved_address)
@@ -532,6 +533,13 @@ class CardanoCLI:
                     self.menu.print_success("Transaction submitted successfully!")
                     tx_info = self.transactions.get_transaction_info(tx_id)
                     print(f"Explorer: {tx_info['explorer_url']}")
+                    
+                    # Mark contracts as deployed and save them to disk
+                    deployed_contracts = ["protocol", "protocol_nfts"]
+                    if self.contract_manager.mark_contract_as_deployed(deployed_contracts):
+                        self.menu.print_success("✓ Contracts saved to disk (deployment confirmed)")
+                    else:
+                        self.menu.print_warning("⚠ Contracts deployed but failed to save to disk")
                 else:
                     self.menu.print_error("Failed to submit transaction")
             else:
@@ -551,12 +559,14 @@ class CardanoCLI:
         
         # Check for project contract availability and allow selection
         project_contracts = self.contract_manager.list_project_contracts()
+        selected_project_name = None
         if not project_contracts:
             project_contract = None
         elif len(project_contracts) == 1:
             # Only one project contract available
-            project_contract = self.contract_manager.get_project_contract(project_contracts[0])
-            self.menu.print_info(f"Using project contract: {project_contracts[0].upper()}")
+            selected_project_name = project_contracts[0]
+            project_contract = self.contract_manager.get_project_contract(selected_project_name)
+            self.menu.print_info(f"Using project contract: {selected_project_name.upper()}")
         else:
             # Multiple project contracts - let user choose
             self.menu.print_section("PROJECT CONTRACT SELECTION")
@@ -567,9 +577,9 @@ class CardanoCLI:
             try:
                 choice = int(self.menu.get_input(f"Select project contract (1-{len(project_contracts)})")) - 1
                 if 0 <= choice < len(project_contracts):
-                    selected_project = project_contracts[choice]
-                    project_contract = self.contract_manager.get_project_contract(selected_project)
-                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                    selected_project_name = project_contracts[choice]
+                    project_contract = self.contract_manager.get_project_contract(selected_project_name)
+                    self.menu.print_info(f"Selected project contract: {selected_project_name.upper()}")
                 else:
                     self.menu.print_error("Invalid project selection")
                     return
@@ -585,18 +595,20 @@ class CardanoCLI:
 
         # Check if protocol has been deployed (has UTXOs at protocol address)
         protocol_contract = self.contract_manager.get_contract("protocol")
-        if protocol_contract:
-            try:
-                protocol_utxos = self.context.utxos(protocol_contract.testnet_addr)
-                if not protocol_utxos:
-                    self.menu.print_error("❌ Protocol not deployed yet")
-                    self.menu.print_info("Please deploy protocol first (Option 3: Mint Tokens)")
-                    input("\nPress Enter to continue...")
-                    return
-                else:
-                    self.menu.print_success("✓ Protocol deployed and ready")
-            except Exception as e:
-                self.menu.print_warning(f"⚠ Could not verify protocol deployment: {e}")
+        try:    
+            if protocol_contract:
+                self.menu.print_success("✓ Protocol deployed and ready")
+            # try:
+            #     protocol_utxos = self.context.utxos(protocol_contract.testnet_addr)
+            #     if not protocol_utxos:
+            #         self.menu.print_error("❌ Protocol not deployed yet")
+            #         self.menu.print_info("Please deploy protocol first (Option 3: Mint Tokens)")
+            #         input("\nPress Enter to continue...")
+            #         return
+            #     else:
+            #         self.menu.print_success("✓ Protocol deployed and ready")
+        except Exception as e:
+            self.menu.print_warning(f"⚠ Could not verify protocol deployment: {e}")
 
         self.menu.print_info("This will create a new project with associated NFTs")
 
@@ -695,7 +707,8 @@ class CardanoCLI:
         destination_address = None
         if destin_address_str.strip():
             # Use the existing resolve_address_input method that supports wallet names
-            resolved_address = self.resolve_address_input(destin_address_str.strip())
+            # Switch to the wallet if a wallet name is provided so transaction uses correct signing keys
+            resolved_address = self.resolve_address_input(destin_address_str.strip(), switch_wallet=True)
             if resolved_address:
                 try:
                     destination_address = pc.Address.from_primitive(resolved_address)
@@ -725,6 +738,7 @@ class CardanoCLI:
                 project_metadata=project_metadata,
                 stakeholders=stakeholders,
                 destination_address=destination_address,
+                project_name=selected_project_name,
             )
 
             if not result["success"]:
@@ -747,6 +761,20 @@ class CardanoCLI:
                     self.menu.print_success("Project created successfully!")
                     tx_info = self.transactions.get_transaction_info(tx_id)
                     print(f"Explorer: {tx_info['explorer_url']}")
+                    
+                    # Mark project contracts as deployed and save them to disk
+                    # Find which project contract was used and its corresponding NFTs contract
+                    project_contracts = [name for name in self.contract_manager.contracts.keys() if name == "project" or name.startswith("project_")]
+                    # For each project, add its corresponding NFTs contract
+                    deployed_contracts = project_contracts.copy()
+                    for project_name in project_contracts:
+                        project_nfts_name = f"{project_name}_nfts"
+                        if project_nfts_name in self.contract_manager.contracts:
+                            deployed_contracts.append(project_nfts_name)
+                    if self.contract_manager.mark_contract_as_deployed(deployed_contracts):
+                        self.menu.print_success("✓ Project contracts saved to disk (deployment confirmed)")
+                    else:
+                        self.menu.print_warning("⚠ Project contracts deployed but failed to save to disk")
                 else:
                     self.menu.print_error("Failed to submit transaction")
             else:
@@ -882,10 +910,6 @@ class CardanoCLI:
             self.menu.print_section("CURRENT PROTOCOL STATE")
             print(f"│ Protocol Fee: {current_datum.protocol_fee / 1_000_000:.6f} ADA")
             print(f"│ Oracle ID: {current_datum.oracle_id.hex()[:16]}...")
-            print(f"│ Admin Count: {len(current_datum.protocol_admin)}")
-            print(
-                f"│ Admin PKHs: {[admin.hex()[:16] + '...' for admin in current_datum.protocol_admin]}"
-            )
             print(f"│ Project Count: {len(current_datum.projects)}")
             if current_datum.projects:
                 print(
@@ -907,7 +931,6 @@ class CardanoCLI:
         # Initialize new values with current values
         new_fee_lovelace = current_datum.protocol_fee
         new_oracle_id = current_datum.oracle_id
-        new_admin_list = current_datum.protocol_admin.copy()
         new_projects_list = current_datum.projects.copy()
 
         # Option to specify custom fee or use default increment
@@ -937,65 +960,49 @@ class CardanoCLI:
                 self.menu.print_error(f"Invalid Oracle ID: {e}")
                 return
 
-        # Option to update Admin list
-        admin_input = self.menu.get_input("Update admins? (add/remove/keep) [keep]")
-        if admin_input.strip().lower() in ["add", "remove"]:
-            if admin_input.strip().lower() == "add":
-                new_admin_hex = self.menu.get_input("Enter new admin public key hash (hex)")
-                try:
-                    new_admin_bytes = bytes.fromhex(new_admin_hex.strip())
-                    if len(new_admin_bytes) != 28:
-                        self.menu.print_error(
-                            "Admin public key hash must be 28 bytes (56 hex chars)"
-                        )
-                        return
-                    new_admin_list.append(new_admin_bytes)
-                    self.menu.print_info(f"Added admin: {new_admin_hex.strip()}")
-                except ValueError:
-                    self.menu.print_error("Invalid hex format for admin public key hash")
-                    return
-
-            elif admin_input.strip().lower() == "remove":
-                if len(current_datum.protocol_admin) <= 1:
-                    self.menu.print_error("Cannot remove admin - must have at least one admin")
-                    return
-                self.menu.print_info("Current admins:")
-                for i, admin in enumerate(current_datum.protocol_admin):
-                    print(f"  {i}: {admin.hex()}")
-                try:
-                    admin_index = int(self.menu.get_input("Enter index of admin to remove"))
-                    if 0 <= admin_index < len(current_datum.protocol_admin):
-                        removed_admin = new_admin_list.pop(admin_index)
-                        self.menu.print_info(f"Removed admin: {removed_admin.hex()}")
-                    else:
-                        self.menu.print_error("Invalid admin index")
-                        return
-                except ValueError:
-                    self.menu.print_error("Invalid admin index")
-                    return
 
         # Option to update Projects list
         project_input = self.menu.get_input("Update projects? (add/remove/keep) [keep]")
         if project_input.strip().lower() in ["add", "remove"]:
             if project_input.strip().lower() == "add":
-                new_project_hex = self.menu.get_input("Enter new project ID (hex)")
-                try:
-                    new_project_bytes = bytes.fromhex(new_project_hex.strip())
-                    if len(new_project_bytes) > 32:  # Reasonable limit for project ID
-                        self.menu.print_error(
-                            "Project ID should not exceed 32 bytes (64 hex chars)"
-                        )
-                        return
-                    if len(new_projects_list) >= 10:  # Protocol validation limit
-                        self.menu.print_error(
-                            "Cannot add more projects - maximum limit of 10 reached"
-                        )
-                        return
-                    new_projects_list.append(new_project_bytes)
-                    self.menu.print_info(f"Added project: {new_project_hex.strip()}")
-                except ValueError:
-                    self.menu.print_error("Invalid hex format for project ID")
-                    return
+                self.menu.print_info("Adding projects (type 'done' when finished)")
+                while True:
+                    new_project_hex = self.menu.get_input("Enter project ID (hex) or 'done'")
+                    if new_project_hex.strip().lower() == 'done':
+                        break
+                    
+                    try:
+                        new_project_bytes = bytes.fromhex(new_project_hex.strip())
+                        
+                        # Check length
+                        if len(new_project_bytes) > 32:  # Reasonable limit for project ID
+                            self.menu.print_error(
+                                "Project ID should not exceed 32 bytes (64 hex chars)"
+                            )
+                            continue
+                            
+                        # Check capacity
+                        if len(new_projects_list) >= 10:  # Protocol validation limit
+                            self.menu.print_error(
+                                "Cannot add more projects - maximum limit of 10 reached"
+                            )
+                            break
+                            
+                        # Check for duplicates within the transaction
+                        if new_project_bytes in new_projects_list:
+                            self.menu.print_error("Project already being added in this transaction")
+                            continue
+                            
+                        new_projects_list.append(new_project_bytes)
+                        self.menu.print_success(f"✓ Added project: {new_project_hex.strip()}")
+                        
+                    except ValueError:
+                        self.menu.print_error("Invalid hex format for project ID")
+                        continue
+                
+                if len(new_projects_list) > len(current_datum.projects):
+                    added_count = len(new_projects_list) - len(current_datum.projects)
+                    self.menu.print_info(f"Will add {added_count} new project(s) in this transaction")
 
             elif project_input.strip().lower() == "remove":
                 if len(current_datum.projects) == 0:
@@ -1018,7 +1025,6 @@ class CardanoCLI:
 
         # Create new datum with all updates
         new_datum = DatumProtocol(
-            protocol_admin=new_admin_list,
             protocol_fee=new_fee_lovelace,
             oracle_id=new_oracle_id,
             projects=new_projects_list,  # Use updated projects list
@@ -1083,23 +1089,6 @@ class CardanoCLI:
             old_oracle_str = old_datum.oracle_id.hex()[:16] + "..."
             new_oracle_str = new_datum_result.oracle_id.hex()[:16] + "..."
             print(f"│ Oracle ID: {old_oracle_str} → {new_oracle_str} ({oracle_status})")
-
-            # Compare Admin changes
-            old_admin_set = set(old_datum.protocol_admin)
-            new_admin_set = set(new_datum_result.protocol_admin)
-            admin_changed = old_admin_set != new_admin_set
-            admin_status = "changed" if admin_changed else "unchanged"
-            print(
-                f"│ Admin Count: {len(old_datum.protocol_admin)} → {len(new_datum_result.protocol_admin)} ({admin_status})"
-            )
-
-            if admin_changed:
-                added_admins = new_admin_set - old_admin_set
-                removed_admins = old_admin_set - new_admin_set
-                if added_admins:
-                    print(f"│   Added: {[admin.hex()[:16] + '...' for admin in added_admins]}")
-                if removed_admins:
-                    print(f"│   Removed: {[admin.hex()[:16] + '...' for admin in removed_admins]}")
 
             # Compare Project changes
             old_project_set = set(old_datum.projects)
@@ -1275,7 +1264,7 @@ class CardanoCLI:
                     self.menu.print_error("Invalid input for project selection")
                     return
             
-            project_nfts_contract = self.contract_manager.get_contract("project_nfts")
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(selected_project)
 
             if not project_contract or not project_nfts_contract:
                 self.menu.print_error("Required project contracts not found")
@@ -1384,6 +1373,42 @@ class CardanoCLI:
 
         input("\nPress Enter to continue...")
 
+    def select_wallet_for_compilation(self, purpose: str) -> Optional[pc.Address]:
+        """
+        Ask user to select a wallet for compilation and return its address
+        
+        Args:
+            purpose: Description of what the wallet will be used for
+            
+        Returns:
+            Address of selected wallet or None if cancelled
+        """
+        wallets = self.wallet_manager.get_wallet_names()
+        
+        self.menu.print_section(f"WALLET SELECTION FOR {purpose.upper()}")
+        self.menu.print_info(f"Select wallet to use for {purpose}:")
+        
+        for i, wallet_name in enumerate(wallets, 1):
+            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
+            status = " (CURRENT)" if is_active else ""
+            print(f"│ {i}. {wallet_name}{status}")
+        
+        try:
+            choice = int(self.menu.get_input(f"Select wallet (1-{len(wallets)}, or 0 to cancel)"))
+            if choice == 0:
+                return None
+            elif 1 <= choice <= len(wallets):
+                wallet_name = wallets[choice - 1]
+                wallet = self.wallet_manager.get_wallet(wallet_name)
+                self.menu.print_info(f"Selected wallet: {wallet_name}")
+                return wallet.get_address(0)
+            else:
+                self.menu.print_error("Invalid choice")
+                return None
+        except (ValueError, IndexError):
+            self.menu.print_error("Invalid input")
+            return None
+
     def contract_submenu(self):
         """Interactive menu for contract operations"""
 
@@ -1392,8 +1417,9 @@ class CardanoCLI:
         if not contracts:
             self.menu.print_info("No contracts found - compiling now...")
             try:
-                main_address = self.wallet.get_address(0)
-                result = self.contract_manager.compile_contracts(main_address)
+                # For automatic compilation, use default wallet for both (backward compatibility)
+                main_address = self.wallet.get_address(0) 
+                result = self.contract_manager.compile_contracts(main_address, main_address)
                 if result["success"]:
                     self.menu.print_success(result["message"])
                 else:
@@ -1424,10 +1450,11 @@ class CardanoCLI:
             self.menu.print_menu_option("8", "Burn Project Tokens", "✓")
             self.menu.print_menu_option("9", "Update Project Datum", "✓")
             self.menu.print_separator()
+            self.menu.print_menu_option("10", "Delete Empty Contract", "🗑")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-9)")
+            choice = self.menu.get_input("Select an option (0-10)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -1436,10 +1463,24 @@ class CardanoCLI:
                 self.display_contracts_info()
             elif choice == "2":
                 try:
-                    main_address = self.wallet.get_address(0)
-                    result = self.contract_manager.compile_contracts(main_address, force=True)
+                    # Ask for protocol wallet selection
+                    protocol_address = self.select_wallet_for_compilation("protocol contract")
+                    if not protocol_address:
+                        self.menu.print_info("Compilation cancelled")
+                        continue
+                    
+                    # Ask for project wallet selection  
+                    project_address = self.select_wallet_for_compilation("project contract")
+                    if not project_address:
+                        self.menu.print_info("Compilation cancelled")
+                        continue
+                    
+                    self.menu.print_info("Starting contract compilation...")
+                    result = self.contract_manager.compile_contracts(protocol_address, project_address, force=True)
                     if result["success"]:
                         self.menu.print_success(result["message"])
+                        if result.get("contracts"):
+                            print(f"Compiled contracts: {', '.join(result['contracts'])}")
                     else:
                         self.menu.print_error(result["error"])
                 except Exception as e:
@@ -1447,7 +1488,7 @@ class CardanoCLI:
             elif choice == "3":
                 self.compile_project_only_menu()
             elif choice == "4":
-                self.test_contracts_menu()
+                self.mint_protocol_token()
             elif choice == "5":
                 self.burn_tokens_menu()
             elif choice == "6":
@@ -1458,6 +1499,8 @@ class CardanoCLI:
                 self.burn_project_tokens_menu()
             elif choice == "9":
                 self.update_project_menu()
+            elif choice == "10":
+                self.delete_empty_contract_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
 
@@ -1490,9 +1533,15 @@ class CardanoCLI:
         
         # Compile project contract
         try:
+            # Ask for project wallet selection
+            project_address = self.select_wallet_for_compilation("new project contract")
+            if not project_address:
+                self.menu.print_info("Compilation cancelled")
+                input("\nPress Enter to continue...")
+                return
+            
             self.menu.print_info("Compiling project contract...")
-            main_address = self.wallet.get_address(0)
-            result = self.contract_manager.compile_project_contract_only(main_address)
+            result = self.contract_manager.compile_project_contract_only(project_address)
             
             if result["success"]:
                 self.menu.print_success("✅ Project contract compiled successfully!")
@@ -1512,6 +1561,81 @@ class CardanoCLI:
                 
         except Exception as e:
             self.menu.print_error(f"❌ Compilation error: {e}")
+            
+        input("\nPress Enter to continue...")
+
+    def delete_empty_contract_menu(self):
+        """Delete contracts that have zero balance"""
+        self.menu.print_header("DELETE EMPTY CONTRACTS", "Remove Contracts with Zero Balance")
+        
+        contracts = self.contract_manager.list_contracts()
+        if not contracts:
+            self.menu.print_error("No contracts available")
+            input("\nPress Enter to continue...")
+            return
+        
+        # Filter out minting policies (they can't be deleted)
+        deletable_contracts = [name for name in contracts if not name.endswith("_nfts")]
+        
+        if not deletable_contracts:
+            self.menu.print_error("No deletable contracts found (only minting policies exist)")
+            input("\nPress Enter to continue...")
+            return
+        
+        self.menu.print_section("AVAILABLE CONTRACTS FOR DELETION")
+        self.menu.print_info("Only spending validator contracts with zero balance can be deleted:")
+        
+        # Show contract info with balances
+        contracts_info = self.contract_manager.get_contracts_info()
+        for i, contract_name in enumerate(deletable_contracts, 1):
+            contract_info = contracts_info["contracts"].get(contract_name, {})
+            balance_ada = contract_info.get("balance_ada", 0)
+            status = "✗ Has Balance" if balance_ada > 0 else "✓ Empty"
+            print(f"│ {i}. {contract_name.upper()}: {balance_ada:.6f} ADA ({status})")
+        
+        print()
+        
+        try:
+            choice = int(self.menu.get_input(f"Select contract to delete (1-{len(deletable_contracts)}, or 0 to cancel)"))
+            if choice == 0:
+                self.menu.print_info("Operation cancelled")
+                input("\nPress Enter to continue...")
+                return
+            elif 1 <= choice <= len(deletable_contracts):
+                contract_name = deletable_contracts[choice - 1]
+                
+                self.menu.print_warning(f"⚠ This will permanently delete contract '{contract_name}' if it has zero balance")
+                if not self.menu.confirm_action("Proceed with deletion?"):
+                    self.menu.print_info("Deletion cancelled")
+                    input("\nPress Enter to continue...")
+                    return
+                
+                # Attempt deletion
+                result = self.contract_manager.delete_contract_if_empty(contract_name)
+                
+                if result["success"]:
+                    self.menu.print_success(result["message"])
+                    if result.get("saved"):
+                        self.menu.print_success("✓ Updated contracts file saved to disk")
+                    # Show different messages based on deletion reason
+                    if "unused address" in result["message"]:
+                        self.menu.print_info("ℹ This contract was never deployed/used, so it was safe to delete")
+                    else:
+                        self.menu.print_info("ℹ Contract had zero balance and no tokens, so it was safe to delete")
+                else:
+                    self.menu.print_error(result["error"])
+                    if "balance" in result:
+                        balance_ada = result["balance"] / 1_000_000
+                        print(f"Contract still has {balance_ada:.6f} ADA")
+                        if result.get("has_tokens"):
+                            print("Contract also contains tokens")
+                        print("You must burn all tokens before deleting the contract")
+                        
+            else:
+                self.menu.print_error("Invalid choice")
+                
+        except (ValueError, IndexError):
+            self.menu.print_error("Invalid input")
             
         input("\nPress Enter to continue...")
 

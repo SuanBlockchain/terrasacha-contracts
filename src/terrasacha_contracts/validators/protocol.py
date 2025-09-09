@@ -15,6 +15,7 @@ class UpdateProtocol(PlutusData):
 class EndProtocol(PlutusData):
     CONSTR_ID = 2
     protocol_input_index: int
+    user_input_index: int
 
 
 RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
@@ -52,27 +53,17 @@ def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) ->
     # Validate protocol_fee
     assert new_datum.protocol_fee >= 0, "Protocol fee must be non-negative"
 
-    # Validate protocol_admin updates
-    assert len(new_datum.protocol_admin) > 0, "Protocol must have at least one admin"
-    assert len(new_datum.protocol_admin) <= 3, "Protocol cannot have more than 10 admins"
-
     # Validate project list updates
     assert len(new_datum.projects) <= 10, "Protocol cannot have more than 10 projects"
 
-
-def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
-    """
-    Validate that the signatories are authorized.
-    """
-    signatories = tx_info.signatories
-    protocol_admins = input_datum.protocol_admin
-
-    admin_signed = False
-    for admin_pkh in protocol_admins:
-        if admin_pkh in signatories:
-            admin_signed = True
-
-    assert admin_signed, "EndProtocol requires signature from protocol admin"
+    # Validate no duplicate project IDs within the new projects list
+    projects_len = len(new_datum.projects)
+    for i in range(projects_len):
+        for j in range(projects_len):
+            if j > i:  # Only check pairs once, avoid self-comparison
+                assert (
+                    new_datum.projects[i] != new_datum.projects[j]
+                ), "Duplicate project IDs not allowed in protocol datum"
 
 
 def validator(
@@ -107,10 +98,13 @@ def validator(
 
     elif isinstance(redeemer, EndProtocol):
         protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
-        protocol_datum = protocol_input.datum
-        assert isinstance(protocol_datum, SomeOutputDatum)
-        input_datum: DatumProtocol = protocol_datum.datum
 
-        validate_signatories(input_datum, tx_info)
+        protocol_token = extract_token_from_input(protocol_input)
+        user_input = tx_info.inputs[redeemer.user_input_index].resolved
+
+        assert check_token_present(
+            protocol_token.policy_id, user_input
+        ), "User does not have required token"
+
     else:
         assert False, "Invalid redeemer type"

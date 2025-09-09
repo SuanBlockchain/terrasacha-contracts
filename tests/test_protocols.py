@@ -53,15 +53,13 @@ class MockCommon:
         """Create a mock protocol datum"""
         if valid:
             return DatumProtocol(
-                protocol_admin=[bytes.fromhex("d" * 56)],
                 protocol_fee=1000,
                 oracle_id=bytes.fromhex("e" * 56),  # PolicyId is bytes
                 projects=[bytes.fromhex("f" * 56)],
             )
         else:
-            # Invalid datum (empty admin list)
+            # Invalid datum (empty projects list)
             return DatumProtocol(
-                protocol_admin=[],
                 protocol_fee=0,
                 oracle_id=bytes.fromhex("0" * 56),
                 projects=[],

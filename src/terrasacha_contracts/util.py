@@ -8,7 +8,7 @@ PREFIX_USER_NFT = b"USER_"
 @dataclass()
 class DatumProtocol(PlutusData):
     CONSTR_ID = 0
-    protocol_admin: List[bytes]  # List of admin public key hashes
+    # protocol_admin: List[bytes]  # List of admin public key hashes
     protocol_fee: int  # Protocol fee in lovelace
     oracle_id: PolicyId  # Oracle identifier
     projects: List[bytes]  # List of project IDs registered
