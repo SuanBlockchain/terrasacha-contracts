@@ -313,7 +313,7 @@ class ContractManager:
                 )
                 print(f"Compiling project contract using UTXO: {project_utxo_to_spend.input.transaction_id}:{project_utxo_to_spend.input.index}")
                 if protocol_policy_id:
-                    # self._set_recursion_limit(2000)
+                    self._set_recursion_limit(2000)
                     project_contract = build(project_path, project_oref, protocol_policy_id)
                     
                     # Determine project contract name (support multiple projects)
@@ -444,7 +444,7 @@ class ContractManager:
                 print(f"Project contract will be stored as: {project_name}")
             
             # Compile project contract with oref and protocol_policy_id
-            # self._set_recursion_limit(2000)
+            self._set_recursion_limit(2000)
             project_contract = build(project_path, oref, protocol_policy_id)
             
             # Add to contracts

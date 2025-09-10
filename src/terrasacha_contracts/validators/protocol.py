@@ -3,24 +3,6 @@ from opshin.prelude import *
 from terrasacha_contracts.util import *
 
 
-@dataclass()
-class UpdateProtocol(PlutusData):
-    CONSTR_ID = 1
-    protocol_input_index: int
-    user_input_index: int
-    protocol_output_index: int
-
-
-@dataclass()
-class EndProtocol(PlutusData):
-    CONSTR_ID = 2
-    protocol_input_index: int
-    user_input_index: int
-
-
-RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
-
-
 def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
     """
     Derive the corresponding user NFT token name from a protocol NFT token name.
@@ -45,7 +27,7 @@ def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenNam
     return user_token_name
 
 
-def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) -> None:
+def validate_datum_update(new_datum: DatumProtocol) -> None:
     """
     Validate the update of a datum.
     Now allows updates to protocol_admin, oracle_id, and protocol_fee with proper validations.
@@ -65,6 +47,28 @@ def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) ->
                     new_datum.projects[i] != new_datum.projects[j]
                 ), "Duplicate project IDs not allowed in protocol datum"
 
+def validate_datum_project_update(old_datum: DatumProtocol, new_datum: DatumProtocol, project_id: bytes) -> None:
+    """
+    Validate the update of a datum specifically for project updates.
+    Ensures only the projects list is modified correctly.
+    """
+    # Validate other fields remain unchanged
+    assert new_datum.protocol_fee == old_datum.protocol_fee, "Protocol fee cannot be changed in project update"
+    assert new_datum.oracle_id == old_datum.oracle_id, "Oracle ID cannot be changed in project update"
+
+    # Ensure the project ID to be removed exists in the current datum's projects list
+    assert any([project_id == project_id for project_id in old_datum.projects]), "Project ID not found in existing projects"
+
+    # Ensure that the project ID is not in the output datum's projects list
+    assert not any([project_id == project_id for project_id in new_datum.projects]), "Project ID should not be present in updated projects"
+    
+    # Verify exactly one project was removed (no other changes)
+    assert len(old_datum.projects) == len(new_datum.projects) + 1, "Exactly one project must be removed"
+
+    # Verify all remaining projects are unchanged
+    remaining_projects = [pid for pid in old_datum.projects if pid != project_id]
+    for project_id in remaining_projects:
+        assert any([project_id == remaining_project_id for remaining_project_id in new_datum.projects]), "Remaining project IDs must remain unchanged"
 
 def validator(
     oref: TxOutRef,
@@ -76,7 +80,17 @@ def validator(
     tx_info = context.tx_info
     purpose = get_spending_purpose(context)
 
-    if isinstance(redeemer, UpdateProtocol):
+    if isinstance(redeemer, EndProtocol):
+        protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
+
+        protocol_token = extract_token_from_input(protocol_input)
+        user_input = tx_info.inputs[redeemer.user_input_index].resolved
+
+        assert check_token_present(
+            protocol_token.policy_id, user_input
+        ), "User does not have required token"
+
+    else:
         protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
         protocol_output = resolve_linear_output(
             protocol_input, tx_info, redeemer.protocol_output_index
@@ -94,17 +108,13 @@ def validator(
         protocol_datum = protocol_output.datum
         assert isinstance(protocol_datum, SomeOutputDatum)
         new_datum: DatumProtocol = protocol_datum.datum
-        validate_datum_update(datum_protocol, new_datum)
 
-    elif isinstance(redeemer, EndProtocol):
-        protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
-
-        protocol_token = extract_token_from_input(protocol_input)
-        user_input = tx_info.inputs[redeemer.user_input_index].resolved
-
-        assert check_token_present(
-            protocol_token.policy_id, user_input
-        ), "User does not have required token"
-
-    else:
-        assert False, "Invalid redeemer type"
+        if isinstance(redeemer, UpdateProtocol):
+        
+            validate_datum_update(new_datum)
+        
+        elif isinstance(redeemer, UpdateProject):
+            validate_datum_project_update(datum_protocol, new_datum, redeemer.project_id)
+    
+        else:
+            assert False, "Invalid redeemer type"

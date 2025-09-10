@@ -1,18 +1,51 @@
 from opshin.prelude import *
 from opshin.std.builtins import *
 
+#######################################
 # Constants
+########################################
 PREFIX_REFERENCE_NFT = b"REF_"
 PREFIX_USER_NFT = b"USER_"
 
+
+#######################################
+# Protocol Data Types
+########################################
 @dataclass()
 class DatumProtocol(PlutusData):
     CONSTR_ID = 0
-    # protocol_admin: List[bytes]  # List of admin public key hashes
     protocol_fee: int  # Protocol fee in lovelace
     oracle_id: PolicyId  # Oracle identifier
     projects: List[bytes]  # List of project IDs registered
 
+@dataclass()
+class UpdateProtocol(PlutusData):
+    CONSTR_ID = 1
+    protocol_input_index: int
+    user_input_index: int
+    protocol_output_index: int
+
+@dataclass()
+class UpdateProject(PlutusData):
+    CONSTR_ID = 2
+    protocol_input_index: int
+    user_input_index: int
+    protocol_output_index: int
+    project_id: bytes
+
+
+@dataclass()
+class EndProtocol(PlutusData):
+    CONSTR_ID = 3
+    protocol_input_index: int
+    user_input_index: int
+
+
+RedeemerProtocol = Union[UpdateProtocol, UpdateProject, EndProtocol]
+
+#######################################
+# Generic functions
+########################################
 
 def get_minting_purpose(context: ScriptContext) -> Minting:
     purpose = context.purpose
