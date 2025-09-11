@@ -16,9 +16,15 @@ from terrasacha_contracts.minting_policies.protocol_nfts import (
 from terrasacha_contracts.minting_policies.protocol_nfts import (
     validator as protocol_nft_validator,
 )
+from terrasacha_contracts.minting_policies.project_nfts import (
+    BurnProject,
+    MintProject,
+)
+from terrasacha_contracts.minting_policies.project_nfts import (
+    validator as project_nft_validator,
+)
 from src.terrasacha_contracts.util import *
 from src.terrasacha_contracts.validators.protocol import (
-    DatumProtocol,
     EndProtocol,
     UpdateProtocol,
     validate_datum_update,
@@ -53,16 +59,16 @@ class MockCommon:
         """Create a mock protocol datum"""
         if valid:
             return DatumProtocol(
+                project_admins=[bytes.fromhex("a" * 56), bytes.fromhex("b" * 56)],
                 protocol_fee=1000,
                 oracle_id=bytes.fromhex("e" * 56),  # PolicyId is bytes
-                projects=[bytes.fromhex("f" * 56)],
             )
         else:
-            # Invalid datum (empty projects list)
+            # Invalid datum (too many admins)
             return DatumProtocol(
-                protocol_fee=0,
+                project_admins=[bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)],  # Too many
+                protocol_fee=-100,  # Invalid fee
                 oracle_id=bytes.fromhex("0" * 56),
-                projects=[],
             )
 
     def create_mock_tx_out(
@@ -520,211 +526,90 @@ class TestProtocol(MockCommon):
 
     def test_validate_datum_update_success(self):
         """Test successful datum update validation"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create new datum with only fee change
         new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],  # Same
-            protocol_fee=2000,  # Changed
-            oracle_id=bytes.fromhex("a" * 56),  # Same
-            projects=[bytes.fromhex("b" * 56)],  # Same
+            project_admins=[bytes.fromhex("a" * 56), bytes.fromhex("b" * 56)],
+            protocol_fee=2000,  # Valid fee
+            oracle_id=bytes.fromhex("a" * 56),
         )
 
         # Should not raise any exception
-        validate_datum_update(old_datum, new_datum)
+        validate_datum_update(new_datum)
 
     def test_validate_datum_update_admin_change_success(self):
         """Test successful admin update validation"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
         new_datum = DatumProtocol(
-            protocol_admin=[
+            project_admins=[
                 bytes.fromhex("b" * 56),
                 bytes.fromhex("c" * 56),
             ],  # Changed admin list
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Should not raise any exception
-        validate_datum_update(old_datum, new_datum)
+        validate_datum_update(new_datum)
 
     def test_validate_datum_update_oracle_change_success(self):
         """Test successful oracle ID update validation"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
         new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
             oracle_id=bytes.fromhex("c" * 56),  # Changed oracle
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Should not raise any exception
-        validate_datum_update(old_datum, new_datum)
+        validate_datum_update(new_datum)
 
     def test_validate_datum_update_negative_fee_fails(self):
         """Test datum update fails with negative fee"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
         new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=-100,  # Negative fee
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         with pytest.raises(AssertionError, match="Protocol fee must be non-negative"):
-            validate_datum_update(old_datum, new_datum)
+            validate_datum_update(new_datum)
 
-    def test_validate_datum_update_empty_admin_list_fails(self):
-        """Test datum update fails with empty admin list"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
+    def test_validate_datum_update_empty_admin_list_success(self):
+        """Test datum update succeeds with empty admin list"""
         new_datum = DatumProtocol(
-            protocol_admin=[],  # Empty admin list
+            project_admins=[],  # Empty admin list
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
-        with pytest.raises(AssertionError, match="Protocol must have at least one admin"):
-            validate_datum_update(old_datum, new_datum)
+        # Should not raise any exception - empty admin list is allowed
+        validate_datum_update(new_datum)
 
     def test_validate_datum_update_too_many_admins_fails(self):
         """Test datum update fails with too many admins"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
         new_datum = DatumProtocol(
-            protocol_admin=[
-                bytes.fromhex("a" * 56),
-                bytes.fromhex("b" * 56),
-                bytes.fromhex("c" * 56),
-                bytes.fromhex("d" * 56),
-            ],  # 4 admins (too many)
+            project_admins=[
+                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)
+            ],  # 11 admins (too many)
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
-        with pytest.raises(AssertionError, match="Protocol cannot have more than"):
-            validate_datum_update(old_datum, new_datum)
+        with pytest.raises(AssertionError, match="Protocol cannot have more than 10 admins"):
+            validate_datum_update(new_datum)
 
     def test_validate_datum_update_max_admins_success(self):
-        """Test datum update succeeds with maximum allowed admins (3)"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
+        """Test datum update succeeds with maximum allowed admins (10)"""
         new_datum = DatumProtocol(
-            protocol_admin=[
-                bytes.fromhex("a" * 56),
-                bytes.fromhex("b" * 56),
-                bytes.fromhex("c" * 56),
-            ],  # 3 admins (maximum allowed)
+            project_admins=[
+                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(10)
+            ],  # 10 admins (maximum allowed)
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Should not raise any exception
-        validate_datum_update(old_datum, new_datum)
+        validate_datum_update(new_datum)
 
-    def test_validate_datum_update_empty_projects_fails(self):
-        """Test datum update fails with empty projects list"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
 
-        new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[],  # Empty projects list
-        )
 
-        with pytest.raises(AssertionError, match="Protocol must have at least one project"):
-            validate_datum_update(old_datum, new_datum)
-
-    def test_validate_datum_update_too_many_projects_fails(self):
-        """Test datum update fails with too many projects"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create list with 11 projects (too many)
-        too_many_projects = [bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)]
-        new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=too_many_projects,
-        )
-
-        with pytest.raises(AssertionError, match="Protocol cannot have more than 10 projects"):
-            validate_datum_update(old_datum, new_datum)
-
-    def test_validate_datum_update_projects_change_success(self):
-        """Test successful projects update validation"""
-        old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[
-                bytes.fromhex("c" * 56),
-                bytes.fromhex("d" * 56),
-            ],  # Changed projects
-        )
-
-        # Should not raise any exception
-        validate_datum_update(old_datum, new_datum)
 
     def test_validator_update_protocol_success(self):
         """Test successful UpdateProtocol validation"""
@@ -738,18 +623,16 @@ class TestProtocol(MockCommon):
 
         # Create old datum
         old_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Create new datum (only fee changed)
         new_datum = DatumProtocol(
-            protocol_admin=[bytes.fromhex("a" * 56)],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=2000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Create UTxOs
@@ -804,10 +687,9 @@ class TestProtocol(MockCommon):
         # Create datums
         old_datum = self.create_mock_datum_protocol()
         new_datum = DatumProtocol(
-            protocol_admin=old_datum.protocol_admin,
+            project_admins=old_datum.project_admins,
             protocol_fee=2000,  # Only fee changed
             oracle_id=old_datum.oracle_id,
-            projects=old_datum.projects,
         )
 
         # Create UTxOs
@@ -863,10 +745,9 @@ class TestProtocol(MockCommon):
         # Create datums
         old_datum = self.create_mock_datum_protocol()
         new_datum = DatumProtocol(
-            protocol_admin=old_datum.protocol_admin,
+            project_admins=old_datum.project_admins,
             protocol_fee=2000,
             oracle_id=old_datum.oracle_id,
-            projects=old_datum.projects,
         )
 
         # Create UTxOs
@@ -922,15 +803,11 @@ class TestProtocol(MockCommon):
         # Create datums with invalid change (too many admins)
         old_datum = self.create_mock_datum_protocol()
         new_datum = DatumProtocol(
-            protocol_admin=[
-                bytes.fromhex("a" * 56),
-                bytes.fromhex("b" * 56),
-                bytes.fromhex("c" * 56),
-                bytes.fromhex("d" * 56),
-            ],  # 4 admins (too many)
+            project_admins=[
+                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)
+            ],  # 11 admins (too many)
             protocol_fee=old_datum.protocol_fee,
             oracle_id=old_datum.oracle_id,
-            projects=old_datum.projects,
         )
 
         # Create UTxOs
@@ -966,7 +843,7 @@ class TestProtocol(MockCommon):
         )
 
         # Should fail due to too many admins
-        with pytest.raises(AssertionError, match="Protocol cannot have more than"):
+        with pytest.raises(AssertionError, match="Protocol cannot have more than 10 admins"):
             protocol_validator(oref_protocol, old_datum, redeemer, context)
 
     def test_validator_update_protocol_no_output_datum(self):
@@ -1018,270 +895,91 @@ class TestProtocol(MockCommon):
         with pytest.raises(AssertionError):
             protocol_validator(oref_protocol, old_datum, redeemer, context)
 
-    def test_validator_end_protocol_single_admin_signature_success(self):
-        """Test EndProtocol succeeds when single admin signs the transaction"""
+    def test_validator_end_protocol_with_user_token_success(self):
+        """Test EndProtocol succeeds when user has required token"""
         oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
-        # Create protocol datum with single admin
-        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        policy_id = self.sample_policy_id
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)
+
+        # Create protocol datum
         protocol_datum = DatumProtocol(
-            protocol_admin=[admin_pkh],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.script_address,
+            value={b"": 10000000, policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(protocol_datum)
         )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
 
-        redeemer = EndProtocol(protocol_input_index=0)
+        # Create user input with required token
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address, value={b"": 2000000, policy_id: {user_token_name: 1}}
+        )
+        user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        # Create tx_info with admin signature
+        redeemer = EndProtocol(protocol_input_index=0, user_input_index=1)
+
+        # Create tx_info
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[admin_pkh])
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input, user_input])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should not raise any exception
         protocol_validator(oref_protocol, protocol_datum, redeemer, context)
 
-    def test_validator_end_protocol_multiple_admins_one_signs(self):
-        """Test EndProtocol succeeds when one of multiple admins signs"""
+    def test_validator_end_protocol_missing_user_token_fails(self):
+        """Test EndProtocol fails when user doesn't have required token"""
         oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        oref_user = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
-        # Create protocol datum with multiple admins
-        admin1_pkh = bytes.fromhex("abc123" + "0" * 50)
-        admin2_pkh = bytes.fromhex("def456" + "0" * 50)
-        admin3_pkh = bytes.fromhex("789fed" + "0" * 50)
+        policy_id = self.sample_policy_id
+        protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
 
+        # Create protocol datum
         protocol_datum = DatumProtocol(
-            protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
-            protocol_fee=1500,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
-
-        redeemer = EndProtocol(protocol_input_index=0)
-
-        # Create tx_info with only admin2 signature (should be enough)
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[admin2_pkh])
-        context = self.create_mock_script_context(spending_purpose, tx_info)
-
-        # Should not raise any exception
-        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
-
-    def test_validator_end_protocol_multiple_admins_multiple_sign(self):
-        """Test EndProtocol succeeds when multiple admins sign"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-
-        # Create protocol datum with multiple admins
-        admin1_pkh = bytes.fromhex("abc123" + "0" * 50)
-        admin2_pkh = bytes.fromhex("def456" + "0" * 50)
-        admin3_pkh = bytes.fromhex("789fed" + "0" * 50)
-
-        protocol_datum = DatumProtocol(
-            protocol_admin=[admin1_pkh, admin2_pkh, admin3_pkh],
-            protocol_fee=2000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
-
-        redeemer = EndProtocol(protocol_input_index=0)
-
-        # Create tx_info with multiple admin signatures
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[admin1_pkh, admin3_pkh]
-        )
-        context = self.create_mock_script_context(spending_purpose, tx_info)
-
-        # Should not raise any exception
-        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
-
-    def test_validator_end_protocol_no_signatures_fails(self):
-        """Test EndProtocol fails when no signatures provided"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-
-        # Create protocol datum with admin
-        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
-        protocol_datum = DatumProtocol(
-            protocol_admin=[admin_pkh],
+            project_admins=[bytes.fromhex("a" * 56)],
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
         )
 
         # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
+        protocol_input_utxo = self.create_mock_tx_out(
+            self.script_address,
+            value={b"": 10000000, policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(protocol_datum)
         )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
+        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
 
-        redeemer = EndProtocol(protocol_input_index=0)
+        # Create user input WITHOUT required token
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address, value={b"": 2000000}  # No tokens
+        )
+        user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        # Create tx_info with no signatures
+        redeemer = EndProtocol(protocol_input_index=0, user_input_index=1)
+
+        # Create tx_info
         spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[])
+        tx_info = self.create_mock_tx_info(inputs=[protocol_input, user_input])
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        # Should fail due to missing admin signature
-        with pytest.raises(
-            AssertionError, match="EndProtocol requires signature from protocol admin"
-        ):
+        # Should fail due to missing user token
+        with pytest.raises(AssertionError, match="User does not have required token"):
             protocol_validator(oref_protocol, protocol_datum, redeemer, context)
 
-    def test_validator_end_protocol_wrong_signatures_fails(self):
-        """Test EndProtocol fails when non-admin signatures provided"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
 
-        # Create protocol datum with admin
-        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
-        protocol_datum = DatumProtocol(
-            protocol_admin=[admin_pkh],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
 
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
 
-        redeemer = EndProtocol(protocol_input_index=0)
 
-        # Create tx_info with wrong (non-admin) signatures
-        wrong_pkh1 = bytes.fromhex("111111" + "0" * 50)
-        wrong_pkh2 = bytes.fromhex("222222" + "0" * 50)
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[protocol_input], signatories=[wrong_pkh1, wrong_pkh2]
-        )
-        context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        # Should fail due to no valid admin signature
-        with pytest.raises(
-            AssertionError, match="EndProtocol requires signature from protocol admin"
-        ):
-            protocol_validator(oref_protocol, protocol_datum, redeemer, context)
-
-    def test_validator_end_protocol_empty_admin_list_fails(self):
-        """Test EndProtocol fails when protocol admin list is empty"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-
-        # Create protocol datum with empty admin list
-        protocol_datum = DatumProtocol(
-            protocol_admin=[],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
-
-        redeemer = EndProtocol(protocol_input_index=0)
-
-        # Create tx_info with any signature (won't matter since admin list is empty)
-        random_pkh = bytes.fromhex("abcdef" + "0" * 50)
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[random_pkh])
-        context = self.create_mock_script_context(spending_purpose, tx_info)
-
-        # Should fail due to empty admin list
-        with pytest.raises(
-            AssertionError, match="EndProtocol requires signature from protocol admin"
-        ):
-            protocol_validator(oref_protocol, protocol_datum, redeemer, context)
-
-    def test_validator_end_protocol_correct_protocol_input_index(self):
-        """Test EndProtocol succeeds with correct protocol_input_index"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-        oref_other = self.create_mock_oref(bytes.fromhex("b" * 64), 1)
-
-        # Create protocol datum with admin
-        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
-        protocol_datum = DatumProtocol(
-            protocol_admin=[admin_pkh],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
-
-        # Create other input (not protocol) with different address
-        other_address = Address(bytes.fromhex("0" * 56), None)
-        other_output = self.create_mock_tx_out(other_address)
-        other_input = self.create_mock_tx_in_info(oref_other, other_output)
-
-        redeemer = EndProtocol(protocol_input_index=1)  # Protocol is at index 1
-
-        # Create tx_info with inputs in specific order
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(
-            inputs=[other_input, protocol_input],  # Protocol at index 1
-            signatories=[admin_pkh],
-        )
-        context = self.create_mock_script_context(spending_purpose, tx_info)
-
-        # Should not raise any exception
-        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
-
-    def test_validator_end_protocol_large_admin_list_one_valid_signer(self):
-        """Test EndProtocol with large admin list but only one valid signer"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
-
-        # Create protocol datum with many admins
-        valid_admin = bytes.fromhex("aabbcc" + "0" * 50)
-        admin_list = [bytes.fromhex(f"{i:06x}" + "0" * 50) for i in range(100)]
-        admin_list.append(valid_admin)  # Add our valid admin to the end
-
-        protocol_datum = DatumProtocol(
-            protocol_admin=admin_list,
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[bytes.fromhex("b" * 56)],
-        )
-
-        # Create protocol input with datum
-        protocol_output = self.create_mock_tx_out(
-            self.sample_address, datum=SomeOutputDatum(protocol_datum)
-        )
-        protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_output)
-
-        redeemer = EndProtocol(protocol_input_index=0)
-
-        # Create tx_info with valid admin signature
-        spending_purpose = Spending(oref_protocol)
-        tx_info = self.create_mock_tx_info(inputs=[protocol_input], signatories=[valid_admin])
-        context = self.create_mock_script_context(spending_purpose, tx_info)
-
-        # Should not raise any exception
-        protocol_validator(oref_protocol, protocol_datum, redeemer, context)
 
     def test_validator_invalid_redeemer_type(self):
         """Test validator fails with invalid redeemer type"""
@@ -1297,8 +995,8 @@ class TestProtocol(MockCommon):
             protocol_validator(oref_protocol, old_datum, invalid_redeemer, context)
 
 
-class TestMintingContract(MockCommon):
-    """Test cases for the minting contract validator"""
+class TestProtocolNFTMinting(MockCommon):
+    """Test cases for the protocol NFT minting contract validator"""
 
     def test_mint_successful_case(self):
         """Test successful minting of protocol and user NFTs"""
@@ -1326,7 +1024,7 @@ class TestMintingContract(MockCommon):
         # Create redeemer
         redeemer = Mint()
 
-        protocol_nft_validator(consumed_utxo_ref, redeemer, context)  # unique_utxo_index = 0
+        protocol_nft_validator(consumed_utxo_ref, redeemer, context)
 
     def test_mint_wrong_token_count_fails(self):
         """Test minting fails when not exactly 2 tokens are minted"""
@@ -1555,7 +1253,7 @@ class TestMintingContract(MockCommon):
         invalid_redeemer = PlutusData()  # Invalid redeemer type
 
         with pytest.raises(AssertionError, match="Invalid redeemer type"):
-            protocol_nft_validator(0, invalid_redeemer, context)
+            protocol_nft_validator(consumed_utxo_ref, invalid_redeemer, context)
 
     def test_wrong_utxo_reference_fails(self):
         """Test minting fails when unique_utxo_index is wrong"""
@@ -1612,6 +1310,210 @@ class TestMintingContract(MockCommon):
 
         with pytest.raises(AssertionError, match="Must mint exactly 2 tokens"):
             protocol_nft_validator(consumed_utxo_ref, redeemer, context)
+
+
+class TestProjectNFTMinting(MockCommon):
+    """Test cases for the project NFT minting contract validator"""
+
+    def test_mint_project_success_with_admin_signature(self):
+        """Test successful project NFT minting with admin signature"""
+        # Create unique UTXO reference
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_policy_id = bytes.fromhex("b" * 56)
+        
+        # Create admin signature
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        
+        # Create protocol datum with admin
+        protocol_datum = DatumProtocol(
+            project_admins=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=bytes.fromhex("e" * 56),
+        )
+
+        # Create the consumed UTXO
+        consumed_utxo = self.create_mock_tx_out(self.sample_address)
+        consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
+
+        # Create protocol reference input
+        protocol_ref_utxo = self.create_mock_tx_out(
+            self.script_address,
+            value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
+
+        # Generate expected token names
+        project_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+
+        # Create mint value
+        mint_value = {self.sample_policy_id: {project_token_name: 1, user_token_name: 1}}
+
+        # Create transaction info with admin signature
+        tx_info = self.create_mock_tx_info(
+            inputs=[consumed_input],
+            mint=mint_value,
+            signatories=[admin_pkh]  # Admin signs the transaction
+        )
+        tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
+
+        # Create minting context
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = MintProject(protocol_policy_id=protocol_policy_id)
+
+        # Should not raise any exception
+        project_nft_validator(consumed_utxo_ref, redeemer, context)
+
+    def test_mint_project_fails_without_admin_signature(self):
+        """Test project NFT minting fails without admin signature"""
+        # Create unique UTXO reference
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_policy_id = bytes.fromhex("b" * 56)
+        
+        # Create admin and non-admin signatures
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        non_admin_pkh = bytes.fromhex("def456" + "0" * 50)
+        
+        # Create protocol datum with admin
+        protocol_datum = DatumProtocol(
+            project_admins=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=bytes.fromhex("e" * 56),
+        )
+
+        # Create the consumed UTXO
+        consumed_utxo = self.create_mock_tx_out(self.sample_address)
+        consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
+
+        # Create protocol reference input
+        protocol_ref_utxo = self.create_mock_tx_out(
+            self.script_address,
+            value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
+
+        # Generate expected token names
+        project_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+
+        # Create mint value
+        mint_value = {self.sample_policy_id: {project_token_name: 1, user_token_name: 1}}
+
+        # Create transaction info with NON-admin signature
+        tx_info = self.create_mock_tx_info(
+            inputs=[consumed_input],
+            mint=mint_value,
+            signatories=[non_admin_pkh]  # Non-admin signs the transaction
+        )
+        tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
+
+        # Create minting context
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = MintProject(protocol_policy_id=protocol_policy_id)
+
+        # Should fail due to missing admin signature
+        with pytest.raises(AssertionError, match="Minting requires signature from one of the admins"):
+            project_nft_validator(consumed_utxo_ref, redeemer, context)
+
+    def test_mint_project_fails_missing_protocol_reference(self):
+        """Test project NFT minting fails when protocol reference input is missing"""
+        # Create unique UTXO reference
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_policy_id = bytes.fromhex("b" * 56)
+        
+        # Create admin signature
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+
+        # Create the consumed UTXO
+        consumed_utxo = self.create_mock_tx_out(self.sample_address)
+        consumed_input = self.create_mock_tx_in_info(consumed_utxo_ref, consumed_utxo)
+
+        # Generate expected token names
+        project_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+
+        # Create mint value
+        mint_value = {self.sample_policy_id: {project_token_name: 1, user_token_name: 1}}
+
+        # Create transaction info with admin signature but NO reference input
+        tx_info = self.create_mock_tx_info(
+            inputs=[consumed_input],
+            mint=mint_value,
+            signatories=[admin_pkh]
+        )
+        # Don't add reference_inputs - this should cause failure
+
+        # Create minting context
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = MintProject(protocol_policy_id=protocol_policy_id)
+
+        # Should fail due to missing reference input
+        with pytest.raises(IndexError):
+            project_nft_validator(consumed_utxo_ref, redeemer, context)
+
+    def test_burn_project_success_with_admin_signature(self):
+        """Test successful project NFT burning with admin signature"""
+        protocol_policy_id = bytes.fromhex("b" * 56)
+        
+        # Create admin signature
+        admin_pkh = bytes.fromhex("abc123" + "0" * 50)
+        
+        # Create protocol datum with admin
+        protocol_datum = DatumProtocol(
+            project_admins=[admin_pkh],
+            protocol_fee=1000,
+            oracle_id=bytes.fromhex("e" * 56),
+        )
+
+        # Create protocol reference input
+        protocol_ref_utxo = self.create_mock_tx_out(
+            self.script_address,
+            value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
+            datum=SomeOutputDatum(protocol_datum)
+        )
+        protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
+
+        # Create consumed UTXO reference (not actually consumed in burn, but needed for function signature)
+        consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        project_token_name = unique_token_name(consumed_utxo_ref, PREFIX_REFERENCE_NFT)
+        user_token_name = unique_token_name(consumed_utxo_ref, PREFIX_USER_NFT)
+
+        # Burn tokens (negative amounts)
+        mint_value = {self.sample_policy_id: {project_token_name: -1, user_token_name: -1}}
+
+        # Create outputs with no tokens of this policy
+        output_no_tokens = self.create_mock_tx_out(
+            self.sample_address, value={b"": 2000000}  # Only ADA
+        )
+
+        # Create transaction info with admin signature
+        tx_info = self.create_mock_tx_info(
+            outputs=[output_no_tokens],
+            mint=mint_value,
+            signatories=[admin_pkh]
+        )
+        tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
+
+        # Create minting context
+        minting_purpose = Minting(self.sample_policy_id)
+        context = self.create_mock_script_context(minting_purpose, tx_info)
+
+        # Create redeemer
+        redeemer = BurnProject(protocol_policy_id=protocol_policy_id)
+
+        # Should not raise any exception
+        project_nft_validator(consumed_utxo_ref, redeemer, context)
 
 
 if __name__ == "__main__":
