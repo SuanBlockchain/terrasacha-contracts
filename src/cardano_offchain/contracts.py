@@ -314,7 +314,7 @@ class ContractManager:
                 print(f"Compiling project contract using UTXO: {project_utxo_to_spend.input.transaction_id}:{project_utxo_to_spend.input.index}")
                 if protocol_policy_id:
                     # self._set_recursion_limit(2000)
-                    project_contract = build(project_path, project_oref, protocol_policy_id)
+                    project_contract = build(project_path, project_oref)
                     
                     # Determine project contract name (support multiple projects)
                     project_name = "project"
@@ -445,7 +445,7 @@ class ContractManager:
             
             # Compile project contract with oref and protocol_policy_id
             # self._set_recursion_limit(2000)
-            project_contract = build(project_path, oref, protocol_policy_id)
+            project_contract = build(project_path, oref)
             
             # Add to contracts
             self.contracts[project_name] = PlutusContract(project_contract)
@@ -605,7 +605,7 @@ class ContractManager:
         """
         return list(self.contracts.keys())
 
-    def create_minting_contract(self, utxo_ref: TxOutRef) -> Optional[PlutusContract]:
+    def create_minting_contract(self, contract_name: str, utxo_ref: TxOutRef) -> Optional[PlutusContract]:
         """
         Dynamically compile the authentication_nfts minting policy with a specific UTXO reference
 
@@ -616,7 +616,7 @@ class ContractManager:
             PlutusContract instance or None if compilation failed
         """
         try:
-            auth_nfts_path = self.minting_contracts_path / "authentication_nfts.py"
+            auth_nfts_path = self.minting_contracts_path / f"{contract_name}_nfts.py"
             if not auth_nfts_path.exists():
                 return None
 

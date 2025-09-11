@@ -9,11 +9,11 @@ from opshin.ledger.api_v2 import *
 from opshin.prelude import *
 from opshin.std.builtins import *
 
-from src.terrasacha_contracts.minting_policies.authentication_nfts import (
+from terrasacha_contracts.minting_policies.protocol_nfts import (
     Burn,
     Mint,
 )
-from src.terrasacha_contracts.minting_policies.authentication_nfts import (
+from terrasacha_contracts.minting_policies.protocol_nfts import (
     validator as protocol_nft_validator,
 )
 from src.terrasacha_contracts.util import *

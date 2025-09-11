@@ -5,7 +5,6 @@ from terrasacha_contracts.util import *
 @dataclass()
 class DatumProjectParams(PlutusData):
     CONSTR_ID = 1
-    owner: bytes  # Project owner public key hash
     project_id: bytes  # Project Identifier
     project_metadata: bytes  # Metadata URI or hash
     project_state: int  # 0=initialized, 1=distributed, 2=certified 3=closed
@@ -49,7 +48,6 @@ class DatumProject(PlutusData):
 @dataclass()
 class UpdateProject(PlutusData):
     CONSTR_ID = 1
-    # protocol_input_index: int
     project_input_index: int
     user_input_index: int
     project_output_index: int
@@ -71,31 +69,27 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     ##################################################################################################
     # Parameters that always should remain the same (immutable):
     ##################################################################################################
-
-    # 1. Ensure that the project owner remains the same
-    assert old_datum.params.owner == new_datum.params.owner, "Project owner cannot be changed"
-
-    # 2. Ensure that the project ID remains the same
+    # 1. Ensure that the project ID remains the same
     assert (
         old_datum.params.project_id == new_datum.params.project_id
     ), "Project ID cannot be changed"
 
-    # 3. Ensure that the protocol policy ID remains the same
+    # 2. Ensure that the protocol policy ID remains the same
     assert (
         old_datum.protocol_policy_id == new_datum.protocol_policy_id
     ), "Protocol policy ID cannot be changed"
 
-    # 4. Ensure that the token name remains the same
+    # 3. Ensure that the token name remains the same
     assert (
         old_datum.project_token.token_name == new_datum.project_token.token_name
     ), "Token name cannot be changed"
 
-    # 5. Ensure that the project token policy ID remains the same
+    # 4. Ensure that the project token policy ID remains the same
     assert (
         old_datum.project_token.policy_id == new_datum.project_token.policy_id
     ), "Project token policy ID cannot be changed"
 
-    # 6. StakeHolders participation list remains the same
+    # 5. StakeHolders participation list remains the same
     assert len(old_datum.stakeholders) == len(
         new_datum.stakeholders
     ), "Stakeholders list length cannot change"
@@ -109,7 +103,7 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             old_stakeholder.participation == new_stakeholder.participation
         ), "Stakeholder participation cannot change"
 
-    # 7. Existing certification dates and quantities remain the same
+    # 6. Existing certification dates and quantities remain the same
     assert len(new_datum.certifications) >= len(
         old_datum.certifications
     ), "Certifications can only be added, not removed"
@@ -158,19 +152,8 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     ), "Project state can only move forward"
     assert new_datum.params.project_state <= 3, "Invalid project state (must be 0, 1, 2, or 3)"
 
-# def validate_signatories(input_datum: DatumProject, tx_info: TxInfo) -> None:
-#     """
-#     Validate that the project owner has signed the transaction.
-#     Required for EndProject operations.
-#     """
-#     signatories = tx_info.signatories
-#     project_owner = input_datum.params.owner
-
-#     assert project_owner in signatories, "EndProject requires signature from project owner"
-
 def validator(
     oref: TxOutRef,
-    protocol_policy_id: PolicyId,
     datum_project: DatumProject,
     redeemer: RedeemerProject,
     context: ScriptContext,
@@ -178,11 +161,6 @@ def validator(
 
     tx_info = context.tx_info
     purpose = get_spending_purpose(context)
-
-    # Validate that the project datum's protocol policy ID matches the validator parameter
-    assert (
-        datum_project.protocol_policy_id == protocol_policy_id
-    ), "Project datum protocol policy ID must match validator parameter"
 
     if isinstance(redeemer, UpdateProject):
         project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
@@ -199,12 +177,6 @@ def validator(
 
         validate_nft_continues(project_output, project_token)
 
-        protocol_reference_input = tx_info.reference_inputs[0].resolved
-        protocol_datum = protocol_reference_input.datum
-        assert isinstance(protocol_datum, SomeOutputDatum)
-        protocol_datum_value: DatumProtocol = protocol_datum.datum
-        assert any([project == datum_project.params.project_id for project in protocol_datum_value.projects]), "Project must be listed in protocol datum"
-
         project_datum = project_output.datum
         assert isinstance(project_datum, SomeOutputDatum)
         new_datum: DatumProject = project_datum.datum
@@ -219,10 +191,5 @@ def validator(
             project_token.policy_id, user_input
         ), "User does not have required token"
 
-        # project_datum = project_input.datum
-        # assert isinstance(project_datum, SomeOutputDatum)
-        # input_datum: DatumProject = project_datum.datum
-
-        # validate_signatories(input_datum, tx_info)
     else:
         assert False, "Invalid redeemer type"

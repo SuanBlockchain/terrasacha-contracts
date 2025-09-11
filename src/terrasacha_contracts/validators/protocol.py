@@ -3,24 +3,6 @@ from opshin.prelude import *
 from terrasacha_contracts.util import *
 
 
-@dataclass()
-class UpdateProtocol(PlutusData):
-    CONSTR_ID = 1
-    protocol_input_index: int
-    user_input_index: int
-    protocol_output_index: int
-
-
-@dataclass()
-class EndProtocol(PlutusData):
-    CONSTR_ID = 2
-    protocol_input_index: int
-    user_input_index: int
-
-
-RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
-
-
 def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
     """
     Derive the corresponding user NFT token name from a protocol NFT token name.
@@ -45,30 +27,21 @@ def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenNam
     return user_token_name
 
 
-def validate_datum_update(old_datum: DatumProtocol, new_datum: DatumProtocol) -> None:
+def validate_datum_update(new_datum: DatumProtocol) -> None:
     """
     Validate the update of a datum.
-    Now allows updates to protocol_admin, oracle_id, and protocol_fee with proper validations.
+    Now allows updates to project_admins, oracle_id, and protocol_fee with proper validations.
     """
     # Validate protocol_fee
     assert new_datum.protocol_fee >= 0, "Protocol fee must be non-negative"
 
-    # Validate project list updates
-    assert len(new_datum.projects) <= 10, "Protocol cannot have more than 10 projects"
-
-    # Validate no duplicate project IDs within the new projects list
-    projects_len = len(new_datum.projects)
-    for i in range(projects_len):
-        for j in range(projects_len):
-            if j > i:  # Only check pairs once, avoid self-comparison
-                assert (
-                    new_datum.projects[i] != new_datum.projects[j]
-                ), "Duplicate project IDs not allowed in protocol datum"
+    # Validate admin list updates
+    assert len(new_datum.project_admins) <= 10, "Protocol cannot have more than 10 admins"
 
 
 def validator(
     oref: TxOutRef,
-    datum_protocol: DatumProtocol,
+    _: DatumProtocol,
     redeemer: RedeemerProtocol,
     context: ScriptContext,
 ) -> None:
@@ -94,7 +67,7 @@ def validator(
         protocol_datum = protocol_output.datum
         assert isinstance(protocol_datum, SomeOutputDatum)
         new_datum: DatumProtocol = protocol_datum.datum
-        validate_datum_update(datum_protocol, new_datum)
+        validate_datum_update(new_datum)
 
     elif isinstance(redeemer, EndProtocol):
         protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)

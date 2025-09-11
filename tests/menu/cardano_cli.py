@@ -587,17 +587,17 @@ class CardanoCLI:
                 self.menu.print_error("Invalid input for project selection")
                 return
         
-        if not contracts or "protocol" not in contracts or not project_contract:
-            self.menu.print_error("❌ Protocol or Project contracts not available")
-            self.menu.print_info("Please compile contracts first (Option 2 in Contract Menu)")
-            input("\nPress Enter to continue...")
-            return
+        # if not contracts or "protocol" not in contracts or not project_contract:
+        #     self.menu.print_error("❌ Protocol or Project contracts not available")
+        #     self.menu.print_info("Please compile contracts first (Option 2 in Contract Menu)")
+        #     input("\nPress Enter to continue...")
+        #     return
 
         # Check if protocol has been deployed (has UTXOs at protocol address)
-        protocol_contract = self.contract_manager.get_contract("protocol")
-        try:    
-            if protocol_contract:
-                self.menu.print_success("✓ Protocol deployed and ready")
+        # protocol_contract = self.contract_manager.get_contract("protocol")
+        # try:    
+        #     if protocol_contract:
+        #         self.menu.print_success("✓ Protocol deployed and ready")
             # try:
             #     protocol_utxos = self.context.utxos(protocol_contract.testnet_addr)
             #     if not protocol_utxos:
@@ -607,8 +607,8 @@ class CardanoCLI:
             #         return
             #     else:
             #         self.menu.print_success("✓ Protocol deployed and ready")
-        except Exception as e:
-            self.menu.print_warning(f"⚠ Could not verify protocol deployment: {e}")
+        # except Exception as e:
+        #     self.menu.print_warning(f"⚠ Could not verify protocol deployment: {e}")
 
         self.menu.print_info("This will create a new project with associated NFTs")
 
@@ -910,15 +910,15 @@ class CardanoCLI:
             self.menu.print_section("CURRENT PROTOCOL STATE")
             print(f"│ Protocol Fee: {current_datum.protocol_fee / 1_000_000:.6f} ADA")
             print(f"│ Oracle ID: {current_datum.oracle_id.hex()[:16]}...")
-            print(f"│ Project Count: {len(current_datum.projects)}")
-            if current_datum.projects:
+            print(f"│ Admins Count: {len(current_datum.project_admins)}")
+            if current_datum.project_admins:
                 print(
-                    f"│ Projects: {[project.hex()[:16] + '...' for project in current_datum.projects[:3]]}"
+                    f"│ Admins: {[admin.hex()[:16] + '...' for admin in current_datum.project_admins[:3]]}"
                 )
-                if len(current_datum.projects) > 3:
-                    print(f"│           ... and {len(current_datum.projects) - 3} more")
+                if len(current_datum.project_admins) > 3:
+                    print(f"│           ... and {len(current_datum.project_admins) - 3} more")
             else:
-                print(f"│ Projects: None (empty)")
+                print(f"│ Admins: None (empty)")
             print()
 
         except Exception as e:
@@ -931,7 +931,7 @@ class CardanoCLI:
         # Initialize new values with current values
         new_fee_lovelace = current_datum.protocol_fee
         new_oracle_id = current_datum.oracle_id
-        new_projects_list = current_datum.projects.copy()
+        new_admin_list = current_datum.project_admins.copy()
 
         # Option to specify custom fee or use default increment
         fee_input = self.menu.get_input(
@@ -961,73 +961,73 @@ class CardanoCLI:
                 return
 
 
-        # Option to update Projects list
-        project_input = self.menu.get_input("Update projects? (add/remove/keep) [keep]")
-        if project_input.strip().lower() in ["add", "remove"]:
-            if project_input.strip().lower() == "add":
-                self.menu.print_info("Adding projects (type 'done' when finished)")
+        # Option to update Admins list
+        admin_input = self.menu.get_input("Update admins? (add/remove/keep) [keep]")
+        if admin_input.strip().lower() in ["add", "remove"]:
+            if admin_input.strip().lower() == "add":
+                self.menu.print_info("Adding admins (type 'done' when finished)")
                 while True:
-                    new_project_hex = self.menu.get_input("Enter project ID (hex) or 'done'")
-                    if new_project_hex.strip().lower() == 'done':
+                    new_admin_hex = self.menu.get_input("Enter admin ID (hex) or 'done'")
+                    if new_admin_hex.strip().lower() == 'done':
                         break
                     
                     try:
-                        new_project_bytes = bytes.fromhex(new_project_hex.strip())
+                        new_admin_bytes = bytes.fromhex(new_admin_hex.strip())
                         
                         # Check length
-                        if len(new_project_bytes) > 32:  # Reasonable limit for project ID
+                        if len(new_admin_bytes) > 32:  # Reasonable limit for admin ID
                             self.menu.print_error(
-                                "Project ID should not exceed 32 bytes (64 hex chars)"
+                                "Admin ID should not exceed 32 bytes (64 hex chars)"
                             )
                             continue
                             
                         # Check capacity
-                        if len(new_projects_list) >= 10:  # Protocol validation limit
+                        if len(new_admin_list) >= 10:  # Protocol validation limit
                             self.menu.print_error(
-                                "Cannot add more projects - maximum limit of 10 reached"
+                                "Cannot add more admins - maximum limit of 10 reached"
                             )
                             break
                             
                         # Check for duplicates within the transaction
-                        if new_project_bytes in new_projects_list:
-                            self.menu.print_error("Project already being added in this transaction")
+                        if new_admin_bytes in new_admin_list:
+                            self.menu.print_error("Admin already being added in this transaction")
                             continue
                             
-                        new_projects_list.append(new_project_bytes)
-                        self.menu.print_success(f"✓ Added project: {new_project_hex.strip()}")
+                        new_admin_list.append(new_admin_bytes)
+                        self.menu.print_success(f"✓ Added admin: {new_admin_hex.strip()}")
                         
                     except ValueError:
-                        self.menu.print_error("Invalid hex format for project ID")
+                        self.menu.print_error("Invalid hex format for admin ID")
                         continue
-                
-                if len(new_projects_list) > len(current_datum.projects):
-                    added_count = len(new_projects_list) - len(current_datum.projects)
-                    self.menu.print_info(f"Will add {added_count} new project(s) in this transaction")
 
-            elif project_input.strip().lower() == "remove":
-                if len(current_datum.projects) == 0:
-                    self.menu.print_error("No projects to remove")
+                if len(new_admin_list) > len(current_datum.project_admins):
+                    added_count = len(new_admin_list) - len(current_datum.project_admins)
+                    self.menu.print_info(f"Will add {added_count} new admin(s) in this transaction")
+
+            elif admin_input.strip().lower() == "remove":
+                if len(current_datum.project_admins) == 0:
+                    self.menu.print_error("No admins to remove")
                     return
-                self.menu.print_info("Current projects:")
-                for i, project in enumerate(current_datum.projects):
-                    print(f"  {i}: {project.hex()}")
+                self.menu.print_info("Current admins:")
+                for i, admin in enumerate(current_datum.project_admins):
+                    print(f"  {i}: {admin.hex()}")
                 try:
-                    project_index = int(self.menu.get_input("Enter index of project to remove"))
-                    if 0 <= project_index < len(current_datum.projects):
-                        removed_project = new_projects_list.pop(project_index)
-                        self.menu.print_info(f"Removed project: {removed_project.hex()}")
+                    admin_index = int(self.menu.get_input("Enter index of admin to remove"))
+                    if 0 <= admin_index < len(current_datum.project_admins):
+                        removed_admin = new_admin_list.pop(admin_index)
+                        self.menu.print_info(f"Removed admin: {removed_admin.hex()}")
                     else:
-                        self.menu.print_error("Invalid project index")
+                        self.menu.print_error("Invalid admin index")
                         return
                 except ValueError:
-                    self.menu.print_error("Invalid project index")
+                    self.menu.print_error("Invalid admin index")
                     return
 
         # Create new datum with all updates
         new_datum = DatumProtocol(
             protocol_fee=new_fee_lovelace,
             oracle_id=new_oracle_id,
-            projects=new_projects_list,  # Use updated projects list
+            project_admins=new_admin_list,  # Use updated admins list
         )
 
         # Option to specify user address
@@ -1091,24 +1091,24 @@ class CardanoCLI:
             print(f"│ Oracle ID: {old_oracle_str} → {new_oracle_str} ({oracle_status})")
 
             # Compare Project changes
-            old_project_set = set(old_datum.projects)
-            new_project_set = set(new_datum_result.projects)
-            project_changed = old_project_set != new_project_set
-            project_status = "changed" if project_changed else "unchanged"
+            old_admin_state = set(old_datum.project_admins)
+            new_admin_state = set(new_datum_result.project_admins)
+            admin_changed = old_admin_state != new_admin_state
+            admin_status = "changed" if admin_changed else "unchanged"
             print(
-                f"│ Project Count: {len(old_datum.projects)} → {len(new_datum_result.projects)} ({project_status})"
+                f"│ Project Count: {len(old_datum.project_admins)} → {len(new_datum_result.project_admins)} ({admin_status})"
             )
 
-            if project_changed:
-                added_projects = new_project_set - old_project_set
-                removed_projects = old_project_set - new_project_set
-                if added_projects:
+            if admin_changed:
+                added_admins = new_admin_state - old_admin_state
+                removed_admins = old_admin_state - new_admin_state
+                if added_admins:
                     print(
-                        f"│   Added: {[project.hex()[:16] + '...' for project in added_projects]}"
+                        f"│   Added: {[admin.hex()[:16] + '...' for admin in added_admins]}"
                     )
-                if removed_projects:
+                if removed_admins:
                     print(
-                        f"│   Removed: {[project.hex()[:16] + '...' for project in removed_projects]}"
+                        f"│   Removed: {[admin.hex()[:16] + '...' for admin in removed_admins]}"
                     )
 
             print()
@@ -1303,7 +1303,6 @@ class CardanoCLI:
 
             # Display current project state
             self.menu.print_section("CURRENT PROJECT STATUS")
-            print(f"│ Owner: {current_datum.params.owner.hex()[:20]}...")
             print(f"│ Project ID: {current_datum.params.project_id.hex()[:20]}...")
             print(f"│ Project State: {current_datum.params.project_state}")
             print(f"│ Current Supply: {current_datum.project_token.current_supply:,}")
