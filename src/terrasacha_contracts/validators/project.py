@@ -67,27 +67,42 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     Enforces immutability rules and business logic constraints.
     """
     ##################################################################################################
-    # Parameters that always should remain the same (immutable):
+    # Status-based conditional validation rules:
     ##################################################################################################
-    # 1. Ensure that the project ID remains the same
-    assert (
-        old_datum.params.project_id == new_datum.params.project_id
-    ), "Project ID cannot be changed"
+    
+    if old_datum.params.project_state > 0:
+        # When status > 0, these fields become immutable for data integrity
+        assert (
+            old_datum.params.project_id == new_datum.params.project_id
+        ), "Project ID cannot be changed after status > 0"
+        
+        assert (
+            old_datum.protocol_policy_id == new_datum.protocol_policy_id
+        ), "Protocol policy ID cannot be changed after status > 0"
+        
+        assert (
+            old_datum.project_token.token_name == new_datum.project_token.token_name
+        ), "Token name cannot be changed after status > 0"
+    else:
+        # When status == 0 (initialized), allow changes with restrictions
+        
+        # Protocol policy ID: can only be set if currently empty
+        if old_datum.protocol_policy_id != b"" and old_datum.protocol_policy_id != new_datum.protocol_policy_id:
+            assert False, "Protocol policy ID cannot be changed once set"
+        
+        # Token name: can only be set if currently empty  
+        if old_datum.project_token.token_name != b"" and old_datum.project_token.token_name != new_datum.project_token.token_name:
+            assert False, "Token name cannot be changed once set"
 
-    # 2. Ensure that the protocol policy ID remains the same
-    assert (
-        old_datum.protocol_policy_id == new_datum.protocol_policy_id
-    ), "Protocol policy ID cannot be changed"
-
-    # 3. Ensure that the token name remains the same
-    assert (
-        old_datum.project_token.token_name == new_datum.project_token.token_name
-    ), "Token name cannot be changed"
-
-    # 4. Ensure that the project token policy ID remains the same
+    # Project token policy ID: always immutable
     assert (
         old_datum.project_token.policy_id == new_datum.project_token.policy_id
     ), "Project token policy ID cannot be changed"
+    
+    # Total supply: always immutable for token economics consistency
+    assert (
+        old_datum.project_token.total_supply == new_datum.project_token.total_supply
+    ), "Total supply can never be changed"
 
     # 5. StakeHolders participation list remains the same
     assert len(old_datum.stakeholders) == len(
@@ -103,20 +118,26 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             old_stakeholder.participation == new_stakeholder.participation
         ), "Stakeholder participation cannot change"
 
-    # 6. Existing certification dates and quantities remain the same
+    # Certification validation with status-based rules
     assert len(new_datum.certifications) >= len(
         old_datum.certifications
     ), "Certifications can only be added, not removed"
+    
     for i in range(len(old_datum.certifications)):
         old_cert = old_datum.certifications[i]
         new_cert = new_datum.certifications[i]
-        assert (
-            old_cert.certification_date == new_cert.certification_date
-        ), "Existing certification date cannot change"
-        assert (
-            old_cert.quantity == new_cert.quantity
-        ), "Existing certification quantity cannot change"
-        # Real certification dates and quantities can only be added/updated, not removed
+        
+        if old_datum.params.project_state > 0:
+            # When status > 0, existing certifications become immutable
+            assert (
+                old_cert.certification_date == new_cert.certification_date
+            ), "Existing certification date cannot change after status > 0"
+            assert (
+                old_cert.quantity == new_cert.quantity
+            ), "Existing certification quantity cannot change after status > 0"
+        # When status == 0, existing certifications can be modified (no additional checks needed)
+        
+        # Real certification values can always increase regardless of status
         assert (
             new_cert.real_certification_date >= old_cert.real_certification_date
         ), "Real certification date can only increase"
@@ -129,6 +150,7 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     ##################################################################################################
 
     # 1. Sum of participation must always be equal to total supply
+    # (Note: total supply is now always immutable, so this validates stakeholder consistency)
     total_participation = sum([stakeholder.participation for stakeholder in new_datum.stakeholders])
     assert (
         total_participation == new_datum.project_token.total_supply

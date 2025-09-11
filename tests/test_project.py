@@ -108,7 +108,7 @@ class MockCommonProject:
         self,
         project_id: bytes = None,
         project_metadata: bytes = b"https://example.com/project.json",
-        project_state: int = 1,
+        project_state: int = 0,
     ) -> DatumProjectParams:
         """Create mock project parameters"""
         if project_id is None:
@@ -174,6 +174,47 @@ class MockCommonProject:
             project_token=project_token,
             stakeholders=stakeholders,
             certifications=certifications,
+        )
+
+    def create_initialized_project(self, **kwargs) -> DatumProject:
+        """Create a project in initialized state (status 0)"""
+        params = self.create_mock_datum_project_params(project_state=0)
+        return self.create_mock_datum_project(params=params, valid=True, **kwargs)
+
+    def create_distributed_project(self, **kwargs) -> DatumProject:
+        """Create a project in distributed state (status 1)"""
+        params = self.create_mock_datum_project_params(project_state=1)
+        return self.create_mock_datum_project(params=params, valid=True, **kwargs)
+
+    def create_certified_project(self, **kwargs) -> DatumProject:
+        """Create a project in certified state (status 2)"""
+        params = self.create_mock_datum_project_params(project_state=2)
+        return self.create_mock_datum_project(params=params, valid=True, **kwargs)
+
+    def create_closed_project(self, **kwargs) -> DatumProject:
+        """Create a project in closed state (status 3)"""
+        params = self.create_mock_datum_project_params(project_state=3)
+        return self.create_mock_datum_project(params=params, valid=True, **kwargs)
+
+    def create_project_with_empty_fields(self, **kwargs) -> DatumProject:
+        """Create a project with empty protocol_policy_id and token_name for testing initialization"""
+        params = self.create_mock_datum_project_params(project_state=0)
+        project_token = self.create_mock_token_project(token_name=b"")
+        
+        # Ensure stakeholders match the total supply
+        if 'stakeholders' not in kwargs:
+            stakeholders = [
+                self.create_mock_stakeholder_participation("stakeholder1", project_token.total_supply // 2),
+                self.create_mock_stakeholder_participation("stakeholder2", project_token.total_supply // 2),
+            ]
+            kwargs['stakeholders'] = stakeholders
+            
+        return self.create_mock_datum_project(
+            protocol_policy_id=b"",
+            params=params,
+            project_token=project_token,
+            valid=True,
+            **kwargs
         )
 
     def create_mock_tx_out(
@@ -386,9 +427,11 @@ class TestProjectValidationFunctions(MockCommonProject):
         validate_datum_update(old_datum, new_datum)
 
 
-    def test_validate_datum_update_project_id_change_fails(self):
-        """Test datum update fails when project ID changes"""
-        old_datum = self.create_mock_datum_project()
+    def test_validate_datum_update_project_id_change_status_0_success(self):
+        """Test datum update succeeds when project ID changes and status is 0"""
+        # Create datum with status 0
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
 
         new_params = DatumProjectParams(
             project_id=bytes.fromhex("fedcba0987654321" * 4),  # Changed
@@ -404,12 +447,73 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Project ID cannot be changed"):
+        # Should not raise any exception when status is 0
+        validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_project_id_change_status_1_fails(self):
+        """Test datum update fails when project ID changes and status > 0"""
+        # Create datum with status 1
+        old_params = self.create_mock_datum_project_params(project_state=1)
+        old_datum = self.create_mock_datum_project(params=old_params)
+
+        new_params = DatumProjectParams(
+            project_id=bytes.fromhex("fedcba0987654321" * 4),  # Changed
+            project_metadata=old_datum.params.project_metadata,
+            project_state=old_datum.params.project_state,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=new_params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        with pytest.raises(AssertionError, match="Project ID cannot be changed after status > 0"):
             validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_protocol_policy_id_change_fails(self):
-        """Test datum update fails when protocol policy ID changes"""
-        old_datum = self.create_mock_datum_project()
+    def test_validate_datum_update_protocol_policy_id_set_status_0_success(self):
+        """Test datum update succeeds when setting empty protocol policy ID and status is 0"""
+        # Create datum with status 0 and empty protocol policy ID
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
+        old_datum.protocol_policy_id = b""  # Empty initially
+
+        new_datum = DatumProject(
+            protocol_policy_id=bytes.fromhex("1" * 56),  # Setting for first time
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        # Should not raise any exception when setting empty policy ID at status 0
+        validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_protocol_policy_id_change_once_set_fails(self):
+        """Test datum update fails when changing protocol policy ID once it's been set"""
+        # Create datum with status 0 and non-empty protocol policy ID
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
+        old_datum.protocol_policy_id = bytes.fromhex("a" * 56)  # Already set
+
+        new_datum = DatumProject(
+            protocol_policy_id=bytes.fromhex("1" * 56),  # Trying to change
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed once set"):
+            validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_protocol_policy_id_change_status_1_fails(self):
+        """Test datum update fails when protocol policy ID changes and status > 0"""
+        # Create datum with status 1
+        old_params = self.create_mock_datum_project_params(project_state=1)
+        old_datum = self.create_mock_datum_project(params=old_params)
 
         new_datum = DatumProject(
             protocol_policy_id=bytes.fromhex("1" * 56),  # Changed
@@ -419,12 +523,64 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed"):
+        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed after status > 0"):
             validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_token_name_change_fails(self):
-        """Test datum update fails when token name changes"""
-        old_datum = self.create_mock_datum_project()
+    def test_validate_datum_update_token_name_set_status_0_success(self):
+        """Test datum update succeeds when setting empty token name and status is 0"""
+        # Create datum with status 0 and empty token name
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_token = self.create_mock_token_project(token_name=b"")  # Empty initially
+        old_datum = self.create_mock_datum_project(params=old_params, project_token=old_token)
+
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,
+            token_name=b"NEW_TOKEN",  # Setting for first time
+            total_supply=old_datum.project_token.total_supply,
+            current_supply=old_datum.project_token.current_supply,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        # Should not raise any exception when setting empty token name at status 0
+        validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_token_name_change_once_set_fails(self):
+        """Test datum update fails when changing token name once it's been set"""
+        # Create datum with status 0 and non-empty token name
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
+        old_datum.project_token.token_name = b"ORIGINAL_TOKEN"  # Already set
+
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,
+            token_name=b"DIFFERENT_TOKEN",  # Trying to change
+            total_supply=old_datum.project_token.total_supply,
+            current_supply=old_datum.project_token.current_supply,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        with pytest.raises(AssertionError, match="Token name cannot be changed once set"):
+            validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_token_name_change_status_1_fails(self):
+        """Test datum update fails when token name changes and status > 0"""
+        # Create datum with status 1
+        old_params = self.create_mock_datum_project_params(project_state=1)
+        old_datum = self.create_mock_datum_project(params=old_params)
 
         new_token = TokenProject(
             policy_id=old_datum.project_token.policy_id,
@@ -441,7 +597,7 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Token name cannot be changed"):
+        with pytest.raises(AssertionError, match="Token name cannot be changed after status > 0"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_token_policy_change_fails(self):
@@ -548,9 +704,11 @@ class TestProjectValidationFunctions(MockCommonProject):
         with pytest.raises(AssertionError, match="Certifications can only be added, not removed"):
             validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_certification_date_change_fails(self):
-        """Test datum update fails when existing certification date changes"""
-        old_datum = self.create_mock_datum_project()
+    def test_validate_datum_update_certification_date_change_status_0_success(self):
+        """Test datum update succeeds when certification date changes and status is 0"""
+        # Create datum with status 0
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
 
         # Change certification date
         modified_cert = Certification(
@@ -568,12 +726,39 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=[modified_cert],
         )
 
-        with pytest.raises(AssertionError, match="Existing certification date cannot change"):
+        # Should not raise any exception when status is 0
+        validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_certification_date_change_status_1_fails(self):
+        """Test datum update fails when certification date changes and status > 0"""
+        # Create datum with status 1
+        old_params = self.create_mock_datum_project_params(project_state=1)
+        old_datum = self.create_mock_datum_project(params=old_params)
+
+        # Change certification date
+        modified_cert = Certification(
+            certification_date=old_datum.certifications[0].certification_date + 86400,  # Changed
+            quantity=old_datum.certifications[0].quantity,
+            real_certification_date=old_datum.certifications[0].real_certification_date,
+            real_quantity=old_datum.certifications[0].real_quantity,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=[modified_cert],
+        )
+
+        with pytest.raises(AssertionError, match="Existing certification date cannot change after status > 0"):
             validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_certification_quantity_change_fails(self):
-        """Test datum update fails when existing certification quantity changes"""
-        old_datum = self.create_mock_datum_project()
+    def test_validate_datum_update_certification_quantity_change_status_0_success(self):
+        """Test datum update succeeds when certification quantity changes and status is 0"""
+        # Create datum with status 0
+        old_params = self.create_mock_datum_project_params(project_state=0)
+        old_datum = self.create_mock_datum_project(params=old_params)
 
         # Change certification quantity
         modified_cert = Certification(
@@ -591,7 +776,32 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=[modified_cert],
         )
 
-        with pytest.raises(AssertionError, match="Existing certification quantity cannot change"):
+        # Should not raise any exception when status is 0
+        validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_certification_quantity_change_status_1_fails(self):
+        """Test datum update fails when certification quantity changes and status > 0"""
+        # Create datum with status 1
+        old_params = self.create_mock_datum_project_params(project_state=1)
+        old_datum = self.create_mock_datum_project(params=old_params)
+
+        # Change certification quantity
+        modified_cert = Certification(
+            certification_date=old_datum.certifications[0].certification_date,
+            quantity=old_datum.certifications[0].quantity + 100,  # Changed
+            real_certification_date=old_datum.certifications[0].real_certification_date,
+            real_quantity=old_datum.certifications[0].real_quantity,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=[modified_cert],
+        )
+
+        with pytest.raises(AssertionError, match="Existing certification quantity cannot change after status > 0"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_real_certification_date_decrease_fails(self):
@@ -705,6 +915,29 @@ class TestProjectValidationFunctions(MockCommonProject):
         with pytest.raises(AssertionError, match="Current supply cannot exceed total supply"):
             validate_datum_update(old_datum, new_datum)
 
+    def test_validate_datum_update_total_supply_change_fails(self):
+        """Test datum update fails when total supply changes (now always immutable)"""
+        old_datum = self.create_mock_datum_project()
+
+        # Try to change total supply
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,
+            token_name=old_datum.project_token.token_name,
+            total_supply=old_datum.project_token.total_supply + 1000000,  # Changed
+            current_supply=old_datum.project_token.current_supply,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        with pytest.raises(AssertionError, match="Total supply can never be changed"):
+            validate_datum_update(old_datum, new_datum)
+
     def test_validate_datum_update_zero_total_supply_fails(self):
         """Test datum update fails when total supply is zero"""
         # Create project with zero total supply from the start
@@ -764,7 +997,7 @@ class TestProjectValidationFunctions(MockCommonProject):
 
     def test_validate_datum_update_state_regression_fails(self):
         """Test datum update fails when project state goes backward"""
-        old_datum = self.create_mock_datum_project()
+        old_datum = self.create_distributed_project()  # Status 1
 
         # Regress state from 1 to 0
         new_params = DatumProjectParams(
@@ -786,7 +1019,7 @@ class TestProjectValidationFunctions(MockCommonProject):
 
     def test_validate_datum_update_invalid_state_fails(self):
         """Test datum update fails with invalid project state"""
-        old_datum = self.create_mock_datum_project()
+        old_datum = self.create_initialized_project()  # Status 0
 
         # Set invalid state (> 3)
         new_params = DatumProjectParams(
@@ -1139,7 +1372,7 @@ class TestProjectValidator(MockCommonProject):
             project_output_index=0,
         )
 
-        with pytest.raises(AssertionError, match="Sum of participation must equal total supply"):
+        with pytest.raises(AssertionError, match="Total supply can never be changed"):
             project_validator(oref_project, old_datum, redeemer, context)
 
     def test_validator_end_project_success(self):
@@ -1375,6 +1608,960 @@ class TestProjectValidator(MockCommonProject):
 
         with pytest.raises(AssertionError, match="Invalid redeemer type"):
             project_validator(self.create_mock_oref(), project_datum, invalid_redeemer, context)
+
+    # ==================== Enhanced Status-Based Tests ====================
+    
+    def test_validate_datum_update_metadata_change_status_0_vs_1(self):
+        """Test metadata changes are allowed for both status 0 and status > 0"""
+        # Test status 0 (initialized)
+        old_datum_status_0 = self.create_initialized_project()
+        new_datum_status_0 = DatumProject(
+            protocol_policy_id=old_datum_status_0.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=old_datum_status_0.params.project_id,
+                project_metadata=b"https://updated-metadata-status0.com/project.json",
+                project_state=old_datum_status_0.params.project_state,
+            ),
+            project_token=old_datum_status_0.project_token,
+            stakeholders=old_datum_status_0.stakeholders,
+            certifications=old_datum_status_0.certifications,
+        )
+        validate_datum_update(old_datum_status_0, new_datum_status_0)  # Should pass
+        
+        # Test status 1 (distributed)
+        old_datum_status_1 = self.create_distributed_project()
+        new_datum_status_1 = DatumProject(
+            protocol_policy_id=old_datum_status_1.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=old_datum_status_1.params.project_id,
+                project_metadata=b"https://updated-metadata-status1.com/project.json",
+                project_state=old_datum_status_1.params.project_state,
+            ),
+            project_token=old_datum_status_1.project_token,
+            stakeholders=old_datum_status_1.stakeholders,
+            certifications=old_datum_status_1.certifications,
+        )
+        validate_datum_update(old_datum_status_1, new_datum_status_1)  # Should pass
+
+    def test_validate_datum_update_current_supply_increase_all_statuses(self):
+        """Test current supply increases are allowed for all status levels"""
+        statuses = [0, 1, 2, 3]
+        project_creators = [
+            self.create_initialized_project,
+            self.create_distributed_project, 
+            self.create_certified_project,
+            self.create_closed_project
+        ]
+        
+        for status, creator in zip(statuses, project_creators):
+            old_datum = creator()
+            old_supply = old_datum.project_token.current_supply
+            
+            new_token = TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=old_datum.project_token.token_name,
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=min(old_supply + 1000000, old_datum.project_token.total_supply)  # Increase but don't exceed total
+            )
+            
+            new_datum = DatumProject(
+                protocol_policy_id=old_datum.protocol_policy_id,
+                params=old_datum.params,
+                project_token=new_token,
+                stakeholders=old_datum.stakeholders,
+                certifications=old_datum.certifications,
+            )
+            
+            validate_datum_update(old_datum, new_datum)  # Should pass for all statuses
+
+    # ==================== Status Transition Boundary Tests ====================
+
+    def test_validate_datum_update_status_transitions_all_valid_paths(self):
+        """Test all valid status transitions (0->1, 1->2, 2->3, etc.)"""
+        transition_paths = [
+            (0, 1),  # initialized -> distributed
+            (0, 2),  # initialized -> certified (skip distributed)
+            (0, 3),  # initialized -> closed (skip distributed and certified)
+            (1, 2),  # distributed -> certified
+            (1, 3),  # distributed -> closed (skip certified)
+            (2, 3),  # certified -> closed
+        ]
+        
+        for old_status, new_status in transition_paths:
+            old_datum = self.create_mock_datum_project(
+                params=self.create_mock_datum_project_params(project_state=old_status)
+            )
+            new_datum = DatumProject(
+                protocol_policy_id=old_datum.protocol_policy_id,
+                params=DatumProjectParams(
+                    project_id=old_datum.params.project_id,
+                    project_metadata=old_datum.params.project_metadata,
+                    project_state=new_status,
+                ),
+                project_token=old_datum.project_token,
+                stakeholders=old_datum.stakeholders,
+                certifications=old_datum.certifications,
+            )
+            
+            validate_datum_update(old_datum, new_datum)  # Should pass
+
+    def test_validate_datum_update_status_regression_boundary_cases(self):
+        """Test all invalid status regressions fail"""
+        regression_paths = [
+            (1, 0),  # distributed -> initialized
+            (2, 0),  # certified -> initialized
+            (2, 1),  # certified -> distributed  
+            (3, 0),  # closed -> initialized
+            (3, 1),  # closed -> distributed
+            (3, 2),  # closed -> certified
+        ]
+        
+        for old_status, new_status in regression_paths:
+            old_datum = self.create_mock_datum_project(
+                params=self.create_mock_datum_project_params(project_state=old_status)
+            )
+            new_datum = DatumProject(
+                protocol_policy_id=old_datum.protocol_policy_id,
+                params=DatumProjectParams(
+                    project_id=old_datum.params.project_id,
+                    project_metadata=old_datum.params.project_metadata,
+                    project_state=new_status,
+                ),
+                project_token=old_datum.project_token,
+                stakeholders=old_datum.stakeholders,
+                certifications=old_datum.certifications,
+            )
+            
+            with pytest.raises(AssertionError, match="Project state can only move forward"):
+                validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_immutable_fields_at_status_boundary(self):
+        """Test that fields become immutable exactly at the transition from status 0 to 1"""
+        # These changes should work at status 0
+        old_datum_status_0 = self.create_initialized_project()
+        
+        # Test project_id change at status 0 (should work)
+        new_datum_status_0 = DatumProject(
+            protocol_policy_id=old_datum_status_0.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=b"new_project_id_12345678901234567890",  # Changed
+                project_metadata=old_datum_status_0.params.project_metadata,
+                project_state=0,  # Still status 0
+            ),
+            project_token=old_datum_status_0.project_token,
+            stakeholders=old_datum_status_0.stakeholders,
+            certifications=old_datum_status_0.certifications,
+        )
+        validate_datum_update(old_datum_status_0, new_datum_status_0)  # Should pass
+        
+        # The same change should fail at status 1
+        old_datum_status_1 = self.create_distributed_project()
+        new_datum_status_1 = DatumProject(
+            protocol_policy_id=old_datum_status_1.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=b"new_project_id_12345678901234567890",  # Changed
+                project_metadata=old_datum_status_1.params.project_metadata,
+                project_state=1,
+            ),
+            project_token=old_datum_status_1.project_token,
+            stakeholders=old_datum_status_1.stakeholders,
+            certifications=old_datum_status_1.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Project ID cannot be changed after status > 0"):
+            validate_datum_update(old_datum_status_1, new_datum_status_1)
+
+    # ==================== Empty Value Initialization Tests ====================
+
+    def test_validate_datum_update_empty_protocol_policy_id_initialization(self):
+        """Test that empty protocol_policy_id can be set initially but not changed once set"""
+        # Start with empty protocol_policy_id
+        old_datum = self.create_project_with_empty_fields()
+        
+        # Setting empty protocol_policy_id to a value should work (status 0)
+        new_datum = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,  # Set to actual value
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+        validate_datum_update(old_datum, new_datum)  # Should pass
+        
+        # Once set, changing protocol_policy_id should fail
+        newer_datum = DatumProject(
+            protocol_policy_id=bytes.fromhex("f" * 56),  # Different value
+            params=new_datum.params,
+            project_token=new_datum.project_token,
+            stakeholders=new_datum.stakeholders,
+            certifications=new_datum.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed once set"):
+            validate_datum_update(new_datum, newer_datum)
+
+    def test_validate_datum_update_empty_token_name_initialization(self):
+        """Test that empty token_name can be set initially but not changed once set"""
+        # Start with empty token_name
+        old_datum = self.create_project_with_empty_fields()
+        
+        # Setting empty token_name to a value should work (status 0)
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,
+            token_name=b"NEW_PROJECT_TOKEN",  # Set to actual value
+            total_supply=old_datum.project_token.total_supply,
+            current_supply=old_datum.project_token.current_supply,
+        )
+        
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+        validate_datum_update(old_datum, new_datum)  # Should pass
+        
+        # Once set, changing token_name should fail
+        newer_token = TokenProject(
+            policy_id=new_datum.project_token.policy_id,
+            token_name=b"DIFFERENT_TOKEN_NAME",  # Different value
+            total_supply=new_datum.project_token.total_supply,
+            current_supply=new_datum.project_token.current_supply,
+        )
+        
+        newer_datum = DatumProject(
+            protocol_policy_id=new_datum.protocol_policy_id,
+            params=new_datum.params,
+            project_token=newer_token,
+            stakeholders=new_datum.stakeholders,
+            certifications=new_datum.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Token name cannot be changed once set"):
+            validate_datum_update(new_datum, newer_datum)
+
+    def test_validate_datum_update_empty_fields_at_higher_status_fail(self):
+        """Test that empty fields cannot be set when status > 0"""
+        # Try to set protocol_policy_id when status is 1 (should fail)
+        old_datum = DatumProject(
+            protocol_policy_id=b"",  # Empty
+            params=self.create_mock_datum_project_params(project_state=1),  # Status 1
+            project_token=self.create_mock_token_project(),
+            stakeholders=[self.create_mock_stakeholder_participation()],
+            certifications=[self.create_mock_certification()],
+        )
+        
+        new_datum = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,  # Try to set
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed after status > 0"):
+            validate_datum_update(old_datum, new_datum)
+        
+        # Try to set token_name when status is 1 (should fail)
+        old_datum_token = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,
+            params=self.create_mock_datum_project_params(project_state=1),  # Status 1
+            project_token=self.create_mock_token_project(token_name=b""),  # Empty token name
+            stakeholders=[self.create_mock_stakeholder_participation()],
+            certifications=[self.create_mock_certification()],
+        )
+        
+        new_token = TokenProject(
+            policy_id=old_datum_token.project_token.policy_id,
+            token_name=b"NEW_TOKEN_NAME",  # Try to set
+            total_supply=old_datum_token.project_token.total_supply,
+            current_supply=old_datum_token.project_token.current_supply,
+        )
+        
+        new_datum_token = DatumProject(
+            protocol_policy_id=old_datum_token.protocol_policy_id,
+            params=old_datum_token.params,
+            project_token=new_token,
+            stakeholders=old_datum_token.stakeholders,
+            certifications=old_datum_token.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Token name cannot be changed after status > 0"):
+            validate_datum_update(old_datum_token, new_datum_token)
+
+    # ==================== Complex Scenario Tests ====================
+
+    def test_validate_datum_update_complex_status_0_multiple_changes(self):
+        """Test multiple field changes are allowed when status is 0"""
+        old_datum = self.create_project_with_empty_fields()
+        
+        # Make multiple changes at once (status 0)
+        new_params = DatumProjectParams(
+            project_id=b"new_complex_project_id_123456789012",  # Changed
+            project_metadata=b"https://new-complex-metadata.com/project.json",  # Changed
+            project_state=1,  # Changed (state progression)
+        )
+        
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,  # Unchanged
+            token_name=b"COMPLEX_NEW_TOKEN_NAME",  # Changed (was empty)
+            total_supply=old_datum.project_token.total_supply,  # Unchanged
+            current_supply=old_datum.project_token.current_supply + 500000,  # Changed (increased)
+        )
+        
+        # Add a new certification
+        new_certifications = old_datum.certifications + [
+            self.create_mock_certification(cert_date=1672531200)  # Added
+        ]
+        
+        new_datum = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,  # Changed (was empty)
+            params=new_params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,  # Unchanged
+            certifications=new_certifications,
+        )
+        
+        validate_datum_update(old_datum, new_datum)  # Should pass
+
+    def test_validate_datum_update_complex_status_1_restricted_changes(self):
+        """Test that only some changes are allowed when status > 0"""
+        old_datum = self.create_distributed_project()  # Status 1
+        
+        # These changes should work at status 1
+        new_params = DatumProjectParams(
+            project_id=old_datum.params.project_id,  # Unchanged (required)
+            project_metadata=b"https://updated-distributed-metadata.com/project.json",  # Changed (allowed)
+            project_state=2,  # Changed (state progression allowed)
+        )
+        
+        new_token = TokenProject(
+            policy_id=old_datum.project_token.policy_id,  # Unchanged (required)
+            token_name=old_datum.project_token.token_name,  # Unchanged (required)
+            total_supply=old_datum.project_token.total_supply,  # Unchanged (required)
+            current_supply=old_datum.project_token.current_supply + 750000,  # Changed (allowed)
+        )
+        
+        # Add a new certification (allowed)
+        new_certifications = old_datum.certifications + [
+            self.create_mock_certification(cert_date=1672531200)
+        ]
+        
+        # Update real certification values (allowed)
+        updated_certifications = []
+        for cert in new_certifications:
+            updated_cert = Certification(
+                certification_date=cert.certification_date,
+                quantity=cert.quantity,
+                real_certification_date=cert.real_certification_date + 86400,  # Increased (allowed)
+                real_quantity=cert.real_quantity + 100,  # Increased (allowed)
+            )
+            updated_certifications.append(updated_cert)
+        
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,  # Unchanged (required)
+            params=new_params,
+            project_token=new_token,
+            stakeholders=old_datum.stakeholders,  # Unchanged (required)
+            certifications=updated_certifications,
+        )
+        
+        validate_datum_update(old_datum, new_datum)  # Should pass
+
+    def test_validate_datum_update_complex_status_1_forbidden_changes(self):
+        """Test that forbidden changes fail when status > 0, even with allowed changes"""
+        old_datum = self.create_distributed_project()  # Status 1
+        
+        # Mix allowed and forbidden changes
+        new_params = DatumProjectParams(
+            project_id=b"forbidden_new_project_id_123456789",  # FORBIDDEN CHANGE
+            project_metadata=b"https://updated-metadata.com/project.json",  # Allowed change
+            project_state=2,  # Allowed change
+        )
+        
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=new_params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Project ID cannot be changed after status > 0"):
+            validate_datum_update(old_datum, new_datum)
+
+    def test_validate_datum_update_complex_certification_updates(self):
+        """Test complex certification update scenarios"""
+        # Create project with multiple certifications
+        old_certifications = [
+            self.create_mock_certification(cert_date=1640995200, quantity=1000, real_cert_date=1640995200, real_quantity=900),
+            self.create_mock_certification(cert_date=1672531200, quantity=1500, real_cert_date=1672531200, real_quantity=1400),
+        ]
+        
+        old_datum = self.create_distributed_project(certifications=old_certifications)
+        
+        # Update real values and add new certification
+        updated_certifications = [
+            # Update first certification real values (allowed)
+            Certification(
+                certification_date=old_certifications[0].certification_date,  # Unchanged
+                quantity=old_certifications[0].quantity,  # Unchanged
+                real_certification_date=old_certifications[0].real_certification_date + 86400,  # Increased
+                real_quantity=old_certifications[0].real_quantity + 50,  # Increased
+            ),
+            # Keep second certification unchanged
+            old_certifications[1],
+            # Add new certification (allowed)
+            self.create_mock_certification(cert_date=1704067200, quantity=2000),
+        ]
+        
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=updated_certifications,
+        )
+        
+        validate_datum_update(old_datum, new_datum)  # Should pass
+
+    def test_validate_datum_update_complex_supply_and_status_progression(self):
+        """Test complex supply changes with status progression"""
+        old_datum = self.create_initialized_project()  # Status 0
+        
+        # Progress through multiple status levels with supply changes
+        intermediate_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=old_datum.params.project_id,
+                project_metadata=old_datum.params.project_metadata,
+                project_state=1,  # 0 -> 1
+            ),
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=old_datum.project_token.token_name,
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=old_datum.project_token.current_supply + 1000000,  # Increase supply
+            ),
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+        
+        validate_datum_update(old_datum, intermediate_datum)  # Should pass
+        
+        # Further progression
+        final_datum = DatumProject(
+            protocol_policy_id=intermediate_datum.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=intermediate_datum.params.project_id,
+                project_metadata=b"https://final-certified-metadata.com/project.json",
+                project_state=2,  # 1 -> 2
+            ),
+            project_token=TokenProject(
+                policy_id=intermediate_datum.project_token.policy_id,
+                token_name=intermediate_datum.project_token.token_name,
+                total_supply=intermediate_datum.project_token.total_supply,
+                current_supply=intermediate_datum.project_token.total_supply,  # Reach total supply
+            ),
+            stakeholders=intermediate_datum.stakeholders,
+            certifications=intermediate_datum.certifications + [
+                self.create_mock_certification(cert_date=1704067200, quantity=3000)
+            ],
+        )
+        
+        validate_datum_update(intermediate_datum, final_datum)  # Should pass
+
+    # ==================== Integration Tests for Full Validator ====================
+
+    def test_validator_update_project_status_0_field_changes_success(self):
+        """Test full validator with status 0 project allowing field changes"""
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+        user_token_name = b"USER_token"
+
+        # Create old datum (status 0) with empty fields that can be set
+        old_datum = self.create_project_with_empty_fields()
+
+        # Create new datum with field changes allowed at status 0
+        new_params = DatumProjectParams(
+            project_id=b"updated_project_id_1234567890123456",  # Changed (allowed at status 0)
+            project_metadata=b"https://updated-status0.com/project.json",
+            project_state=1,  # Status progression (allowed)
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,  # Set (was empty, allowed at status 0)
+            params=new_params,
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=b"NEW_TOKEN_NAME",  # Set (was empty, allowed at status 0)
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=old_datum.project_token.current_supply + 500000,  # Increased
+            ),
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        # Create protocol datum
+        protocol_datum = self.create_mock_protocol_datum()
+
+        # Create UTxOs
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address,
+            value={b"": 5000000, self.sample_policy_id: {user_token_name: 1}},
+        )
+
+        # Create transaction inputs and outputs
+        tx_inputs = [
+            self.create_mock_tx_in_info(oref_project, project_input_utxo),
+            self.create_mock_tx_in_info(self.create_mock_oref(bytes.fromhex("c" * 64), 0), user_input_utxo),
+        ]
+        tx_outputs = [project_output_utxo]
+
+        # Create redeemer
+        redeemer = UpdateProject(
+            project_input_index=0,
+            user_input_index=1,
+            project_output_index=0,
+        )
+
+        # Create context
+        spending_purpose = Spending(oref_project)
+        tx_info = self.create_mock_tx_info(inputs=tx_inputs, outputs=tx_outputs)
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Should pass - status 0 allows these changes
+        project_validator(oref_project, old_datum, redeemer, context)
+
+    def test_validator_update_project_status_1_restricted_changes_success(self):
+        """Test full validator with status 1 project allowing only certain changes"""
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+        user_token_name = b"USER_token"
+
+        # Create old datum (status 1)
+        old_datum = self.create_distributed_project()
+
+        # Create new datum with only changes allowed at status > 0
+        new_params = DatumProjectParams(
+            project_id=old_datum.params.project_id,  # Unchanged (required)
+            project_metadata=b"https://updated-status1.com/project.json",  # Changed (allowed)
+            project_state=2,  # Status progression (allowed)
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,  # Unchanged (required)
+            params=new_params,
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,  # Unchanged (required)
+                token_name=old_datum.project_token.token_name,  # Unchanged (required)
+                total_supply=old_datum.project_token.total_supply,  # Unchanged (required)
+                current_supply=old_datum.project_token.current_supply + 750000,  # Increased (allowed)
+            ),
+            stakeholders=old_datum.stakeholders,  # Unchanged (required)
+            certifications=old_datum.certifications + [  # Added certification (allowed)
+                self.create_mock_certification(cert_date=1704067200, quantity=2000)
+            ],
+        )
+
+        # Create UTxOs
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address,
+            value={b"": 5000000, self.sample_policy_id: {user_token_name: 1}},
+        )
+
+        # Create transaction inputs and outputs
+        tx_inputs = [
+            self.create_mock_tx_in_info(oref_project, project_input_utxo),
+            self.create_mock_tx_in_info(self.create_mock_oref(bytes.fromhex("c" * 64), 0), user_input_utxo),
+        ]
+        tx_outputs = [project_output_utxo]
+
+        # Create redeemer
+        redeemer = UpdateProject(
+            project_input_index=0,
+            user_input_index=1,
+            project_output_index=0,
+        )
+
+        # Create context
+        spending_purpose = Spending(oref_project)
+        tx_info = self.create_mock_tx_info(inputs=tx_inputs, outputs=tx_outputs)
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Should pass - only allowed changes for status > 0
+        project_validator(oref_project, old_datum, redeemer, context)
+
+    def test_validator_update_project_status_1_forbidden_change_fails(self):
+        """Test full validator fails when trying forbidden changes at status > 0"""
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+        user_token_name = b"USER_token"
+
+        # Create old datum (status 1)
+        old_datum = self.create_distributed_project()
+
+        # Create new datum with forbidden change at status > 0
+        new_params = DatumProjectParams(
+            project_id=b"forbidden_project_id_change_1234567",  # FORBIDDEN CHANGE
+            project_metadata=old_datum.params.project_metadata,
+            project_state=old_datum.params.project_state,
+        )
+
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=new_params,
+            project_token=old_datum.project_token,
+            stakeholders=old_datum.stakeholders,
+            certifications=old_datum.certifications,
+        )
+
+        # Create UTxOs
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        user_input_utxo = self.create_mock_tx_out(
+            self.sample_address,
+            value={b"": 5000000, self.sample_policy_id: {user_token_name: 1}},
+        )
+
+        # Create transaction inputs and outputs
+        tx_inputs = [
+            self.create_mock_tx_in_info(oref_project, project_input_utxo),
+            self.create_mock_tx_in_info(self.create_mock_oref(bytes.fromhex("c" * 64), 0), user_input_utxo),
+        ]
+        tx_outputs = [project_output_utxo]
+
+        # Create redeemer
+        redeemer = UpdateProject(
+            project_input_index=0,
+            user_input_index=1,
+            project_output_index=0,
+        )
+
+        # Create context
+        spending_purpose = Spending(oref_project)
+        tx_info = self.create_mock_tx_info(inputs=tx_inputs, outputs=tx_outputs)
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Should fail due to forbidden project_id change at status > 0
+        with pytest.raises(AssertionError, match="Project ID cannot be changed after status > 0"):
+            project_validator(oref_project, old_datum, redeemer, context)
+
+    # ==================== Project Lifecycle Workflow Tests ====================
+
+    def test_complete_project_lifecycle_workflow(self):
+        """Test a complete project lifecycle from initialization to closure"""
+        # Phase 1: Project Initialization (Status 0)
+        initial_project = self.create_project_with_empty_fields()
+        
+        # Initialize project with basic information
+        configured_project = DatumProject(
+            protocol_policy_id=self.protocol_policy_id,  # Set protocol
+            params=DatumProjectParams(
+                project_id=b"lifecycle_project_id_123456789012",  # Set project ID
+                project_metadata=b"https://lifecycle-project.com/phase1.json",
+                project_state=0,  # Still initialized
+            ),
+            project_token=TokenProject(
+                policy_id=initial_project.project_token.policy_id,
+                token_name=b"LIFECYCLE_TOKEN",  # Set token name
+                total_supply=initial_project.project_token.total_supply,
+                current_supply=initial_project.project_token.current_supply,  # Keep current supply same (can't decrease)
+            ),
+            stakeholders=initial_project.stakeholders,
+            certifications=initial_project.certifications,
+        )
+        
+        validate_datum_update(initial_project, configured_project)  # Should pass
+        
+        # Phase 2: Project Distribution (Status 0 -> 1)
+        distributed_project = DatumProject(
+            protocol_policy_id=configured_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=configured_project.params.project_id,
+                project_metadata=b"https://lifecycle-project.com/phase2-distributed.json",
+                project_state=1,  # Move to distributed
+            ),
+            project_token=TokenProject(
+                policy_id=configured_project.project_token.policy_id,
+                token_name=configured_project.project_token.token_name,
+                total_supply=configured_project.project_token.total_supply,
+                current_supply=configured_project.project_token.total_supply // 2,  # Distribute 50%
+            ),
+            stakeholders=configured_project.stakeholders,
+            certifications=configured_project.certifications,
+        )
+        
+        validate_datum_update(configured_project, distributed_project)  # Should pass
+        
+        # Phase 3: Add Certification and Progress to Certified (Status 1 -> 2)
+        certified_project = DatumProject(
+            protocol_policy_id=distributed_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=distributed_project.params.project_id,  # Cannot change at status > 0
+                project_metadata=b"https://lifecycle-project.com/phase3-certified.json",
+                project_state=2,  # Move to certified
+            ),
+            project_token=TokenProject(
+                policy_id=distributed_project.project_token.policy_id,
+                token_name=distributed_project.project_token.token_name,  # Cannot change at status > 0
+                total_supply=distributed_project.project_token.total_supply,
+                current_supply=distributed_project.project_token.total_supply,  # Fully distributed
+            ),
+            stakeholders=distributed_project.stakeholders,
+            certifications=distributed_project.certifications + [
+                self.create_mock_certification(cert_date=1704067200, quantity=5000, real_cert_date=1704067200, real_quantity=4800)
+            ],
+        )
+        
+        validate_datum_update(distributed_project, certified_project)  # Should pass
+        
+        # Phase 4: Update Real Certification Values and Close Project (Status 2 -> 3)
+        closed_project = DatumProject(
+            protocol_policy_id=certified_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=certified_project.params.project_id,
+                project_metadata=b"https://lifecycle-project.com/phase4-closed.json",
+                project_state=3,  # Move to closed
+            ),
+            project_token=certified_project.project_token,
+            stakeholders=certified_project.stakeholders,
+            certifications=[
+                # Update real certification values (allowed increase)
+                Certification(
+                    certification_date=certified_project.certifications[0].certification_date,
+                    quantity=certified_project.certifications[0].quantity,
+                    real_certification_date=certified_project.certifications[0].real_certification_date,
+                    real_quantity=certified_project.certifications[0].real_quantity,
+                ),
+                Certification(
+                    certification_date=certified_project.certifications[1].certification_date,
+                    quantity=certified_project.certifications[1].quantity,
+                    real_certification_date=certified_project.certifications[1].real_certification_date + 86400,  # Updated
+                    real_quantity=certified_project.certifications[1].real_quantity + 100,  # Updated
+                ),
+            ],
+        )
+        
+        validate_datum_update(certified_project, closed_project)  # Should pass
+
+    def test_project_lifecycle_invalid_transitions(self):
+        """Test that invalid transitions in project lifecycle fail"""
+        # Try to go backwards in lifecycle
+        distributed_project = self.create_distributed_project()  # Status 1
+        
+        # Try to regress to initialized (should fail)
+        regressed_project = DatumProject(
+            protocol_policy_id=distributed_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=distributed_project.params.project_id,
+                project_metadata=distributed_project.params.project_metadata,
+                project_state=0,  # Try to regress
+            ),
+            project_token=distributed_project.project_token,
+            stakeholders=distributed_project.stakeholders,
+            certifications=distributed_project.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Project state can only move forward"):
+            validate_datum_update(distributed_project, regressed_project)
+        
+        # Try to make forbidden changes during valid transition
+        certified_project = self.create_certified_project()  # Status 2
+        
+        # Try to change immutable field during valid status progression (should fail)
+        invalid_closed_project = DatumProject(
+            protocol_policy_id=bytes.fromhex("f" * 56),  # FORBIDDEN CHANGE
+            params=DatumProjectParams(
+                project_id=certified_project.params.project_id,
+                project_metadata=certified_project.params.project_metadata,
+                project_state=3,  # Valid status progression
+            ),
+            project_token=certified_project.project_token,
+            stakeholders=certified_project.stakeholders,
+            certifications=certified_project.certifications,
+        )
+        
+        with pytest.raises(AssertionError, match="Protocol policy ID cannot be changed after status > 0"):
+            validate_datum_update(certified_project, invalid_closed_project)
+
+    def test_project_lifecycle_certification_evolution(self):
+        """Test how certifications evolve through project lifecycle"""
+        # Start with project in distributed state with initial certifications
+        initial_certifications = [
+            self.create_mock_certification(
+                cert_date=1640995200, quantity=1000, 
+                real_cert_date=1640995200, real_quantity=900
+            ),
+            self.create_mock_certification(
+                cert_date=1672531200, quantity=1500,
+                real_cert_date=1672531200, real_quantity=1400
+            ),
+        ]
+        
+        distributed_project = self.create_distributed_project(certifications=initial_certifications)
+        
+        # Progress to certified with new certification
+        certified_with_new = DatumProject(
+            protocol_policy_id=distributed_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=distributed_project.params.project_id,
+                project_metadata=distributed_project.params.project_metadata,
+                project_state=2,  # Move to certified
+            ),
+            project_token=distributed_project.project_token,
+            stakeholders=distributed_project.stakeholders,
+            certifications=distributed_project.certifications + [
+                # Add new certification
+                self.create_mock_certification(
+                    cert_date=1704067200, quantity=2000,
+                    real_cert_date=1704067200, real_quantity=1900
+                ),
+            ],
+        )
+        
+        validate_datum_update(distributed_project, certified_with_new)  # Should pass
+        
+        # Final update with improved real certification values
+        final_project = DatumProject(
+            protocol_policy_id=certified_with_new.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=certified_with_new.params.project_id,
+                project_metadata=b"https://final-certification-update.com/project.json",
+                project_state=3,  # Move to closed
+            ),
+            project_token=certified_with_new.project_token,
+            stakeholders=certified_with_new.stakeholders,
+            certifications=[
+                # Keep first two unchanged
+                certified_with_new.certifications[0],
+                certified_with_new.certifications[1],
+                # Update the third certification with better real values
+                Certification(
+                    certification_date=certified_with_new.certifications[2].certification_date,
+                    quantity=certified_with_new.certifications[2].quantity,
+                    real_certification_date=certified_with_new.certifications[2].real_certification_date + 172800,  # +2 days
+                    real_quantity=certified_with_new.certifications[2].real_quantity + 50,  # Improved
+                ),
+            ],
+        )
+        
+        validate_datum_update(certified_with_new, final_project)  # Should pass
+
+    def test_project_lifecycle_supply_evolution(self):
+        """Test how token supply evolves through project lifecycle"""
+        # Start with initialized project (zero current supply)
+        initial_project = self.create_initialized_project()
+        initial_project = DatumProject(
+            protocol_policy_id=initial_project.protocol_policy_id,
+            params=initial_project.params,
+            project_token=TokenProject(
+                policy_id=initial_project.project_token.policy_id,
+                token_name=initial_project.project_token.token_name,
+                total_supply=10000000,  # 10M total supply
+                current_supply=0,  # Start with zero
+            ),
+            stakeholders=[  # Update stakeholders to match new total supply
+                self.create_mock_stakeholder_participation("stakeholder1", 5000000),
+                self.create_mock_stakeholder_participation("stakeholder2", 5000000),
+            ],
+            certifications=initial_project.certifications,
+        )
+        
+        # Phase 1: Partial distribution (Status 0 -> 1)
+        partial_distribution = DatumProject(
+            protocol_policy_id=initial_project.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=initial_project.params.project_id,
+                project_metadata=initial_project.params.project_metadata,
+                project_state=1,  # Move to distributed
+            ),
+            project_token=TokenProject(
+                policy_id=initial_project.project_token.policy_id,
+                token_name=initial_project.project_token.token_name,
+                total_supply=initial_project.project_token.total_supply,
+                current_supply=3000000,  # 30% distributed
+            ),
+            stakeholders=initial_project.stakeholders,
+            certifications=initial_project.certifications,
+        )
+        
+        validate_datum_update(initial_project, partial_distribution)  # Should pass
+        
+        # Phase 2: Further distribution (Status 1 -> 2)
+        further_distribution = DatumProject(
+            protocol_policy_id=partial_distribution.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=partial_distribution.params.project_id,
+                project_metadata=partial_distribution.params.project_metadata,
+                project_state=2,  # Move to certified
+            ),
+            project_token=TokenProject(
+                policy_id=partial_distribution.project_token.policy_id,
+                token_name=partial_distribution.project_token.token_name,
+                total_supply=partial_distribution.project_token.total_supply,
+                current_supply=7500000,  # 75% distributed
+            ),
+            stakeholders=partial_distribution.stakeholders,
+            certifications=partial_distribution.certifications,
+        )
+        
+        validate_datum_update(partial_distribution, further_distribution)  # Should pass
+        
+        # Phase 3: Full distribution (Status 2 -> 3)
+        full_distribution = DatumProject(
+            protocol_policy_id=further_distribution.protocol_policy_id,
+            params=DatumProjectParams(
+                project_id=further_distribution.params.project_id,
+                project_metadata=further_distribution.params.project_metadata,
+                project_state=3,  # Move to closed
+            ),
+            project_token=TokenProject(
+                policy_id=further_distribution.project_token.policy_id,
+                token_name=further_distribution.project_token.token_name,
+                total_supply=further_distribution.project_token.total_supply,
+                current_supply=further_distribution.project_token.total_supply,  # 100% distributed
+            ),
+            stakeholders=further_distribution.stakeholders,
+            certifications=further_distribution.certifications,
+        )
+        
+        validate_datum_update(further_distribution, full_distribution)  # Should pass
 
 
 if __name__ == "__main__":
