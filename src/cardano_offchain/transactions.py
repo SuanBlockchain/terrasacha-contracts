@@ -128,16 +128,24 @@ class CardanoTransactions:
             to_address_obj = pc.Address.from_primitive(to_address)
             signing_key = wallet.get_signing_key(from_address_index)
 
+            # project_contract = self.contract_manager.get_project_contract("project")
             # Check UTXOs
-            utxos = self.api.address_utxos(str(from_address))
-            if not utxos:
-                raise Exception("No UTXOs available for transaction")
+            utxos = self.context.utxos(from_address)
+            # reference_script_utxo = None
+            # for utxo in utxos:
+            #     if utxo.output.script and utxo.output.script == project_contract.cbor:
+            #         reference_script_utxo = utxo
+            #         break
 
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
+            for u in utxos:
+                builder.add_input(u)
 
+
+            builder.fee = 5000000
             # Add inputs and outputs
-            builder.add_input_address(from_address)
+            # builder.add_input_address(from_address)
             builder.add_output(pc.TransactionOutput(to_address_obj, pc.Value(amount_lovelace)))
 
             # Build and sign transaction

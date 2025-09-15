@@ -25,6 +25,7 @@ from terrasacha_contracts.validators.project import (
     StakeHolderParticipation,
     TokenProject,
     UpdateProject,
+    UpdateToken,
 )
 from terrasacha_contracts.validators.protocol import (
     DatumProtocol,
@@ -563,14 +564,10 @@ class TokenOperations:
                     "success": False,
                     "error": "No protocol UTXO found with specified policy ID",
                 }
-            
-            # all_inputs_utxos = self.transactions.sorted_utxos(user_utxos + [protocol_utxo_to_spend])
-            # protocol_index = all_inputs_utxos.index(protocol_utxo_to_spend)
 
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
-            # for u in user_utxos:
-            #     builder.add_input(u)
+
             builder.add_input(user_utxo_to_spend)
 
             # Add minting script
@@ -596,10 +593,10 @@ class TokenOperations:
             # Create stakeholder participation list
             stakeholder_list = []
             total_supply = 0
-            for stakeholder_name, participation in stakeholders:
+            for stakeholder_name, participation, stakeholder_pkh in stakeholders:
                 stakeholder_list.append(
                     StakeHolderParticipation(
-                        stakeholder=stakeholder_name, participation=participation
+                        stakeholder=stakeholder_name, pkh=stakeholder_pkh, participation=participation, amount_claimed=0
                     )
                 )
                 total_supply += participation
@@ -693,6 +690,59 @@ class TokenOperations:
                 "error": f"Project minting transaction creation failed: {e}",
             }
 
+    def create_reference_script(self, project_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Create a reference script for the specified project
+
+        Args:
+            project_name: Optional specific project contract name to use
+
+        Returns:
+            Reference script creation result dictionary
+        """
+        try:
+            # Get project contract
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
+            
+            # Get wallet info
+            from_address = self.wallet.get_address(0)
+            signing_key = self.wallet.get_signing_key(0)
+
+            # Find suitable UTXO
+            user_utxos = self.context.utxos(pc.Address.from_primitive("addr_test1qpt45lcpyukajk5m5f5ka83afz2luwd3ydg0075g5vqm8t2htflszfedm9dfhgnfd60r6jy4lcumzg6s7lag3gcpkwks0nnfl0"))
+            user_utxo_to_spend = None
+            for utxo in user_utxos:
+                if utxo.output.amount.coin > 3000000:
+                    user_utxo_to_spend = utxo
+                    break
+
+            if not user_utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for minting (need >5 ADA)",
+                }
+            min_val_project = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    from_address,
+                    pc.Value(0),
+                    datum=None,
+                    script=project_contract.cbor,
+                ),
+            )
+            
+            builder = pc.TransactionBuilder(self.context)
+            builder.add_input_address(from_address)
+            builder.add_output(pc.TransactionOutput(from_address, min_val_project, script=project_contract.cbor))
+
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+            return {"success": True, "transaction": signed_tx, "tx_id": signed_tx.id.payload.hex()}
+
+        except Exception as e:
+            return {"success": False, "error": f"Reference script creation failed: {e}"}
+
     def create_project_burn_transaction(
         self, user_address: Optional[pc.Address] = None, project_name: Optional[str] = None
     ) -> Dict[str, Any]:
@@ -708,6 +758,8 @@ class TokenOperations:
         """
         try:
             # Get contracts
+
+            
             project_contract = self.contract_manager.get_project_contract(project_name)
             if not project_contract:
                 return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
@@ -774,15 +826,31 @@ class TokenOperations:
             user_utxos = self.context.utxos(user_address)
             if not user_utxos:
                 return {"success": False, "error": "No user UTXOs found"}
+            # Find the reference script utxo
+            reference_script_utxo = None
+            for utxo in user_utxos:
+                if utxo.output.script and utxo.output.script == project_contract.cbor:
+                    reference_script_utxo = utxo
+                    break
 
-            user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
-                user_utxos, project_minting_policy_id
-            )
+            # user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+            #     user_utxos, project_minting_policy_id
+            # )
+            for utxo in user_utxos:
+                if utxo == reference_script_utxo:
+                    continue  # Skip the reference script UTXO
+                if utxo.output.amount.multi_asset:
+                    for pi, assets in utxo.output.amount.multi_asset.data.items():
+                        if pi == project_minting_policy_id:
+                            user_utxo_to_spend = utxo
+                            break  # Found
+
             if not user_utxo_to_spend:
                 return {
                     "success": False,
                     "error": "No user UTXO found with specified policy ID",
                 }
+            
         
             payment_utxos = user_utxos
             all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend])
@@ -803,7 +871,7 @@ class TokenOperations:
             # Add project UTXO as script input
             builder.add_script_input(
                 project_utxo_to_spend,
-                script=project_script,
+                script=reference_script_utxo,
                 redeemer=pc.Redeemer(EndProject(project_input_index=project_index, user_input_index=user_index)),
             )
 
@@ -1013,3 +1081,208 @@ class TokenOperations:
 
         except Exception as e:
             return {"success": False, "error": f"Project update transaction creation failed: {e}"}
+
+    def create_grey_minting_transaction(
+        self,
+        destination_address: Optional[pc.Address] = None,
+        project_name: Optional[str] = None,
+        grey_token_quantity: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Create a minting transaction for grey tokens
+        Purpose of this Tx is  to UpdateToken datum in the project contract while minting a grey token
+
+        Args:
+            destination_address: Optional destination for grey token
+            grey_token_name: Optional specific grey token name to mint
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+
+            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+
+            if not project_contract:
+                return {"success": False, "error": "No project contract compiled"}
+
+            # Find the name of the project contract being used
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
+
+            project_address = project_contract.testnet_addr
+
+            # Find project UTXO
+            project_utxos = self.context.utxos(project_address)
+            if not project_utxos:
+                return {"success": False, "error": "No project UTXOs found"}
+
+            project_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                project_utxos, project_minting_policy_id
+            )
+            if not project_utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No project UTXO found with specified policy ID",
+                }
+
+            # Get input datum info
+            try:
+                project_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)
+            except Exception as e:
+                return {"success": False, "error": f"Failed to get project datum: {e}"}
+
+            # Get wallet info
+            from_address = self.wallet.get_address(0)
+                        # Add user output
+            if destination_address is None:
+                destination_address = from_address
+
+            # Find suitable UTXO
+            user_utxos = self.context.utxos(from_address)
+            user_utxo_to_spend = None
+            for utxo in user_utxos:
+                if utxo.output.amount.coin > 3000000:
+                    user_utxo_to_spend = utxo
+                    break
+
+            if not user_utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for minting (need >5 ADA)",
+                }
+            
+            # Dynamically compile grey minting contract with the project PolicyID
+            grey_minting_contract = self.contract_manager.create_minting_contract("grey", bytes.fromhex(project_contract.policy_id))
+            if not grey_minting_contract:
+                return {"success": False, "error": "Failed to compile grey minting contract"}
+            
+            grey_minting_script = grey_minting_contract.cbor
+            grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
+
+            # Update project datum to include grey token info
+            new_token_project = TokenProject(
+                policy_id=project_datum.project_token.policy_id,
+                token_name=project_datum.project_token.token_name,
+                total_supply=project_datum.project_token.total_supply,
+                current_supply=grey_token_quantity,
+            )
+
+            # Update stakeholders datum
+            stakeholders_datum = project_datum.stakeholders
+            new_stakeholders = []
+            for stakeholder in stakeholders_datum:
+                current_amount_claimed = stakeholder.amount_claimed
+                if stakeholder.pkh == self.wallet.get_payment_verification_key_hash().hex():
+                    stakeholder.amount_claimed = current_amount_claimed + grey_token_quantity
+                    new_stakeholders.append(stakeholder)
+                elif stakeholder.stakeholder == b"investor" and stakeholder.pkh == "":
+                    stakeholder.amount_claimed = current_amount_claimed + grey_token_quantity
+                    new_stakeholders.append(stakeholder)
+                else:
+                    continue
+
+            payment_utxos = user_utxos
+            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend])
+            project_index = all_inputs_utxos.index(project_utxo_to_spend)
+            user_index = all_inputs_utxos.index(user_utxo_to_spend)
+
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+            builder.add_input(user_utxo_to_spend)
+
+            # Add minting script
+            builder.add_minting_script(script=grey_minting_script, redeemer=pc.Redeemer(Mint()))
+
+            # Add project UTXO as script input
+            builder.add_script_input(
+                project_utxo_to_spend,
+                script=project_contract.cbor,
+                redeemer=pc.Redeemer(
+                    UpdateToken(
+                        project_input_index=project_index,
+                        user_input_index=user_index,
+                        project_output_index=0,
+                        new_supply=grey_token_quantity,
+                    )
+                ),
+            )
+
+            grey_asset = pc.Asset({pc.AssetName(project_datum.project_token.token_name): grey_token_quantity})
+
+            grey_multi_asset = pc.MultiAsset(
+                {grey_minting_policy_id: grey_asset}
+            )
+
+            builder.mint = grey_multi_asset
+
+            new_project_datum = DatumProject(
+                protocol_policy_id=project_datum.protocol_policy_id,
+                params=project_datum.params,
+                project_token=new_token_project,
+                stakeholders=new_stakeholders,
+                certifications=project_datum.certifications,
+            )
+            # Add project output
+
+            project_asset = self.transactions.extract_asset_from_utxo(
+                project_utxo_to_spend, project_minting_policy_id
+            )
+            project_multi_asset = pc.MultiAsset({project_minting_policy_id: project_asset})
+            project_value = pc.Value(0, project_multi_asset)
+            min_val_project = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    project_address,
+                    project_value,
+                    datum=new_project_datum,
+                ),
+            )
+            project_output = pc.TransactionOutput(
+                address=project_address,
+                amount=pc.Value(coin=min_val_project, multi_asset=project_multi_asset),
+                datum=new_project_datum,
+            )
+            builder.add_output(project_output)
+
+            # Add user output
+            if destination_address is None:
+                destination_address = from_address
+
+            user_value = pc.Value(0, grey_multi_asset)
+            min_val_user = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    destination_address,
+                    user_value,
+                    datum=None,
+                ),
+            )
+            user_output = pc.TransactionOutput(
+                address=destination_address,
+                amount=pc.Value(coin=min_val_user, multi_asset=grey_multi_asset),
+                datum=None,
+            )
+            builder.add_output(user_output)
+
+            # Build transaction
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "grey_token_name": project_datum.project_token.token_name.hex(),
+                "minting_policy_id": grey_minting_contract.policy_id,
+                "project_id": project_datum.params.project_id.hex(),
+                "quantity": grey_token_quantity,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Grey token minting transaction creation failed: {e}"}

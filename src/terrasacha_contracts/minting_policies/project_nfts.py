@@ -66,8 +66,6 @@ def validator(
         # 1. Validate that the specified UTXO is consumed
         assert has_utxo(context, oref), "UTxO not consumed"
 
-        
-        
         # Generate unique token names based on UTXO reference
         project_token_name = unique_token_name(oref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(oref, PREFIX_USER_NFT)
