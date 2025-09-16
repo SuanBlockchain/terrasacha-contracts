@@ -5,7 +5,7 @@ Pure transaction functionality without console dependencies.
 Handles transaction building, signing, and submission.
 """
 
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import pycardano as pc
 from blockfrost import ApiError
@@ -14,11 +14,76 @@ from .chain_context import CardanoChainContext
 from .wallet import CardanoWallet, WalletManager
 
 
+class TransactionBuilderHelper:
+    """Helper class for building transactions with both local and reference scripts"""
+    
+    def __init__(self, context: pc.ChainContext, contract_manager):
+        self.context = context
+        self.contract_manager = contract_manager
+    
+    def add_script_to_transaction(self, builder: pc.TransactionBuilder, contract_name: str, redeemer: pc.Redeemer = None) -> bool:
+        """
+        Add a script to a transaction, handling both local and reference scripts
+        
+        Args:
+            builder: Transaction builder
+            contract_name: Name of the contract to add
+            redeemer: Optional redeemer for spending scripts
+            
+        Returns:
+            True if script was added successfully, False otherwise
+        """
+        script_info = self.contract_manager.get_contract_script_info(contract_name)
+        if not script_info:
+            return False
+            
+        if script_info["type"] == "reference_script":
+            # For reference scripts, add as reference input
+            ref_utxo_info = script_info["reference_utxo"]
+            ref_tx_id = pc.TransactionId(bytes.fromhex(ref_utxo_info["tx_id"]))
+            ref_input = pc.TransactionInput(ref_tx_id, ref_utxo_info["output_index"])
+            builder.reference_inputs.add(ref_input)
+            return True
+        else:
+            # For local scripts, the script will be included directly when needed
+            return True
+    
+    def get_script_for_minting(self, contract_name: str) -> Optional[pc.NativeScript]:
+        """
+        Get script for minting operations
+        
+        Args:
+            contract_name: Name of the minting policy contract
+            
+        Returns:
+            Script object or None if not available or is reference script
+        """
+        script_info = self.contract_manager.get_contract_script_info(contract_name)
+        if not script_info or script_info["type"] == "reference_script":
+            return None
+        return script_info["cbor"]
+    
+    def get_script_for_spending(self, contract_name: str) -> Optional[pc.NativeScript]:
+        """
+        Get script for spending operations
+        
+        Args:
+            contract_name: Name of the spending validator contract
+            
+        Returns:
+            Script object or None if not available or is reference script
+        """
+        script_info = self.contract_manager.get_contract_script_info(contract_name)
+        if not script_info or script_info["type"] == "reference_script":
+            return None
+        return script_info["cbor"]
+
+
 class CardanoTransactions:
     """Manages Cardano transaction operations with multi-wallet support"""
 
     def __init__(
-        self, wallet_source: Union[CardanoWallet, WalletManager], chain_context: CardanoChainContext
+        self, wallet_source: Union[CardanoWallet, WalletManager], chain_context: CardanoChainContext, contract_manager=None
     ):
         """
         Initialize transaction manager
@@ -26,6 +91,7 @@ class CardanoTransactions:
         Args:
             wallet_source: CardanoWallet instance or WalletManager instance
             chain_context: CardanoChainContext instance
+            contract_manager: Optional ContractManager for reference script support
         """
         if isinstance(wallet_source, CardanoWallet):
             # Backward compatibility: create single-wallet manager
@@ -42,6 +108,13 @@ class CardanoTransactions:
         self.chain_context = chain_context
         self.context = chain_context.get_context()
         self.api = chain_context.get_api()
+        
+        # Initialize transaction builder helper for reference script support
+        self.contract_manager = contract_manager
+        if contract_manager:
+            self.builder_helper = TransactionBuilderHelper(self.context, contract_manager)
+        else:
+            self.builder_helper = None
 
     def get_wallet(self, wallet_name: Optional[str] = None) -> Optional[CardanoWallet]:
         """
@@ -333,3 +406,210 @@ class CardanoTransactions:
 
         except Exception as e:
             return {"success": False, "error": str(e), "transaction": None}
+
+
+    def create_reference_script(self, project_name: Optional[str] = None, 
+                              source_address: Optional[pc.Address] = None,
+                              destination_address: Optional[pc.Address] = None,
+                              source_wallet: Optional[CardanoWallet] = None) -> Dict[str, Any]:
+        """
+        Create a reference script for the specified project
+        
+        Args:
+            project_name: Optional specific project contract name to use
+            source_address: Address to fund the transaction (defaults to wallet address)
+            destination_address: Address to send the reference script UTXO (defaults to source_address)
+            source_wallet: Wallet instance to use for signing (required if source_address differs from default)
+            
+        Returns:
+            Reference script creation result dictionary
+        """
+        try:
+            # Get project contract
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
+            
+            # Handle reference script contracts
+            if hasattr(project_contract, 'storage_type') and project_contract.storage_type == 'reference_script':
+                return {"success": False, "error": "Contract is already stored as a reference script"}
+            
+            # Use provided addresses or defaults
+            if source_address is None:
+                source_address = self.wallet.get_address(0)
+            if destination_address is None:
+                destination_address = source_address
+                
+            # Use provided wallet or default wallet for signing
+            signing_wallet = source_wallet if source_wallet else self.wallet
+            signing_key = signing_wallet.get_signing_key(0)
+            
+            print(f"Using source address: {str(source_address)}")
+            print(f"Using signing wallet: {signing_wallet.get_payment_verification_key_hash().hex()}")
+            # Find suitable UTXO from source address
+            source_utxos = self.context.utxos(source_address)
+            suitable_utxo = None
+            for utxo in source_utxos:
+                if utxo.output.amount.coin > 5000000:  # Need >5 ADA for reference script
+                    suitable_utxo = utxo
+                    break
+
+            if not suitable_utxo:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for reference script creation (need >5 ADA)",
+                }
+                
+            # Calculate minimum lovelace for reference script output
+            min_val_ref_script = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    destination_address,
+                    pc.Value(0),
+                    datum=None,
+                    script=project_contract.cbor,
+                ),
+            )
+            
+            # Build transaction
+            builder = pc.TransactionBuilder(self.context)
+            builder.add_input_address(source_address)
+            
+            # Add reference script output
+            ref_script_output = pc.TransactionOutput(
+                destination_address, 
+                min_val_ref_script, 
+                script=project_contract.cbor
+            )
+            builder.add_output(ref_script_output)
+
+            # Build and sign transaction
+            signed_tx = builder.build_and_sign([signing_key], change_address=source_address)
+            tx_id = signed_tx.id.payload.hex()
+            
+            # Find the output index of the reference script
+            ref_output_index = None
+            for i, output in enumerate(signed_tx.transaction_body.outputs):
+                if output.script is not None:
+                    ref_output_index = i
+                    break
+                    
+            if ref_output_index is None:
+                return {"success": False, "error": "Reference script output not found in transaction"}
+            
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": tx_id,
+                "reference_utxo": {
+                    "tx_id": tx_id,
+                    "output_index": ref_output_index,
+                    "address": str(destination_address)
+                },
+                "explorer_url": self.chain_context.get_explorer_url(tx_id),
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Reference script creation failed: {e}"}
+        
+    def create_project_nfts_reference_script(self, project_name: Optional[str] = None,
+                                           source_address: Optional[pc.Address] = None,
+                                           destination_address: Optional[pc.Address] = None,
+                                           source_wallet: Optional[CardanoWallet] = None) -> Dict[str, Any]:
+        """
+        Create a reference script for the project NFTs minting policy
+        
+        Args:
+            project_name: Optional specific project contract name to use  
+            source_address: Address to fund the transaction (defaults to wallet address)
+            destination_address: Address to send the reference script UTXO (defaults to source_address)
+            source_wallet: Wallet instance to use for signing (required if source_address differs from default)
+            
+        Returns:
+            Reference script creation result dictionary
+        """
+        try:
+            # Get project NFTs contract
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+            if not project_nfts_contract:
+                return {"success": False, "error": f"Project NFTs contract for '{project_name}' not compiled"}
+                
+            # Handle reference script contracts
+            if hasattr(project_nfts_contract, 'storage_type') and project_nfts_contract.storage_type == 'reference_script':
+                return {"success": False, "error": "Project NFTs contract is already stored as a reference script"}
+            
+            # Use provided addresses or defaults
+            if source_address is None:
+                source_address = self.wallet.get_address(0)
+            if destination_address is None:
+                destination_address = source_address
+                
+            # Use provided wallet or default wallet for signing
+            signing_wallet = source_wallet if source_wallet else self.wallet
+            signing_key = signing_wallet.get_signing_key(0)
+
+            # Find suitable UTXO from source address
+            source_utxos = self.context.utxos(source_address)
+            suitable_utxo = None
+            for utxo in source_utxos:
+                if utxo.output.amount.coin > 5000000:  # Need >5 ADA for reference script
+                    suitable_utxo = utxo
+                    break
+
+            if not suitable_utxo:
+                return {
+                    "success": False,
+                    "error": "No suitable UTXO found for reference script creation (need >5 ADA)",
+                }
+                
+            # Calculate minimum lovelace for reference script output
+            min_val_ref_script = pc.min_lovelace(
+                self.context,
+                output=pc.TransactionOutput(
+                    destination_address,
+                    pc.Value(0),
+                    datum=None,
+                    script=project_nfts_contract.cbor,
+                ),
+            )
+            
+            # Build transaction
+            builder = pc.TransactionBuilder(self.context)
+            builder.add_input_address(source_address)
+            
+            # Add reference script output
+            ref_script_output = pc.TransactionOutput(
+                destination_address, 
+                min_val_ref_script, 
+                script=project_nfts_contract.cbor
+            )
+            builder.add_output(ref_script_output)
+
+            # Build and sign transaction
+            signed_tx = builder.build_and_sign([signing_key], change_address=source_address)
+            tx_id = signed_tx.id.payload.hex()
+            
+            # Find the output index of the reference script
+            ref_output_index = None
+            for i, output in enumerate(signed_tx.transaction_body.outputs):
+                if output.script is not None:
+                    ref_output_index = i
+                    break
+                    
+            if ref_output_index is None:
+                return {"success": False, "error": "Reference script output not found in transaction"}
+            
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": tx_id,
+                "reference_utxo": {
+                    "tx_id": tx_id,
+                    "output_index": ref_output_index,
+                    "address": str(destination_address)
+                },
+                "explorer_url": self.chain_context.get_explorer_url(tx_id),
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Project NFTs reference script creation failed: {e}"}

@@ -34,7 +34,7 @@ from terrasacha_contracts.validators.protocol import (
 )
 
 from .chain_context import CardanoChainContext
-from .contracts import ContractManager
+from .contracts import ContractManager, ReferenceScriptContract
 from .transactions import CardanoTransactions
 from .wallet import CardanoWallet
 
@@ -64,6 +64,73 @@ class TokenOperations:
         self.transactions = transactions
         self.context = chain_context.get_context()
         self.api = chain_context.get_api()
+
+    def _get_script_info_for_transaction(self, contract_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get script information for transaction building, handling both local and reference scripts
+        
+        Args:
+            contract_name: Name of the contract to get info for
+            
+        Returns:
+            Dictionary with script info and type, or None if contract not found
+        """
+        contract = self.contract_manager.get_contract(contract_name)
+        if not contract:
+            return None
+            
+        if isinstance(contract, ReferenceScriptContract):
+            return {
+                "type": "reference_script",
+                "reference_utxo": {
+                    "tx_id": contract.reference_tx_id,
+                    "output_index": contract.reference_output_index,
+                    "address": contract.reference_address
+                },
+                "policy_id": contract.policy_id,
+                "testnet_addr": contract.testnet_addr,
+                "mainnet_addr": contract.mainnet_addr
+            }
+        else:
+            return {
+                "type": "local",
+                "cbor": contract.cbor,
+                "policy_id": contract.policy_id,
+                "testnet_addr": contract.testnet_addr,
+                "mainnet_addr": contract.mainnet_addr
+            }
+    
+    def _add_script_to_builder(self, builder: pc.TransactionBuilder, script_info: Dict[str, Any], 
+                             redeemer: Optional[pc.Redeemer] = None, is_minting: bool = False) -> bool:
+        """
+        Add script to transaction builder, handling both local and reference scripts
+        
+        Args:
+            builder: Transaction builder to add script to
+            script_info: Script information from _get_script_info_for_transaction
+            redeemer: Redeemer for the script (required for spending)
+            is_minting: True if this is for minting, False for spending
+            
+        Returns:
+            True if script was added successfully, False otherwise
+        """
+        # This helper method is mainly for minting policies
+        if script_info["type"] == "reference_script":
+            if is_minting:
+                # For minting with reference scripts, we need to handle this differently
+                # The calling code should handle reference script minting policies manually
+                return False  # Indicate that calling code needs to handle this
+            else:
+                # For spending, this helper shouldn't be used - use the direct approach in calling code
+                return False
+        else:
+            # For local scripts, add them directly
+            if is_minting:
+                builder.add_minting_script(script=script_info["cbor"], redeemer=redeemer)
+                return True
+            else:
+                # For spending, the script will be added in add_script_input call
+                return True
 
     def create_minting_transaction(
         self, destination_address: Optional[pc.Address] = None
@@ -535,9 +602,12 @@ class TokenOperations:
             project_nfts_name = f"{project_contract_name}_nfts"
             self.contract_manager.contracts[project_nfts_name] = project_nfts_contract
 
-            # Get contract info
-            project_minting_script = project_nfts_contract.cbor
-            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+            # Get contract info using helper method
+            project_nfts_info = self._get_script_info_for_transaction(project_nfts_name)
+            if not project_nfts_info:
+                return {"success": False, "error": "Project NFTs contract info not available"}
+            
+            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_info["policy_id"]))
 
             # Get the protocol Policy ID for the datum
             protocol_contract = self.contract_manager.get_contract("protocol")
@@ -570,8 +640,31 @@ class TokenOperations:
 
             builder.add_input(user_utxo_to_spend)
 
-            # Add minting script
-            builder.add_minting_script(script=project_minting_script, redeemer=pc.Redeemer(MintProject(protocol_policy_id=bytes.fromhex(protocol_minting_script.policy_id))))
+            # Add minting script - handle both local and reference scripts
+            mint_redeemer = pc.Redeemer(MintProject(protocol_input_index=0, protocol_policy_id=bytes.fromhex(protocol_minting_script.policy_id)))
+            
+            if project_nfts_info["type"] == "reference_script":
+                # For reference script minting policies, we need to find the reference UTXO
+                ref_utxo_info = project_nfts_info["reference_utxo"]
+                ref_address = pc.Address.from_primitive(ref_utxo_info["address"])
+                
+                # Find the UTXO containing the reference script
+                reference_script_utxo = None
+                for utxo in self.context.utxos(ref_address):
+                    if (utxo.input.transaction_id.payload.hex() == ref_utxo_info["tx_id"] and 
+                        utxo.input.index == ref_utxo_info["output_index"]):
+                        reference_script_utxo = utxo
+                        break
+                
+                if not reference_script_utxo:
+                    return {"success": False, "error": "Reference script UTXO not found for minting policy"}
+                
+                # For minting policies with reference scripts, PyCardano handles this automatically
+                # when we set the mint field - no need to call add_minting_script
+                pass
+            else:
+                # For local scripts, use helper method
+                self._add_script_to_builder(builder, project_nfts_info, mint_redeemer, is_minting=True)
             
             builder.reference_inputs.add(protocol_utxo_to_spend)
             
@@ -690,231 +783,219 @@ class TokenOperations:
                 "error": f"Project minting transaction creation failed: {e}",
             }
 
-    def create_reference_script(self, project_name: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Create a reference script for the specified project
-
-        Args:
-            project_name: Optional specific project contract name to use
-
-        Returns:
-            Reference script creation result dictionary
-        """
-        try:
-            # Get project contract
-            project_contract = self.contract_manager.get_project_contract(project_name)
-            if not project_contract:
-                return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
-            
-            # Get wallet info
-            from_address = self.wallet.get_address(0)
-            signing_key = self.wallet.get_signing_key(0)
-
-            # Find suitable UTXO
-            user_utxos = self.context.utxos(pc.Address.from_primitive("addr_test1qpt45lcpyukajk5m5f5ka83afz2luwd3ydg0075g5vqm8t2htflszfedm9dfhgnfd60r6jy4lcumzg6s7lag3gcpkwks0nnfl0"))
-            user_utxo_to_spend = None
-            for utxo in user_utxos:
-                if utxo.output.amount.coin > 3000000:
-                    user_utxo_to_spend = utxo
-                    break
-
-            if not user_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No suitable UTXO found for minting (need >5 ADA)",
-                }
-            min_val_project = pc.min_lovelace(
-                self.context,
-                output=pc.TransactionOutput(
-                    from_address,
-                    pc.Value(0),
-                    datum=None,
-                    script=project_contract.cbor,
-                ),
-            )
-            
-            builder = pc.TransactionBuilder(self.context)
-            builder.add_input_address(from_address)
-            builder.add_output(pc.TransactionOutput(from_address, min_val_project, script=project_contract.cbor))
-
-            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
-            return {"success": True, "transaction": signed_tx, "tx_id": signed_tx.id.payload.hex()}
-
-        except Exception as e:
-            return {"success": False, "error": f"Reference script creation failed: {e}"}
-
     def create_project_burn_transaction(
-        self, user_address: Optional[pc.Address] = None, project_name: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Create a burn transaction for project and user NFTs
+            self, user_address: Optional[pc.Address] = None, project_name: Optional[str] = None
+        ) -> Dict[str, Any]:
+            """
+            Create a burn transaction for project and user NFTs.
+            Automatically detects and handles both local and reference script contracts.
 
-        Args:
-            user_address: Optional address containing user tokens to burn
-            project_name: Optional specific project contract name to use
+            Args:
+                user_address: Optional address containing user tokens to burn
+                project_name: Optional specific project contract name to use
 
-        Returns:
-            Transaction creation result dictionary
-        """
-        try:
-            # Get contracts
+            Returns:
+                Transaction creation result dictionary
+            """
+            try:
+                # Get contracts using helper methods
+                project_contract = self.contract_manager.get_project_contract(project_name)
+                if not project_contract:
+                    return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
+                
+                # Get the corresponding project NFTs minting policy
+                project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+                if not project_nfts_contract:
+                    return {"success": False, "error": "Required contracts not compiled"}
 
+                # Get project contract name for reference
+                project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract) or project_name
+                project_nfts_name = f"{project_contract_name}_nfts"
+
+                # Get contract info using helper methods
+                project_info = self._get_script_info_for_transaction(project_contract_name)
+                project_nfts_info = self._get_script_info_for_transaction(project_nfts_name)
+                
+                if not project_info or not project_nfts_info:
+                    return {"success": False, "error": "Contract info not available"}
+
+                project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_info["policy_id"]))
+                project_address = project_info["testnet_addr"]
+
+                # Get the protocol Policy ID for the datum
+                protocol_contract = self.contract_manager.get_contract("protocol")
+                if not protocol_contract:
+                    return {"success": False, "error": "Protocol contract not compiled"}
+                protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
+                protocol_address = protocol_contract.testnet_addr
+
+                protocol_minting_script = self.contract_manager.get_contract("protocol_nfts")
+                if not protocol_minting_script:
+                    return {"success": False, "error": "Protocol NFTs contract not compiled"}
+                protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_minting_script.policy_id))
+
+                # Find protocol UTXO
+                protocol_utxos = self.context.utxos(protocol_address)
+                if not protocol_utxos:
+                    return {"success": False, "error": "No protocol UTXOs found"}
+
+                protocol_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                    protocol_utxos, protocol_minting_policy_id
+                )
+                if not protocol_utxo_to_spend:
+                    return {
+                        "success": False,
+                        "error": "No protocol UTXO found with specified policy ID",
+                    }
+
+                # Get wallet info
+                signing_key = self.wallet.get_signing_key(0)
+
+                # Find project UTXO
+                project_utxos = self.context.utxos(project_address)
+                if not project_utxos:
+                    return {"success": False, "error": "No project UTXOs found"}
+
+                project_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                    project_utxos, project_minting_policy_id
+                )
+                if not project_utxo_to_spend:
+                    return {
+                        "success": False,
+                        "error": "No project UTXO found with specified policy ID",
+                    }
+                
+                # Find user UTXO
+                if user_address is None:
+                    user_address = self.wallet.get_address(0)
+
+                user_utxos = self.context.utxos(user_address)
+                if not user_utxos:
+                    return {"success": False, "error": "No user UTXOs found"}
+
+                user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                    user_utxos, project_minting_policy_id
+                )
+                if not user_utxo_to_spend:
+                    return {
+                        "success": False,
+                        "error": "No user UTXO found with specified policy ID",
+                    }
             
-            project_contract = self.contract_manager.get_project_contract(project_name)
-            if not project_contract:
-                return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
-            
-            # Get the corresponding project NFTs minting policy
-            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
-            
-            if not project_nfts_contract:
-                return {"success": False, "error": "Required contracts not compiled"}
+                payment_utxos = user_utxos
+                all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend])
+                project_index = all_inputs_utxos.index(project_utxo_to_spend)
+                user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
-            # Get contract info
-            project_minting_script = project_nfts_contract.cbor
-            project_script = project_contract.cbor
-            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
-            project_address = project_contract.testnet_addr
 
-            # Get the protocol Policy ID for the datum
-            protocol_contract = self.contract_manager.get_contract("protocol")
-            if not protocol_contract:
-                return {"success": False, "error": "Protocol contract not compiled"}
-            protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
-            protocol_address = protocol_contract.testnet_addr
+                # Create transaction builder
+                builder = pc.TransactionBuilder(self.context)
 
-            protocol_minting_script = self.contract_manager.get_contract("protocol_nfts")
-            if not protocol_minting_script:
-                return {"success": False, "error": "Protocol NFTs contract not compiled"}
-            protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_minting_script.policy_id))
+                for u in payment_utxos:
+                    builder.add_input(u)
 
-            # Find protocol UTXO
-            protocol_utxos = self.context.utxos(protocol_address)
-            if not protocol_utxos:
-                return {"success": False, "error": "No protocol UTXOs found"}
-
-            protocol_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
-                protocol_utxos, protocol_minting_policy_id
-            )
-            if not protocol_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No protocol UTXO found with specified policy ID",
-                }
-
-            # Get wallet info
-            signing_key = self.wallet.get_signing_key(0)
-
-            # Find project UTXO
-            project_utxos = self.context.utxos(project_address)
-            if not project_utxos:
-                return {"success": False, "error": "No project UTXOs found"}
-
-            project_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
-                project_utxos, project_minting_policy_id
-            )
-            if not project_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No project UTXO found with specified policy ID",
-                }
-            
-            # Find user UTXO
-            if user_address is None:
-                user_address = self.wallet.get_address(0)
-
-            user_utxos = self.context.utxos(user_address)
-            if not user_utxos:
-                return {"success": False, "error": "No user UTXOs found"}
-            # Find the reference script utxo
-            reference_script_utxo = None
-            for utxo in user_utxos:
-                if utxo.output.script and utxo.output.script == project_contract.cbor:
-                    reference_script_utxo = utxo
-                    break
-
-            # user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
-            #     user_utxos, project_minting_policy_id
-            # )
-            for utxo in user_utxos:
-                if utxo == reference_script_utxo:
-                    continue  # Skip the reference script UTXO
-                if utxo.output.amount.multi_asset:
-                    for pi, assets in utxo.output.amount.multi_asset.data.items():
-                        if pi == project_minting_policy_id:
-                            user_utxo_to_spend = utxo
-                            break  # Found
-
-            if not user_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No user UTXO found with specified policy ID",
-                }
-            
-        
-            payment_utxos = user_utxos
-            all_inputs_utxos = self.transactions.sorted_utxos(payment_utxos + [project_utxo_to_spend])
-            project_index = all_inputs_utxos.index(project_utxo_to_spend)
-            user_index = all_inputs_utxos.index(user_utxo_to_spend)
-
-            # Create transaction builder
-            builder = pc.TransactionBuilder(self.context)
-
-            for u in payment_utxos:
-                builder.add_input(u)
-
-            # Add minting script for burning
-            builder.add_minting_script(script=project_minting_script, redeemer=pc.Redeemer(BurnProject(protocol_policy_id=bytes.fromhex(protocol_minting_script.policy_id))))
-
-            builder.reference_inputs.add(protocol_utxo_to_spend)
-
-            # Add project UTXO as script input
-            builder.add_script_input(
-                project_utxo_to_spend,
-                script=reference_script_utxo,
-                redeemer=pc.Redeemer(EndProject(project_input_index=project_index, user_input_index=user_index)),
-            )
-
-            # Extract assets for burning
-            user_asset = self.transactions.extract_asset_from_utxo(
-                user_utxo_to_spend, project_minting_policy_id
-            )
-            project_asset = self.transactions.extract_asset_from_utxo(
-                project_utxo_to_spend, project_minting_policy_id
-            )
-
-            # Set burn amounts (negative minting)
-            total_mint = pc.MultiAsset(
-                {
-                    project_minting_policy_id: pc.Asset(
-                        {
-                            list(project_asset.keys())[0]: -1,
-                            list(user_asset.keys())[0]: -1,
-                        }
+                # Add project UTXO as script input - handle both local and reference scripts
+                project_redeemer = pc.Redeemer(EndProject(project_input_index=project_index, user_input_index=user_index))
+                
+                if project_info["type"] == "reference_script":
+                    # For reference scripts, we need to find the actual UTXO containing the reference script
+                    ref_utxo_info = project_info["reference_utxo"]
+                    ref_address = pc.Address.from_primitive(ref_utxo_info["address"])
+                    
+                    # Find the UTXO containing the reference script
+                    reference_script_utxo = None
+                    for utxo in self.context.utxos(ref_address):
+                        if (utxo.input.transaction_id.payload.hex() == ref_utxo_info["tx_id"] and 
+                            utxo.input.index == ref_utxo_info["output_index"]):
+                            reference_script_utxo = utxo
+                            break
+                    
+                    if not reference_script_utxo:
+                        return {"success": False, "error": "Reference script UTXO not found"}
+                    
+                    builder.add_script_input(
+                        project_utxo_to_spend,
+                        script=reference_script_utxo,  # Pass the actual UTXO containing the script
+                        redeemer=project_redeemer,
                     )
+                else:
+                    # For local scripts, include the script
+                    builder.add_script_input(
+                        project_utxo_to_spend,
+                        script=project_info["cbor"],
+                        redeemer=project_redeemer,
+                    )
+
+                all_reference_input_index = self.transactions.sorted_utxos([reference_script_utxo, protocol_utxo_to_spend])
+                protocol_input_index = all_reference_input_index.index(protocol_utxo_to_spend)
+                # Add minting script for burning - handle both local and reference scripts
+                burn_redeemer = pc.Redeemer(BurnProject(protocol_input_index=protocol_input_index, protocol_policy_id=bytes.fromhex(protocol_minting_script.policy_id)))
+                
+                builder.reference_inputs.add(protocol_utxo_to_spend)
+                if project_nfts_info["type"] == "reference_script":
+                    # For reference script minting policies, we need to find the reference UTXO
+                    ref_utxo_info = project_nfts_info["reference_utxo"]
+                    ref_address = pc.Address.from_primitive(ref_utxo_info["address"])
+                    
+                    # Find the UTXO containing the reference script
+                    reference_script_utxo = None
+                    for utxo in self.context.utxos(ref_address):
+                        if (utxo.input.transaction_id.payload.hex() == ref_utxo_info["tx_id"] and 
+                            utxo.input.index == ref_utxo_info["output_index"]):
+                            reference_script_utxo = utxo
+                            break
+                    
+                    if not reference_script_utxo:
+                        return {"success": False, "error": "Reference script UTXO not found for minting policy"}
+                    
+                    # For minting policies with reference scripts, PyCardano handles this automatically
+                    # when we set the mint field - no need to call add_minting_script
+                    pass
+                else:
+                    # For local scripts, use helper method
+                    self._add_script_to_builder(builder, project_nfts_info, burn_redeemer, is_minting=True)
+
+                # Extract assets for burning
+                user_asset = self.transactions.extract_asset_from_utxo(
+                    user_utxo_to_spend, project_minting_policy_id
+                )
+                project_asset = self.transactions.extract_asset_from_utxo(
+                    project_utxo_to_spend, project_minting_policy_id
+                )
+
+                # Set burn amounts (negative minting)
+                total_mint = pc.MultiAsset(
+                    {
+                        project_minting_policy_id: pc.Asset(
+                            {
+                                list(project_asset.keys())[0]: -1,
+                                list(user_asset.keys())[0]: -1,
+                            }
+                        )
+                    }
+                )
+                builder.mint = total_mint
+
+                # Add user address to pay for transaction
+                builder.add_input_address(user_address)
+
+                # Build transaction
+                signing_key = self.wallet.get_signing_key(0)
+                print("keys", self.wallet.get_payment_verification_key_hash().hex())
+                signed_tx = builder.build_and_sign([signing_key], change_address=user_address)
+
+                return {
+                    "success": True,
+                    "transaction": signed_tx,
+                    "tx_id": signed_tx.id.payload.hex(),
+                    "burned_tokens": {
+                        "project_token": list(project_asset.keys())[0].payload.hex(),
+                        "user_token": list(user_asset.keys())[0].payload.hex(),
+                    },
                 }
-            )
-            builder.mint = total_mint
 
-            # Add user address to pay for transaction
-            builder.add_input_address(user_address)
-
-            # Build transaction
-            signing_key = self.wallet.get_signing_key(0)
-            signed_tx = builder.build_and_sign([signing_key], change_address=user_address)
-
-            return {
-                "success": True,
-                "transaction": signed_tx,
-                "tx_id": signed_tx.id.payload.hex(),
-                "burned_tokens": {
-                    "project_token": list(project_asset.keys())[0].payload.hex(),
-                    "user_token": list(user_asset.keys())[0].payload.hex(),
-                },
-            }
-
-        except Exception as e:
-            return {"success": False, "error": f"Project burn transaction creation failed: {e}"}
+            except Exception as e:
+                return {"success": False, "error": f"Project burn transaction creation failed: {e}"}
 
     def create_project_update_transaction(
         self, user_address: Optional[pc.Address] = None, new_datum: DatumProject = None, project_name: Optional[str] = None
@@ -931,27 +1012,34 @@ class TokenOperations:
             Transaction creation result dictionary
         """
         try:
-            # Get project contracts
+            # Get project contracts using helper methods
             project_contract = self.contract_manager.get_project_contract(project_name)
             if not project_contract:
                 return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
             
+            # Get project contract name for reference
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract) or project_name
+            
+            # Get contract info using helper methods
+            project_info = self._get_script_info_for_transaction(project_contract_name)
+            if not project_info:
+                return {"success": False, "error": "Project contract info not available"}
+            
             # Get the corresponding project NFTs minting policy  
             project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
             
-            protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
-            protocol_contract = self.contract_manager.get_contract("protocol")
+            # protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
+            # protocol_contract = self.contract_manager.get_contract("protocol")
 
-            if not project_nfts_contract or not protocol_contract:
-                return {"success": False, "error": "Required contract not compiled"}
+            # if not project_nfts_contract or not protocol_contract:
+            #     return {"success": False, "error": "Required contract not compiled"}
 
             # Get contract info
-            project_script = project_contract.cbor
             minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
-            protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+            # protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
 
-            project_address = project_contract.testnet_addr
-            protocol_address = protocol_contract.testnet_addr
+            project_address = project_info["testnet_addr"]
+            # protocol_address = protocol_contract.testnet_addr
 
             # Find project UTXO
             project_utxos = self.context.utxos(project_address)
@@ -995,34 +1083,59 @@ class TokenOperations:
             for u in payment_utxos:
                 builder.add_input(u)
 
-            # Add project UTXO as script input
-            builder.add_script_input(
-                project_utxo_to_spend,
-                script=project_script,
-                redeemer=pc.Redeemer(
-                    UpdateProject(
-                        project_input_index=project_index,
-                        user_input_index=user_index,
-                        project_output_index=0,
-                    )
-                ),
+            # Add project UTXO as script input - handle both local and reference scripts
+            project_redeemer = pc.Redeemer(
+                UpdateProject(
+                    project_input_index=project_index,
+                    user_input_index=user_index,
+                    project_output_index=0,
+                )
             )
-
-            # Add protocol UTXO as input
-            protocol_utxos = self.context.utxos(protocol_address)
-            if not protocol_utxos:
-                return {"success": False, "error": "No protocol UTXOs found"}
             
-            protocol_utxo = self.transactions.find_utxo_by_policy_id(
-                protocol_utxos, protocol_minting_policy_id
-            )
-            if not protocol_utxo:
-                return {
-                    "success": False,
-                    "error": "No protocol UTXO found with specified policy ID",
-                }
-            # # builder.add_input(protocol_utxo)
-            builder.reference_inputs.add(protocol_utxo)
+            if project_info["type"] == "reference_script":
+                # For reference scripts, we need to find the actual UTXO containing the reference script
+                ref_utxo_info = project_info["reference_utxo"]
+                ref_address = pc.Address.from_primitive(ref_utxo_info["address"])
+                
+                # Find the UTXO containing the reference script
+                reference_script_utxo = None
+                for utxo in self.context.utxos(ref_address):
+                    if (utxo.input.transaction_id.payload.hex() == ref_utxo_info["tx_id"] and 
+                        utxo.input.index == ref_utxo_info["output_index"]):
+                        reference_script_utxo = utxo
+                        break
+                
+                if not reference_script_utxo:
+                    return {"success": False, "error": "Reference script UTXO not found"}
+                
+                builder.add_script_input(
+                    project_utxo_to_spend,
+                    script=reference_script_utxo,  # Pass the actual UTXO containing the script
+                    redeemer=project_redeemer,
+                )
+            else:
+                # For local scripts, include the script
+                builder.add_script_input(
+                    project_utxo_to_spend,
+                    script=project_info["cbor"],
+                    redeemer=project_redeemer,
+                )
+
+            # # Add protocol UTXO as input
+            # protocol_utxos = self.context.utxos(protocol_address)
+            # if not protocol_utxos:
+            #     return {"success": False, "error": "No protocol UTXOs found"}
+            
+            # protocol_utxo = self.transactions.find_utxo_by_policy_id(
+            #     protocol_utxos, protocol_minting_policy_id
+            # )
+            # if not protocol_utxo:
+            #     return {
+            #         "success": False,
+            #         "error": "No protocol UTXO found with specified policy ID",
+            #     }
+            # # # builder.add_input(protocol_utxo)
+            # builder.reference_inputs.add(protocol_utxo)
 
             # Update project datum
             old_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)

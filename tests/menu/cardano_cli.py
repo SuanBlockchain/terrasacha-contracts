@@ -12,7 +12,7 @@ import time
 
 import pycardano as pc
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Any, Optional, List, Dict
 
 # Load environment variables
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
@@ -119,8 +119,10 @@ class CardanoCLI:
         # For backward compatibility
         self.wallet = self.wallet_manager.get_wallet()  # Get default wallet
 
-        self.transactions = CardanoTransactions(self.wallet_manager, self.chain_context)
         self.contract_manager = ContractManager(self.chain_context)
+        self.transactions = CardanoTransactions(
+            self.wallet_manager, self.chain_context, self.contract_manager
+        )
         self.token_operations = TokenOperations(
             self.wallet, self.chain_context, self.contract_manager, self.transactions
         )
@@ -356,7 +358,9 @@ class CardanoCLI:
                                 f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}..."
                             )
                         else:
-                            self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
+                            self.menu.print_info(
+                                f"Using specified address: {resolved_address[50:]}..."
+                            )
                     except Exception as e:
                         self.menu.print_error(f"Invalid address format: {e}")
                         return
@@ -462,19 +466,43 @@ class CardanoCLI:
         self.menu.print_section("CONTRACT DETAILS")
 
         for name, info in contracts_info["contracts"].items():
+            # Check storage type from actual contract
+            contract = self.contract_manager.get_contract(name)
+            storage_type = getattr(contract, "storage_type", "local") if contract else "local"
+
             if info.get("type") == "minting_policy":
-                # For minting policies, only show policy ID
-                self.menu.print_minting_policy_info(name=name.upper(), policy_id=info["policy_id"])
-            else:
-                # For spending validators, show balance info
-                status = "✓" if info["balance"] > 0 else "○"
-                self.menu.print_contract_info(
-                    name=name.upper(),
-                    policy_id=info["policy_id"],
-                    address=info["address"],
-                    balance=info["balance_ada"],
-                    status=status,
+                # For minting policies, show policy ID and storage type
+                print(f"│ 📝 {name.upper()}")
+                print(f"│   Policy ID: {info['policy_id']}")
+                print(f"│   Type: Minting Policy")
+                print(
+                    f"│   Storage: {'📍 Reference Script' if storage_type == 'reference_script' else '💾 Local'}"
                 )
+
+                if storage_type == "reference_script" and hasattr(contract, "reference_tx_id"):
+                    print(
+                        f"│   Reference UTXO: {contract.reference_tx_id}#{contract.reference_output_index}"
+                    )
+                    print(f"│   Reference Address: {contract.reference_address}")
+                print()
+            else:
+                # For spending validators, show balance info and storage type
+                status = "✓" if info["balance"] > 0 else "○"
+                print(f"│ {status} {name.upper()}")
+                print(f"│   Policy ID: {info['policy_id']}")
+                print(f"│   Address: {info['address']}")
+                print(f"│   Balance: {info['balance_ada']:.6f} ADA")
+                print(f"│   Type: Spending Validator")
+                print(
+                    f"│   Storage: {'📍 Reference Script' if storage_type == 'reference_script' else '💾 Local'}"
+                )
+
+                if storage_type == "reference_script" and hasattr(contract, "reference_tx_id"):
+                    print(
+                        f"│   Reference UTXO: {contract.reference_tx_id}#{contract.reference_output_index}"
+                    )
+                    print(f"│   Reference Address: {contract.reference_address}")
+                print()
 
         # Display available project contracts
         project_contracts = self.contract_manager.list_project_contracts()
@@ -808,17 +836,16 @@ class CardanoCLI:
 
                     # Mark project contracts as deployed and save them to disk
                     # Find which project contract was used and its corresponding NFTs contract
-                    project_contracts = [
-                        name
-                        for name in self.contract_manager.contracts.keys()
-                        if name == "project" or name.startswith("project_")
-                    ]
-                    # For each project, add its corresponding NFTs contract
+                    # Get project contracts (excluding NFT minting policies for user display)
+                    project_contracts = self.contract_manager.list_project_contracts()
+
+                    # For deployment marking, we need to include both project contracts and their NFTs
                     deployed_contracts = project_contracts.copy()
                     for project_name in project_contracts:
                         project_nfts_name = f"{project_name}_nfts"
                         if project_nfts_name in self.contract_manager.contracts:
                             deployed_contracts.append(project_nfts_name)
+
                     if self.contract_manager.mark_contract_as_deployed(deployed_contracts):
                         self.menu.print_success(
                             "✓ Project contracts saved to disk (deployment confirmed)"
@@ -1274,9 +1301,9 @@ class CardanoCLI:
             self.menu.print_info("Creating project burn transaction...")
             # Temporary function to test reference scripts
 
-
             # result = self.token_operations.create_reference_script(selected_project)
             # tx_id = self.transactions.submit_transaction(result["transaction"])
+
             result = self.token_operations.create_project_burn_transaction(
                 user_address, selected_project
             )
@@ -2583,6 +2610,212 @@ class CardanoCLI:
             self.menu.print_error("Invalid input")
             return None
 
+    def select_storage_type(self) -> Optional[str]:
+        """
+        Ask user to select storage type for contracts
+
+        Returns:
+            Storage type ('local' or 'reference_script') or None if cancelled
+        """
+        self.menu.print_section("CONTRACT STORAGE TYPE SELECTION")
+        print("│ Choose how to store the compiled contracts:")
+        print("│")
+        print("│ 1. Local Storage (traditional)")
+        print("│    • Contracts stored in local JSON file")
+        print("│    • Full CBOR data included in transactions")
+        print("│    • Higher transaction fees")
+        print("│")
+        print("│ 2. Reference Script (on-chain)")
+        print("│    • Contracts stored as UTXOs on the blockchain")
+        print("│    • Transactions reference the script UTXO")
+        print("│    • Lower transaction fees for repeated use")
+        print("│    • Requires additional setup transaction")
+        print()
+
+        try:
+            choice = input("Select storage type (1-2): ").strip()
+            if choice == "1":
+                return "local"
+            elif choice == "2":
+                return "reference_script"
+            else:
+                self.menu.print_error("Invalid choice")
+                return None
+        except (ValueError, EOFError):
+            self.menu.print_error("Invalid input")
+            return None
+
+    def select_reference_script_wallets(
+        self, source_address: pc.Address
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Select destination wallet for reference script creation
+        Source wallet is already determined from contract compilation
+
+        Args:
+            source_address: Address that compiled the contract (will fund transaction)
+
+        Returns:
+            Dictionary with 'source', 'destination' addresses and wallet info or None if cancelled
+        """
+        self.menu.print_section("REFERENCE SCRIPT WALLET SELECTION")
+
+        # Source is already determined - it's the wallet that compiled the contract
+        self.menu.print_info(
+            f"Source wallet (contract compilation + funding): {str(source_address)[:20]}..."
+        )
+
+        # Select destination wallet (where reference script UTXO will be sent)
+        self.menu.print_info("Select destination wallet (will receive reference script UTXO):")
+        print("│ You can choose the same wallet or a different one")
+        destination_address = self.select_wallet_for_compilation("storage of the reference script")
+        if not destination_address:
+            return None
+
+        # Get the wallet instance for the source address to use for signing
+        source_wallet = None
+        for wallet_name in self.wallet_manager.get_wallet_names():
+            wallet = self.wallet_manager.get_wallet(wallet_name)
+            if wallet and wallet.get_address(0) == source_address:
+                source_wallet = wallet
+                break
+
+        if not source_wallet:
+            self.menu.print_error("Could not find wallet for source address")
+            return None
+
+        return {
+            "source": source_address,
+            "destination": destination_address,
+            "source_wallet": source_wallet,
+        }
+
+    def _handle_reference_script_creation(
+        self, contract_names: List[str], source_address: pc.Address
+    ) -> None:
+        """
+        Handle creation of reference scripts for compiled contracts
+
+        Args:
+            contract_names: List of contract names to create reference scripts for
+            source_address: Address that compiled the contracts (will fund transactions)
+        """
+        if not contract_names:
+            return
+
+        self.menu.print_section("REFERENCE SCRIPT CREATION")
+        self.menu.print_info("Creating reference scripts for compiled contracts...")
+
+        # Get wallet addresses for reference script creation
+        wallet_info = self.select_reference_script_wallets(source_address)
+        if not wallet_info:
+            self.menu.print_error("Reference script creation cancelled - contracts stored locally")
+            return
+
+        successful_conversions = []
+        failed_conversions = []
+
+        for contract_name in contract_names:
+            # Skip protocol contract (not applicable for reference scripts yet)
+            if contract_name == "protocol":
+                continue
+
+            self.menu.print_info(f"Creating reference script for {contract_name}...")
+
+            try:
+                # Create reference script transaction
+                if contract_name.startswith("project") and not contract_name.endswith("_nfts"):
+                    # Handle project validator
+                    result = self.transactions.create_reference_script(
+                        project_name=contract_name,
+                        source_address=wallet_info["source"],
+                        destination_address=wallet_info["destination"],
+                        source_wallet=wallet_info["source_wallet"],
+                    )
+                elif contract_name.endswith("_nfts"):
+                    # Handle project NFTs minting policy
+                    base_project_name = contract_name.replace("_nfts", "")
+                    result = self.transactions.create_project_nfts_reference_script(
+                        project_name=base_project_name,
+                        source_address=wallet_info["source"],
+                        destination_address=wallet_info["destination"],
+                        source_wallet=wallet_info["source_wallet"],
+                    )
+                else:
+                    self.menu.print_warning(
+                        f"Skipping {contract_name} - reference script not supported"
+                    )
+                    continue
+
+                if result["success"]:
+                    # Submit the transaction
+                    submit_result = self.transactions.submit_transaction(result["transaction"])
+
+                    if submit_result:  # submit_result is tx_hash on success, None on failure
+                        # Convert contract to reference script
+                        ref_utxo = result["reference_utxo"]
+                        conversion_success = self.contract_manager.convert_to_reference_script(
+                            contract_name,
+                            ref_utxo["tx_id"],
+                            ref_utxo["output_index"],
+                            ref_utxo["address"],
+                        )
+
+                        if conversion_success:
+                            successful_conversions.append(
+                                {
+                                    "name": contract_name,
+                                    "tx_id": ref_utxo["tx_id"],
+                                    "explorer_url": result.get("explorer_url", ""),
+                                }
+                            )
+                            self.menu.print_success(
+                                f"✅ {contract_name} reference script created successfully"
+                            )
+                            self.menu.print_info(f"Transaction submitted: {submit_result}")
+                        else:
+                            failed_conversions.append(contract_name)
+                            self.menu.print_error(
+                                f"❌ Failed to convert {contract_name} to reference script"
+                            )
+                    else:
+                        failed_conversions.append(contract_name)
+                        self.menu.print_error(
+                            f"❌ Failed to submit reference script transaction for {contract_name}"
+                        )
+                else:
+                    failed_conversions.append(contract_name)
+                    self.menu.print_error(
+                        f"❌ Failed to create reference script for {contract_name}: {result.get('error', 'Unknown error')}"
+                    )
+
+            except Exception as e:
+                failed_conversions.append(contract_name)
+                self.menu.print_error(
+                    f"❌ Error creating reference script for {contract_name}: {e}"
+                )
+
+        # Show summary
+        if successful_conversions:
+            self.menu.print_section("REFERENCE SCRIPT CREATION SUMMARY")
+            self.menu.print_success(
+                f"✅ Successfully created {len(successful_conversions)} reference scripts:"
+            )
+            for conversion in successful_conversions:
+                print(f"│ {conversion['name']}: {conversion['tx_id'][:16]}...")
+                if conversion["explorer_url"]:
+                    print(f"│   Explorer: {conversion['explorer_url']}")
+
+        if failed_conversions:
+            self.menu.print_error(
+                f"❌ Failed to create reference scripts for: {', '.join(failed_conversions)}"
+            )
+            self.menu.print_info("These contracts will remain stored locally")
+
+        # Save the updated contracts (with reference script metadata)
+        if successful_conversions:
+            self.contract_manager._save_contracts()
+
     def contract_submenu(self):
         """Interactive menu for contract operations"""
 
@@ -2649,14 +2882,27 @@ class CardanoCLI:
                         self.menu.print_info("Compilation cancelled")
                         continue
 
+                    # Ask for storage type
+                    storage_type = self.select_storage_type()
+                    if not storage_type:
+                        self.menu.print_info("Compilation cancelled")
+                        continue
+
                     self.menu.print_info("Starting contract compilation...")
                     result = self.contract_manager.compile_contracts(
                         protocol_address, project_address, force=True
                     )
+
                     if result["success"]:
                         self.menu.print_success(result["message"])
                         if result.get("contracts"):
                             print(f"Compiled contracts: {', '.join(result['contracts'])}")
+
+                        # Handle reference script creation if selected
+                        if storage_type == "reference_script":
+                            self._handle_reference_script_creation(
+                                result.get("contracts", []), project_address
+                            )
                     else:
                         self.menu.print_error(result["error"])
                 except Exception as e:
@@ -2714,8 +2960,17 @@ class CardanoCLI:
         # Compile project contract
         try:
             # Ask for project wallet selection
-            project_address = self.select_wallet_for_compilation("new project contract")
+            project_address = self.select_wallet_for_compilation(
+                "compilation of new project contract"
+            )
             if not project_address:
+                self.menu.print_info("Compilation cancelled")
+                input("\nPress Enter to continue...")
+                return
+
+            # Ask for storage type
+            storage_type = self.select_storage_type()
+            if not storage_type:
                 self.menu.print_info("Compilation cancelled")
                 input("\nPress Enter to continue...")
                 return
@@ -2732,7 +2987,12 @@ class CardanoCLI:
                 print(f"│ Saved to Disk: {'✓' if result['saved'] else '✗'}")
                 print()
 
-                if result["saved"]:
+                # Handle reference script creation if selected
+                if storage_type == "reference_script":
+                    self._handle_reference_script_creation(
+                        [result["project_name"]], project_address
+                    )
+                elif result["saved"]:
                     self.menu.print_info("Contract files saved to artifacts/ directory")
                 else:
                     self.menu.print_warning("⚠ Contract compiled but not saved to disk")
@@ -2788,9 +3048,20 @@ class CardanoCLI:
             elif 1 <= choice <= len(deletable_contracts):
                 contract_name = deletable_contracts[choice - 1]
 
-                self.menu.print_warning(
-                    f"⚠ This will permanently delete contract '{contract_name}' if it has zero balance"
+                # Check if this is a project contract to warn about associated NFT deletion
+                is_project_contract = contract_name == "project" or contract_name.startswith(
+                    "project_"
                 )
+                project_nfts_name = f"{contract_name}_nfts"
+                has_project_nfts = (
+                    is_project_contract and project_nfts_name in self.contract_manager.contracts
+                )
+
+                warning_msg = f"⚠ This will permanently delete contract '{contract_name}' if it has zero balance"
+                if has_project_nfts:
+                    warning_msg += f"\n  It will also delete the associated '{project_nfts_name}' minting policy"
+
+                self.menu.print_warning(warning_msg)
                 if not self.menu.confirm_action("Proceed with deletion?"):
                     self.menu.print_info("Deletion cancelled")
                     input("\nPress Enter to continue...")
@@ -2803,14 +3074,22 @@ class CardanoCLI:
                     self.menu.print_success(result["message"])
                     if result.get("saved"):
                         self.menu.print_success("✓ Updated contracts file saved to disk")
+
+                    # Show information about deleted contracts
+                    deleted_contracts = result.get("deleted_contracts", [contract_name])
+                    if len(deleted_contracts) > 1:
+                        self.menu.print_info(
+                            f"ℹ Deleted {len(deleted_contracts)} contracts: {', '.join(deleted_contracts)}"
+                        )
+
                     # Show different messages based on deletion reason
                     if "unused address" in result["message"]:
                         self.menu.print_info(
-                            "ℹ This contract was never deployed/used, so it was safe to delete"
+                            "ℹ Contract(s) were never deployed/used, so they were safe to delete"
                         )
                     else:
                         self.menu.print_info(
-                            "ℹ Contract had zero balance and no tokens, so it was safe to delete"
+                            "ℹ Contract(s) had zero balance and no tokens, so they were safe to delete"
                         )
                 else:
                     self.menu.print_error(result["error"])

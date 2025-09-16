@@ -7,13 +7,13 @@ from terrasacha_contracts.util import *
 @dataclass()
 class MintProject(PlutusData):
     CONSTR_ID = 0
-    # protocol_input_index: int  # Index of the input UTXO to be consumed
+    protocol_input_index: int  # Index of the input UTXO to be consumed
     protocol_policy_id: PolicyId  # Policy ID of the protocol
 
 @dataclass()
 class BurnProject(PlutusData):
     CONSTR_ID = 1
-    # protocol_input_index: int  # Index of the reference input UTXO
+    protocol_input_index: int  # Index of the reference input UTXO
     protocol_policy_id: PolicyId  # Policy ID of the protocol
 
 def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
@@ -49,7 +49,7 @@ def validator(
     assert len(our_minted) == 2, "Must mint or burn exactly 2 tokens"
 
     # Transaction must be signed by one of the admins in the protocol datum
-    protocol_reference_input = tx_info.reference_inputs[0].resolved
+    protocol_reference_input = tx_info.reference_inputs[redeemer.protocol_input_index].resolved
 
     assert check_token_present(
         redeemer.protocol_policy_id,
