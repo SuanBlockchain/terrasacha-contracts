@@ -79,6 +79,5 @@ def validator(
         for output in tx_info.outputs:
             token_amount = sum(output.value.get(own_policy_id, {b"": 0}).values())
             assert token_amount == 0, "Cannot send tokens to outputs when burning"
-
     else:
         assert False, "Invalid redeemer type"

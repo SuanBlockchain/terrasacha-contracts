@@ -2,7 +2,6 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
-
 def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
     """
     Derive the corresponding user NFT token name from a protocol NFT token name.

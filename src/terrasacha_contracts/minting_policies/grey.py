@@ -13,7 +13,6 @@ class Mint(PlutusData):
 class Burn(PlutusData):
     CONSTR_ID = 1
 
-
 def validator(
     project_id: PolicyId,
     redeemer: Union[Mint, Burn],
@@ -33,13 +32,32 @@ def validator(
     tx_info = context.tx_info
     mint_value = tx_info.mint
 
+    # Validations when minting:
+    # 1. the amount minted is exactly the amount added to the current supply
+    # 2. Investor can only mint if it pays an price expressed in lovelace that is sent to a specific beneficiary
+
     our_minted = mint_value.get(own_policy_id, {b"": 0})
+    assert len(our_minted) == 1, "Must mint or burn exactly 1 token type"
 
-    # Check redeemer type using constructor ID
+    project_reference_input = tx_info.reference_inputs[0].resolved
+
+    assert check_token_present(project_id, project_reference_input), "Project reference input must have the project token"
+
+    # Get the project datum
+    project_datum = project_reference_input.datum
+    assert isinstance(project_datum, SomeOutputDatum)
+    project_datum_value: DatumProject = project_datum.datum
+
+    datum_token_policy_id = project_datum_value.project_token.policy_id
+    datum_token_name = project_datum_value.project_token.token_name
+
+    assert datum_token_policy_id == own_policy_id, "PolicyID is different than ProjectDatum PolicyID"
+
     if isinstance(redeemer, Mint):
-        # 1. Validate that the specified UTXO is consumed
 
-        assert True, "Always succeeds for minting grey tokens"
+        assert our_minted.get(datum_token_name, 0) > 0, "Token Name not found in minted amount"
+
+        assert project_datum_value.params.project_state > 0, "Minting can only happen when project_state > 0"
 
     elif isinstance(redeemer, Burn):
 

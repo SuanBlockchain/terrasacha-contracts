@@ -2,74 +2,6 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
-@dataclass()
-class DatumProjectParams(PlutusData):
-    CONSTR_ID = 1
-    project_id: bytes  # Project Identifier
-    project_metadata: bytes  # Metadata URI or hash
-    project_state: int  # 0=initialized, 1=distributed, 2=certified 3=closed
-
-
-@dataclass()
-class TokenProject(PlutusData):
-    CONSTR_ID = 2
-    policy_id: bytes  # Minting policy ID for the project tokens
-    token_name: bytes  # Token name for the project tokens
-    total_supply: int  # Total supply of tokens for the project (Grey tokens representing carbon credits promises)
-    current_supply: int  # Current supply of tokens minted (Grey tokens)
-
-
-@dataclass()
-class StakeHolderParticipation(PlutusData):
-    CONSTR_ID = 3
-    stakeholder: bytes  # Stakeholder public name (investor, landowner, verifier, etc.) Investor is a keyword that do not require pkh)
-    pkh: bytes  # Stakeholder public key hash
-    participation: int  # Participation amount in lovelace
-    amount_claimed: int  # Amount already claimed in lovelace
-
-
-@dataclass()
-class Certification(PlutusData):
-    CONSTR_ID = 4
-    certification_date: int  # Certification date as POSIX timestamp
-    quantity: int  # Quantity of carbon credits certified
-    real_certification_date: int  # Real certification date as POSIX timestamp (after verification)
-    real_quantity: int  # Real quantity of carbon credits certified (after verification)
-
-
-@dataclass()
-class DatumProject(PlutusData):
-    CONSTR_ID = 0
-    protocol_policy_id: bytes  # Protocol policy ID
-    params: DatumProjectParams
-    project_token: TokenProject
-    stakeholders: List[StakeHolderParticipation]  # List of stakeholders and their participation
-    certifications: List[Certification]  # List of certification info for the project
-
-
-@dataclass()
-class UpdateProject(PlutusData):
-    CONSTR_ID = 1
-    project_input_index: int
-    user_input_index: int
-    project_output_index: int
-
-@dataclass()
-class UpdateToken(PlutusData):
-    CONSTR_ID = 3
-    project_input_index: int
-    user_input_index: int
-    project_output_index: int
-    new_supply: int
-
-@dataclass()
-class EndProject(PlutusData):
-    CONSTR_ID = 2
-    project_input_index: int
-    user_input_index: int
-
-RedeemerProject = Union[UpdateProject, UpdateToken, EndProject]
-
 def validate_stakeholder_authorization(datum: DatumProject, tx_info: TxInfo) -> None:
     """
     Validate stakeholder authorization for token operations.
@@ -105,6 +37,11 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
     Note: This function is only used in UpdateProject path.
     UpdateToken path has separate validation for current_supply and amount_claimed.
     """
+    # Project state can only move forward (0->1->2->3)
+    assert (
+        new_datum.params.project_state >= old_datum.params.project_state
+    ), "Project state can only move forward"
+    assert new_datum.params.project_state <= 3, "Invalid project state (must be 0, 1, 2, or 3)"
     
     if old_datum.params.project_state >= 1:
         ##################################################################################################
@@ -118,9 +55,9 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
         assert (
             old_datum.params.project_metadata == new_datum.params.project_metadata
         ), "Project metadata cannot be changed after project lock (state >= 1)"
-        assert (
-            old_datum.params.project_state == new_datum.params.project_state
-        ), "Project state cannot be changed after project lock (state >= 1)"
+        # assert (
+        #     old_datum.params.project_state == new_datum.params.project_state
+        # ), "Project state cannot be changed after project lock (state >= 1)"
         
         # Protocol policy ID must be identical
         assert (
@@ -165,12 +102,6 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
         ##################################################################################################
         # project_state == 0: Allow changes with business logic validation only
         ##################################################################################################
-        
-        # Project state can only move forward (0->1->2->3)
-        assert (
-            new_datum.params.project_state >= old_datum.params.project_state
-        ), "Project state can only move forward"
-        assert new_datum.params.project_state <= 3, "Invalid project state (must be 0, 1, 2, or 3)"
         
         # Business validations for token economics
         assert (
@@ -294,8 +225,6 @@ def validator(
         # Validate supply constraints
         assert new_datum.project_token.current_supply <= new_datum.project_token.total_supply, "Current supply cannot exceed total supply"
         assert new_datum.project_token.current_supply >= 0, "Current supply must be non-negative"
-
-
     elif isinstance(redeemer, EndProject):
         project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
         project_token = extract_token_from_input(project_input)
@@ -304,6 +233,5 @@ def validator(
         assert check_token_present(
             project_token.policy_id, user_input
         ), "User does not have required token"
-
     else:
         assert False, "Invalid redeemer type"

@@ -635,6 +635,14 @@ class ContractManager:
                 project_contracts.append(name)
         return project_contracts
 
+    def list_grey_token_contracts(self) -> list:
+        """List all available grey token contract names"""
+        grey_contracts = []
+        for name in sorted(self.contracts.keys()):
+            if name.endswith("_grey"):
+                grey_contracts.append(name)
+        return grey_contracts
+
     def get_project_name_from_contract(self, contract: PlutusContract) -> Optional[str]:
         """
         Find the project name for a given contract instance
@@ -662,6 +670,19 @@ class ContractManager:
         """
         project_nfts_name = f"{project_name}_nfts"
         return self.contracts.get(project_nfts_name)
+
+    def get_grey_token_contract(self, project_name: str) -> Optional[PlutusContract]:
+        """
+        Get the grey token minting policy contract for a specific project
+
+        Args:
+            project_name: Name of the project (e.g., "project", "project_1")
+
+        Returns:
+            PlutusContract for the project's grey token minting policy or None if not found
+        """
+        grey_contract_name = f"{project_name}_grey"
+        return self.contracts.get(grey_contract_name)
 
     def get_contracts_info(self) -> Dict[str, Any]:
         """
@@ -733,22 +754,31 @@ class ContractManager:
         self, contract_name: str, utxo_ref: TxOutRef
     ) -> Optional[PlutusContract]:
         """
-        Dynamically compile the authentication_nfts minting policy with a specific UTXO reference
+        Dynamically compile a minting policy with a specific UTXO reference.
+        Supports both NFT contracts (ending with _nfts.py) and regular minting contracts.
 
         Args:
+            contract_name: Name of the contract (without file extension)
             utxo_ref: Transaction output reference to use for compilation
 
         Returns:
             PlutusContract instance or None if compilation failed
         """
         try:
+            # First try NFT contracts (with _nfts.py suffix)
             auth_nfts_path = self.minting_contracts_path / f"{contract_name}_nfts.py"
-            if not auth_nfts_path.exists():
-                return None
+            if auth_nfts_path.exists():
+                auth_contract = build(auth_nfts_path, utxo_ref)
+                return PlutusContract(auth_contract)
 
-            # Compile the authentication_nfts contract with the provided UTXO reference
-            auth_contract = build(auth_nfts_path, utxo_ref)
-            return PlutusContract(auth_contract)
+            # If NFT contract doesn't exist, try regular minting contract (with .py suffix)
+            minting_path = self.minting_contracts_path / f"{contract_name}.py"
+            if minting_path.exists():
+                auth_contract = build(minting_path, utxo_ref)
+                return PlutusContract(auth_contract)
+
+            # Neither path exists
+            return None
 
         except Exception:
             return None
@@ -895,7 +925,7 @@ class ContractManager:
                     deleted_contracts = [contract_name]
                     del self.contracts[contract_name]
 
-                    # Also delete associated project NFTs minting policy if it exists
+                    # Also delete associated project NFTs and grey token minting policies if they exist
                     if delete_associated_nfts and (
                         contract_name == "project" or contract_name.startswith("project_")
                     ):
@@ -903,6 +933,11 @@ class ContractManager:
                         if project_nfts_name in self.contracts:
                             del self.contracts[project_nfts_name]
                             deleted_contracts.append(project_nfts_name)
+
+                        grey_contract_name = f"{contract_name}_grey"
+                        if grey_contract_name in self.contracts:
+                            del self.contracts[grey_contract_name]
+                            deleted_contracts.append(grey_contract_name)
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
@@ -917,7 +952,7 @@ class ContractManager:
                     deleted_contracts = [contract_name]
                     del self.contracts[contract_name]
 
-                    # Also delete associated project NFTs minting policy if it exists
+                    # Also delete associated project NFTs and grey token minting policies if they exist
                     if delete_associated_nfts and (
                         contract_name == "project" or contract_name.startswith("project_")
                     ):
@@ -925,6 +960,11 @@ class ContractManager:
                         if project_nfts_name in self.contracts:
                             del self.contracts[project_nfts_name]
                             deleted_contracts.append(project_nfts_name)
+
+                        grey_contract_name = f"{contract_name}_grey"
+                        if grey_contract_name in self.contracts:
+                            del self.contracts[grey_contract_name]
+                            deleted_contracts.append(grey_contract_name)
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
@@ -962,7 +1002,7 @@ class ContractManager:
             deleted_contracts = [contract_name]
             del self.contracts[contract_name]
 
-            # Also delete associated project NFTs minting policy if it exists
+            # Also delete associated project NFTs and grey token minting policies if they exist
             if delete_associated_nfts and (
                 contract_name == "project" or contract_name.startswith("project_")
             ):
@@ -970,6 +1010,11 @@ class ContractManager:
                 if project_nfts_name in self.contracts:
                     del self.contracts[project_nfts_name]
                     deleted_contracts.append(project_nfts_name)
+
+                grey_contract_name = f"{contract_name}_grey"
+                if grey_contract_name in self.contracts:
+                    del self.contracts[grey_contract_name]
+                    deleted_contracts.append(grey_contract_name)
 
             # Update saved contracts file
             save_success = self._save_contracts()
