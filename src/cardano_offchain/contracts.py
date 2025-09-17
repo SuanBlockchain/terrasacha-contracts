@@ -15,6 +15,8 @@ import pycardano as pc
 from opshin.builder import PlutusContract, build
 from opshin.prelude import TxId, TxOutRef
 
+from cardano_offchain.wallet import CardanoWallet
+
 from .chain_context import CardanoChainContext
 
 
@@ -94,6 +96,90 @@ class ContractManager:
     def _get_contracts_file_path(self) -> pathlib.Path:
         """Get the path for contracts storage file"""
         return pathlib.Path(f"contracts_{self.network}.json")
+
+    def spend_reference_script_utxo(
+        self, contract_name: str, wallet: CardanoWallet, destination_address: pc.Address
+    ) -> Dict[str, Any]:
+        """
+        Spend a reference script UTXO and send remaining ADA to destination address
+
+        Args:
+            contract_name: Name of the reference script contract
+            wallet: Wallet that owns the reference script UTXO
+            destination_address: Where to send the remaining ADA
+
+        Returns:
+            Dictionary with success status and transaction details
+        """
+        if contract_name not in self.contracts:
+            return {"success": False, "error": f"Contract '{contract_name}' not found"}
+
+        contract = self.contracts[contract_name]
+
+        # Check if this is a reference script contract
+        if not hasattr(contract, "storage_type") or contract.storage_type != "reference_script":
+            return {
+                "success": False,
+                "error": f"Contract '{contract_name}' is not a reference script",
+            }
+
+        try:
+            # Get the reference UTXO information
+            ref_utxo_info = contract.get_reference_utxo()
+            tx_id = ref_utxo_info["tx_id"]
+            output_index = ref_utxo_info["output_index"]
+
+            # Find the UTXO on-chain
+            try:
+                # Check if UTXO still exists
+                utxo_exists = False
+                wallet_utxos = self.context.utxos(wallet.get_address(0))
+
+                for utxo in wallet_utxos:
+                    if str(utxo.input.transaction_id) == tx_id and utxo.input.index == output_index:
+                        utxo_exists = True
+                        reference_utxo = utxo
+                        break
+
+                if not utxo_exists:
+                    return {
+                        "success": False,
+                        "error": f"Reference script UTXO {tx_id}:{output_index} not found or already spent",
+                    }
+
+                # Build transaction to spend the reference script UTXO
+                builder = pc.TransactionBuilder(self.context)
+
+                # Add the reference script UTXO as input
+                builder.add_input(reference_utxo)
+
+                builder.fee_buffer = 1_000_000
+
+                # Build and sign transaction
+                signing_key = wallet.get_signing_key(0)
+                signed_tx = builder.build_and_sign(
+                    [signing_key], change_address=destination_address
+                )
+
+                # Submit transaction
+                tx_id = self.context.submit_tx(signed_tx)
+
+                return {
+                    "success": True,
+                    "message": f"Reference script UTXO spent successfully",
+                    "tx_id": tx_id,
+                    # "ada_sent": ada_sent / 1_000_000,
+                    "destination": str(destination_address),
+                }
+
+            except Exception as api_error:
+                return {
+                    "success": False,
+                    "error": f"Failed to spend reference script UTXO: {str(api_error)}",
+                }
+
+        except Exception as e:
+            return {"success": False, "error": f"Reference script deletion failed: {str(e)}"}
 
     def _save_contracts(self) -> bool:
         """
@@ -628,10 +714,12 @@ class ContractManager:
         return None
 
     def list_project_contracts(self) -> list:
-        """List all available project contract names (excluding NFT minting policies)"""
+        """List all available project contract names (excluding NFT minting policies and grey token contracts)"""
         project_contracts = []
         for name in sorted(self.contracts.keys()):
-            if (name == "project" or name.startswith("project_")) and not name.endswith("_nfts"):
+            if (name == "project" or name.startswith("project_")) and not name.endswith(
+                ("_nfts", "_grey")
+            ):
                 project_contracts.append(name)
         return project_contracts
 

@@ -209,9 +209,6 @@ class CardanoTransactions:
             for u in utxos:
                 builder.add_input(u)
 
-
-            builder.fee = 5000000
-            # Add inputs and outputs
             builder.add_output(pc.TransactionOutput(to_address_obj, pc.Value(amount_lovelace)))
 
             # Build and sign transaction

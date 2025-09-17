@@ -1306,23 +1306,23 @@ class TokenOperations:
                 return {"success": False, "error": f"Failed to get project datum: {e}"}
 
             # Validate project state - UpdateToken can only be used when project_state > 0
-            if project_datum.params.project_state <= 0:
-                return {
-                    "success": False,
-                    "error": "UpdateToken can only be used when project_state > 0. Project must be active for grey token minting.",
-                }
+            # if project_datum.params.project_state <= 0:
+            #     return {
+            #         "success": False,
+            #         "error": "UpdateToken can only be used when project_state > 0. Project must be active for grey token minting.",
+            #     }
 
             # Check if grey token info exists in project datum
             # For now, we assume it uses the same policy_id and token_name as project token
             # In future, this should be separate grey token info in the datum
-            if (
-                not project_datum.project_token.policy_id
-                or not project_datum.project_token.token_name
-            ):
-                return {
-                    "success": False,
-                    "error": "Grey token info not found in project datum. Setup grey tokens first via Update Project menu.",
-                }
+            # if (
+            #     not project_datum.project_token.policy_id
+            #     or not project_datum.project_token.token_name
+            # ):
+            #     return {
+            #         "success": False,
+            #         "error": "Grey token info not found in project datum. Setup grey tokens first via Update Project menu.",
+            #     }
 
             # Get wallet info
             from_address = self.wallet.get_address(0)

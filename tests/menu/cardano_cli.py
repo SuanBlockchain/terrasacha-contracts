@@ -9,10 +9,10 @@ import json
 import os
 import pathlib
 import time
+from typing import Any, Dict, List, Optional
 
 import pycardano as pc
 from dotenv import load_dotenv
-from typing import Any, Optional, List, Dict
 
 # Load environment variables
 PROJECT_ROOT = pathlib.Path(__file__).parent.parent
@@ -63,6 +63,11 @@ class CardanoCLI:
             pass
 
         return False
+
+    def get_available_wallets_info(self) -> str:
+        """Get formatted string of available wallets for user information"""
+        wallet_names = self.wallet_manager.get_wallet_names()
+        return f"ℹ Available wallets: {', '.join(wallet_names)}"
 
     def resolve_address_input(self, input_str: str, switch_wallet: bool = False) -> Optional[str]:
         """
@@ -337,13 +342,11 @@ class CardanoCLI:
     def send_ada_menu(self):
         """Send ADA submenu"""
         try:
-            # active_wallet_name = self.wallet_manager.get_default_wallet_name()
-            self.menu.print_info("ℹ Available wallets: default, project, investor")
+            self.menu.print_info(self.get_available_wallets_info())
             user_address_input = self.menu.get_input(
                 "Enter address or wallet name containing tokens to burn (or press Enter for default wallet address)"
             )
 
-            user_address = None
             if user_address_input.strip():
                 # Use the existing resolve_address_input method that supports wallet names
                 # For project burn operations, switch to the wallet if a wallet name is provided
@@ -352,15 +355,12 @@ class CardanoCLI:
                 )
                 if resolved_address:
                     try:
-                        user_address = pc.Address.from_primitive(resolved_address)
                         if user_address_input.strip() in self.wallet_manager.get_wallet_names():
                             self.menu.print_info(
-                                f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address[50:]}..."
+                                f"Resolved wallet '{user_address_input.strip()}' to: {resolved_address}"
                             )
                         else:
-                            self.menu.print_info(
-                                f"Using specified address: {resolved_address[50:]}..."
-                            )
+                            self.menu.print_info(f"Using specified address: {resolved_address}")
                     except Exception as e:
                         self.menu.print_error(f"Invalid address format: {e}")
                         return
@@ -372,16 +372,13 @@ class CardanoCLI:
             else:
                 self.menu.print_info("Using default wallet address")
 
-            # print(f"\nSEND ADA (From: {active_wallet_name})")
-            # print("-" * 40)
-
             # Show available balances
             balances = self.wallet.check_balances(self.chain_context.get_api())
             print("Available balances:")
             print(
                 f"Enterprise: {balances['main_addresses']['enterprise']['balance']/1_000_000:.6f} ADA"
             )
-            print("ℹ Available wallets: default, project, investor")
+            print(self.get_available_wallets_info())
 
             to_address_input = input("Recipient address (or wallet name): ").strip()
 
@@ -391,13 +388,9 @@ class CardanoCLI:
                 print(f"Invalid address or wallet name: {to_address_input}")
                 return
 
-            # Show resolved address if it was a wallet name
-            if to_address_input != to_address:
-                print(f"Resolved wallet '{to_address_input}' to address: {to_address[:20]}...")
-
             amount = float(input("Amount (ADA): "))
 
-            print(f"Sending {amount} ADA to {to_address[:20]}...")
+            print(f"Sending {amount} ADA to {to_address}")
 
             tx = self.transactions.create_simple_transaction(to_address, amount)
             if tx:
@@ -545,7 +538,7 @@ class CardanoCLI:
         self.menu.print_info("This will mint two NFTs: one protocol token and one user token")
 
         # Show available wallets for user convenience
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
 
         destin_address_str = self.menu.get_input(
             "Enter destination address or wallet name (or press Enter for default)"
@@ -764,7 +757,7 @@ class CardanoCLI:
         self.menu.print_section("DESTINATION SETUP")
 
         # Show available wallets for user convenience
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
 
         destin_address_str = self.menu.get_input(
             "Enter destination address or wallet name (or press Enter for default)"
@@ -876,7 +869,7 @@ class CardanoCLI:
         self.menu.print_info(
             "This will burn protocol and user NFTs (tokens will be permanently destroyed)"
         )
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
         user_address_input = self.menu.get_input(
             "Enter address or wallet name containing tokens to burn (or press Enter for default wallet address)"
         )
@@ -1115,7 +1108,7 @@ class CardanoCLI:
         )
 
         # Option to specify user address
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
         user_address_input = self.menu.get_input(
             "Enter address or wallet name containing user tokens (or press Enter for default wallet address)"
         )
@@ -1265,7 +1258,7 @@ class CardanoCLI:
         self.menu.print_info(
             "This will burn project and user NFTs (tokens will be permanently destroyed)"
         )
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
         user_address_input = self.menu.get_input(
             "Enter address or wallet name containing tokens to burn (or press Enter for default wallet address)"
         )
@@ -1393,7 +1386,7 @@ class CardanoCLI:
             return
 
         # Get destination address (optional)
-        self.menu.print_info("ℹ Available wallets: default, project, investor")
+        self.menu.print_info(self.get_available_wallets_info())
         destination_input = self.menu.get_input(
             "Enter destination address or wallet name (or press Enter for default wallet)"
         )
@@ -1764,7 +1757,7 @@ class CardanoCLI:
             self.display_enhanced_project_status(current_datum)
 
             # Ask for user address
-            self.menu.print_info("ℹ Available wallets: default, project, investor")
+            self.menu.print_info(self.get_available_wallets_info())
             user_address_input = self.menu.get_input(
                 "Enter address or wallet name containing user tokens (or press Enter for default wallet address)"
             )
@@ -1798,13 +1791,8 @@ class CardanoCLI:
             else:
                 self.menu.print_info("Using default wallet address")
 
-            # State-based update routing
-            if current_datum.params.project_state == 0:
-                # Initialization phase - show comprehensive update options
-                self.handle_initialization_update(current_datum, user_address, selected_project)
-            else:
-                # Project locked - show limited options
-                self.handle_locked_project_update(current_datum)
+            # Allow comprehensive project updates regardless of project state for ProjectUpdate operations
+            self.handle_initialization_update(current_datum, user_address, selected_project)
 
         except Exception as e:
             self.menu.print_error(f"Project update failed: {e}")
@@ -1818,7 +1806,9 @@ class CardanoCLI:
         # State information
         state_names = {0: "Initialized", 1: "Distributed", 2: "Certified", 3: "Closed"}
         state_name = state_names.get(current_datum.params.project_state, "Unknown")
-        is_updatable = current_datum.params.project_state == 0
+        is_updatable = (
+            True  # Allow updates regardless of project state for ProjectUpdate operations
+        )
 
         self.menu.print_section("CURRENT PROJECT STATUS")
 
@@ -2276,8 +2266,8 @@ class CardanoCLI:
             return
 
         # Generate unique token name for grey tokens
-        import time
         import random
+        import time
 
         # Create unique token name using project name and timestamp
         base_name = f"GREY_{project_name}_{int(time.time())}"
@@ -2295,47 +2285,40 @@ class CardanoCLI:
         print("│ After setup, you can mint grey tokens using the 'Mint Grey Tokens' menu option.")
 
         # Get token supply settings
-        try:
-            total_supply_input = self.menu.get_input(
-                "Enter grey token total supply (default: 1000)"
-            )
-            total_supply = int(total_supply_input) if total_supply_input.strip() else 1000
+        # try:
+        #     total_supply_input = self.menu.get_input(
+        #         "Enter grey token total supply (default: 1000)"
+        #     )
+        #     total_supply = int(total_supply_input) if total_supply_input.strip() else 1000
 
-            if total_supply <= 0:
-                raise ValueError("Total supply must be positive")
+        #     if total_supply <= 0:
+        #         raise ValueError("Total supply must be positive")
 
-        except ValueError as e:
-            self.menu.print_error(f"Invalid total supply: {e}")
-            input("Press Enter to continue...")
-            return
+        # except ValueError as e:
+        #     self.menu.print_error(f"Invalid total supply: {e}")
+        #     input("Press Enter to continue...")
+        #     return
 
-        if not self.menu.confirm_action("Setup grey tokens for this project?"):
-            self.menu.print_info("Grey token setup cancelled")
-            input("Press Enter to continue...")
-            return
+        # if not self.menu.confirm_action("Setup grey tokens for this project?"):
+        #     self.menu.print_info("Grey token setup cancelled")
+        #     input("Press Enter to continue...")
+        #     return
 
         # Create token changes to include grey token info
-        # For now, we're updating the existing project_token with grey token information
-        # In future, this could be a separate grey_token field in the datum
         token_changes = {
             "token_policy_id": bytes.fromhex(grey_policy_id),
             "token_name": grey_token_name,
-            "total_supply": total_supply,
+            # "total_supply": total_supply,
             "current_supply": 0,  # Start with 0 current supply
         }
 
         self.menu.print_section("PREVIEW GREY TOKEN SETUP")
         print(f"│ Grey Policy ID: {grey_policy_id}")
         print(f"│ Grey Token Name: {base_name}")
-        print(f"│ Total Supply: {total_supply:,}")
+        # print(f"│ Total Supply: {total_supply:,}")
         print(f"│ Initial Current Supply: 0")
         print("│")
         print("│ ⚠️  This will replace current token info in project datum")
-
-        if not self.menu.confirm_action("Proceed with grey token setup?"):
-            self.menu.print_info("Grey token setup cancelled")
-            input("Press Enter to continue...")
-            return
 
         # Create custom datum and submit using UpdateProject redeemer
         self.create_custom_update_transaction(
@@ -2915,11 +2898,6 @@ class CardanoCLI:
         self, current_datum, user_address, project_name, field_updates
     ):
         """Create transaction with custom field updates"""
-        from terrasacha_contracts.validators.project import (
-            DatumProject,
-            DatumProjectParams,
-            TokenProject,
-        )
 
         try:
             # Build custom datum with user updates
@@ -3049,6 +3027,19 @@ class CardanoCLI:
                 new_datum.protocol_policy_id.hex() if new_datum.protocol_policy_id else "empty"
             )
             print(f"│ Protocol Policy: {old_policy} → {new_policy}")
+            changes_made = True
+        if old_datum.project_token.policy_id != new_datum.project_token.policy_id:
+            old_project_policy = (
+                old_datum.project_token.policy_id.hex()
+                if old_datum.project_token.policy_id
+                else "empty"
+            )
+            new_project_policy = (
+                new_datum.project_token.policy_id.hex()
+                if new_datum.project_token.policy_id
+                else "empty"
+            )
+            print(f"│ Project Policy: {old_project_policy} → {new_project_policy}")
             changes_made = True
 
         if old_datum.project_token.token_name != new_datum.project_token.token_name:
@@ -3526,11 +3517,13 @@ class CardanoCLI:
             input("\nPress Enter to continue...")
             return
 
-        # Filter out minting policies (they can't be deleted)
-        deletable_contracts = [name for name in contracts if not name.endswith("_nfts")]
+        # Filter out minting policies and grey token contracts (they can't be deleted directly)
+        deletable_contracts = [name for name in contracts if not name.endswith(("_nfts", "_grey"))]
 
         if not deletable_contracts:
-            self.menu.print_error("No deletable contracts found (only minting policies exist)")
+            self.menu.print_error(
+                "No deletable contracts found (only minting policies and grey contracts exist)"
+            )
             input("\nPress Enter to continue...")
             return
 
@@ -3579,7 +3572,77 @@ class CardanoCLI:
                     input("\nPress Enter to continue...")
                     return
 
-                # Attempt deletion
+                # Check if this is a reference script contract that needs UTXO spending
+                contract = self.contract_manager.contracts[contract_name]
+                is_reference_script = (
+                    hasattr(contract, "storage_type")
+                    and contract.storage_type == "reference_script"
+                )
+
+                if is_reference_script:
+                    self.menu.print_section("REFERENCE SCRIPT DELETION")
+                    self.menu.print_info("This contract is stored as a reference script on-chain.")
+                    self.menu.print_info(
+                        "The reference script UTXO needs to be spent to complete deletion."
+                    )
+
+                    # Get wallet selection for UTXO owner
+                    wallet_names = self.wallet_manager.get_wallet_names()
+                    self.menu.print_info("\nSelect wallet that owns the reference script UTXO:")
+                    for i, wallet_name in enumerate(wallet_names, 1):
+                        print(f"{i}. {wallet_name}")
+
+                    try:
+                        wallet_choice = (
+                            int(self.menu.get_input(f"Select wallet (1-{len(wallet_names)})")) - 1
+                        )
+                        if 0 <= wallet_choice < len(wallet_names):
+                            selected_wallet_name = wallet_names[wallet_choice]
+                            selected_wallet = self.wallet_manager.get_wallet(selected_wallet_name)
+                        else:
+                            self.menu.print_error("Invalid wallet selection")
+                            input("Press Enter to continue...")
+                            return
+                    except ValueError:
+                        self.menu.print_error("Invalid input")
+                        input("Press Enter to continue...")
+                        return
+
+                    # Get destination address for remaining ADA
+                    destination_input = self.menu.get_input(
+                        "Enter destination address for remaining ADA (or press Enter for default wallet address)"
+                    )
+
+                    if destination_input.strip():
+                        resolved_address = self.resolve_address_input(destination_input.strip())
+                        if resolved_address:
+                            destination_address = pc.Address.from_primitive(resolved_address)
+                        else:
+                            self.menu.print_error("Invalid destination address")
+                            input("Press Enter to continue...")
+                            return
+                    else:
+                        destination_address = selected_wallet.enterprise_address
+                        self.menu.print_info("Using selected wallet address as destination")
+
+                    # Spend the reference script UTXO
+                    self.menu.print_info("Spending reference script UTXO...")
+                    spend_result = self.contract_manager.spend_reference_script_utxo(
+                        contract_name, selected_wallet, destination_address
+                    )
+
+                    if not spend_result["success"]:
+                        self.menu.print_error(
+                            f"Failed to spend reference script UTXO: {spend_result['error']}"
+                        )
+                        input("Press Enter to continue...")
+                        return
+
+                    self.menu.print_success(f"✓ Reference script UTXO spent successfully")
+                    self.menu.print_info(f"Transaction ID: {spend_result['tx_id']}")
+                    self.menu.print_info(f"Destination: {spend_result['destination']}")
+
+                # Attempt deletion (for both reference scripts and local contracts)
                 result = self.contract_manager.delete_contract_if_empty(contract_name)
 
                 if result["success"]:
