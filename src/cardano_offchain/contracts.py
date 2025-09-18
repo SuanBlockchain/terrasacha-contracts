@@ -731,6 +731,40 @@ class ContractManager:
                 grey_contracts.append(name)
         return grey_contracts
 
+    def delete_grey_token_contract(self, grey_contract_name: str) -> Dict[str, Any]:
+        """
+        Delete only a grey token contract while preserving the associated project contract
+
+        Args:
+            grey_contract_name: Name of the grey token contract to delete (e.g., "project_1_grey")
+
+        Returns:
+            Dictionary with success status and message
+        """
+        if not grey_contract_name.endswith("_grey"):
+            return {"success": False, "error": f"'{grey_contract_name}' is not a grey token contract"}
+
+        if grey_contract_name not in self.contracts:
+            return {"success": False, "error": f"Grey token contract '{grey_contract_name}' not found"}
+
+        try:
+            # Delete the grey token contract
+            del self.contracts[grey_contract_name]
+
+            # Save the updated contracts file
+            save_success = self._save_contracts()
+
+            message = f"Grey token contract '{grey_contract_name}' deleted successfully"
+            return {
+                "success": True,
+                "message": message,
+                "saved": save_success,
+                "deleted_contracts": [grey_contract_name]
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Error deleting grey token contract: {e}"}
+
     def get_project_name_from_contract(self, contract: PlutusContract) -> Optional[str]:
         """
         Find the project name for a given contract instance
@@ -974,7 +1008,7 @@ class ContractManager:
             return False
 
     def delete_contract_if_empty(
-        self, contract_name: str, delete_associated_nfts: bool = True
+        self, contract_name: str, delete_associated_nfts: bool = True, delete_grey_tokens: bool = True
     ) -> Dict[str, Any]:
         """
         Delete a contract if it has zero balance (no active tokens)
@@ -983,6 +1017,7 @@ class ContractManager:
         Args:
             contract_name: Name of contract to check and potentially delete
             delete_associated_nfts: If True, also delete associated project NFTs minting policy
+            delete_grey_tokens: If True, also delete associated grey token contracts
 
         Returns:
             Dictionary with success status and message
@@ -1022,10 +1057,11 @@ class ContractManager:
                             del self.contracts[project_nfts_name]
                             deleted_contracts.append(project_nfts_name)
 
-                        grey_contract_name = f"{contract_name}_grey"
-                        if grey_contract_name in self.contracts:
-                            del self.contracts[grey_contract_name]
-                            deleted_contracts.append(grey_contract_name)
+                        if delete_grey_tokens:
+                            grey_contract_name = f"{contract_name}_grey"
+                            if grey_contract_name in self.contracts:
+                                del self.contracts[grey_contract_name]
+                                deleted_contracts.append(grey_contract_name)
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
@@ -1049,10 +1085,11 @@ class ContractManager:
                             del self.contracts[project_nfts_name]
                             deleted_contracts.append(project_nfts_name)
 
-                        grey_contract_name = f"{contract_name}_grey"
-                        if grey_contract_name in self.contracts:
-                            del self.contracts[grey_contract_name]
-                            deleted_contracts.append(grey_contract_name)
+                        if delete_grey_tokens:
+                            grey_contract_name = f"{contract_name}_grey"
+                            if grey_contract_name in self.contracts:
+                                del self.contracts[grey_contract_name]
+                                deleted_contracts.append(grey_contract_name)
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"

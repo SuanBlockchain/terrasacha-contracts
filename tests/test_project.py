@@ -20,6 +20,8 @@ from src.terrasacha_contracts.validators.project import (
     UpdateProject,
     UpdateToken,
     validate_datum_update,
+    validate_stakeholder_authorization,
+    validate_update_token_changes,
 )
 from terrasacha_contracts.minting_policies.project_nfts import (
     BurnProject,
@@ -573,8 +575,8 @@ class TestProjectValidationFunctions(MockCommonProject):
         # Should not raise any exception when setting empty token name at status 0
         validate_datum_update(old_datum, new_datum)
 
-    def test_validate_datum_update_token_name_change_once_set_fails(self):
-        """Test datum update fails when changing token name once it's been set"""
+    def test_validate_datum_update_token_name_change_state_0_success(self):
+        """Test datum update succeeds when changing token name in state 0"""
         # Create datum with status 0 and non-empty token name
         old_params = self.create_mock_datum_project_params(project_state=0)
         old_datum = self.create_mock_datum_project(params=old_params)
@@ -582,7 +584,7 @@ class TestProjectValidationFunctions(MockCommonProject):
 
         new_token = TokenProject(
             policy_id=old_datum.project_token.policy_id,
-            token_name=b"DIFFERENT_TOKEN",  # Trying to change
+            token_name=b"DIFFERENT_TOKEN",  # Changing - should be allowed in state 0
             total_supply=old_datum.project_token.total_supply,
             current_supply=old_datum.project_token.current_supply,
         )
@@ -595,8 +597,8 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Token name cannot be changed once set"):
-            validate_datum_update(old_datum, new_datum)
+        # Should succeed - token name can be changed when state == 0
+        validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_token_name_change_status_1_fails(self):
         """Test datum update fails when token name changes and status > 0"""
@@ -619,12 +621,14 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Token name cannot be changed after status > 0"):
+        with pytest.raises(AssertionError, match="Token name cannot be changed after project lock"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_token_policy_change_fails(self):
-        """Test datum update fails when token policy ID changes"""
+        """Test datum update fails when token policy ID changes after project lock"""
         old_datum = self.create_mock_datum_project()
+        # Set project state to 1 (locked)
+        old_datum.params.project_state = 1
 
         new_token = TokenProject(
             policy_id=bytes.fromhex("2" * 56),  # Changed
@@ -641,7 +645,7 @@ class TestProjectValidationFunctions(MockCommonProject):
             certifications=old_datum.certifications,
         )
 
-        with pytest.raises(AssertionError, match="Project token policy ID cannot be changed"):
+        with pytest.raises(AssertionError, match="Token policy ID cannot be changed after project lock"):
             validate_datum_update(old_datum, new_datum)
 
     def test_validate_datum_update_stakeholders_length_change_fails(self):
@@ -3149,8 +3153,8 @@ class TestProjectValidator(MockCommonProject):
         # Should pass
         project_validator(oref_project, old_datum, redeemer, context)
 
-    def test_validator_update_token_amount_claimed_decrease_fails(self):
-        """Test UpdateToken fails when amount_claimed decreases"""
+    def test_validator_update_token_amount_claimed_decrease_during_burn_success(self):
+        """Test UpdateToken succeeds when amount_claimed decreases during burning"""
         oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         protocol_token_name = b"PROTO_token"
 
@@ -3160,8 +3164,8 @@ class TestProjectValidator(MockCommonProject):
             ]
         )
 
-        # Create new datum with decreased amount_claimed
-        mint_amount = 500000
+        # Create new datum with decreased amount_claimed during burn
+        burn_amount = -500000  # Negative for burning
         new_datum = DatumProject(
             protocol_policy_id=old_datum.protocol_policy_id,
             params=old_datum.params,
@@ -3169,14 +3173,14 @@ class TestProjectValidator(MockCommonProject):
                 policy_id=old_datum.project_token.policy_id,
                 token_name=old_datum.project_token.token_name,
                 total_supply=old_datum.project_token.total_supply,
-                current_supply=old_datum.project_token.current_supply + mint_amount,
+                current_supply=old_datum.project_token.current_supply + burn_amount,
             ),
             stakeholders=[
                 StakeHolderParticipation(
                     stakeholder=old_datum.stakeholders[0].stakeholder,
                     pkh=old_datum.stakeholders[0].pkh,
                     participation=old_datum.stakeholders[0].participation,
-                    amount_claimed=1000000,  # Decreased - this should fail
+                    amount_claimed=1500000,  # Decreased during burn - this should succeed
                 )
             ],
             certifications=old_datum.certifications,
@@ -3201,18 +3205,83 @@ class TestProjectValidator(MockCommonProject):
             project_input_index=0,
             user_input_index=0,
             project_output_index=0,
-            new_supply=mint_amount,
+            new_supply=burn_amount,
         )
 
         spending_purpose = Spending(oref_project)
         tx_info = self.create_mock_tx_info(inputs=tx_inputs, outputs=tx_outputs)
-        tx_info.mint = {old_datum.project_token.policy_id: {old_datum.project_token.token_name: mint_amount}}
+        tx_info.mint = {old_datum.project_token.policy_id: {old_datum.project_token.token_name: burn_amount}}
         tx_info.signatories = [bytes.fromhex("a" * 56)]  # landowner's PKH
-        
+
+        context = self.create_mock_script_context(spending_purpose, tx_info)
+
+        # Should succeed
+        project_validator(oref_project, old_datum, redeemer, context)
+
+    def test_validator_update_token_amount_claimed_increase_during_burn_fails(self):
+        """Test UpdateToken fails when amount_claimed increases during burning"""
+        oref_project = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
+        protocol_token_name = b"PROTO_token"
+
+        old_datum = self.create_active_project_datum(
+            stakeholders=[
+                self.create_mock_stakeholder_participation("landowner", 5000000, bytes.fromhex("a" * 56), amount_claimed=1000000),
+            ]
+        )
+
+        # Create new datum with increased amount_claimed during burn
+        burn_amount = -500000  # Negative for burning
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=old_datum.project_token.token_name,
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=old_datum.project_token.current_supply + burn_amount,
+            ),
+            stakeholders=[
+                StakeHolderParticipation(
+                    stakeholder=old_datum.stakeholders[0].stakeholder,
+                    pkh=old_datum.stakeholders[0].pkh,
+                    participation=old_datum.stakeholders[0].participation,
+                    amount_claimed=1500000,  # Increased during burn - this should fail
+                )
+            ],
+            certifications=old_datum.certifications,
+        )
+
+        # Create transaction setup
+        project_input_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(old_datum),
+        )
+        project_output_utxo = self.create_mock_tx_out(
+            self.project_script_address,
+            value={b"": 10000000, self.sample_policy_id: {protocol_token_name: 1}},
+            datum=SomeOutputDatum(new_datum),
+        )
+
+        tx_inputs = [self.create_mock_tx_in_info(oref_project, project_input_utxo)]
+        tx_outputs = [project_output_utxo]
+
+        redeemer = UpdateToken(
+            project_input_index=0,
+            user_input_index=0,
+            project_output_index=0,
+            new_supply=burn_amount,
+        )
+
+        spending_purpose = Spending(oref_project)
+        tx_info = self.create_mock_tx_info(inputs=tx_inputs, outputs=tx_outputs)
+        tx_info.mint = {old_datum.project_token.policy_id: {old_datum.project_token.token_name: burn_amount}}
+        tx_info.signatories = [bytes.fromhex("a" * 56)]  # landowner's PKH
+
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Should fail
-        with pytest.raises(AssertionError, match="Amount claimed can only increase"):
+        with pytest.raises(AssertionError, match="Amount claimed can only decrease during burning"):
             project_validator(oref_project, old_datum, redeemer, context)
 
     def test_validator_update_token_amount_claimed_exceeds_participation_fails(self):
@@ -3379,6 +3448,128 @@ class TestProjectValidator(MockCommonProject):
         
         # Should pass - all changes allowed when state == 0
         validate_datum_update(old_datum, new_datum)
+
+    def test_validate_stakeholder_authorization_non_investor_signature_required(self):
+        """Test validate_stakeholder_authorization requires non-investor signature"""
+        # Create datum with non-investor stakeholders
+        datum = self.create_active_project_datum(
+            stakeholders=[
+                self.create_mock_stakeholder_participation("landowner", 3000000, bytes.fromhex("a" * 56)),
+                self.create_mock_stakeholder_participation("verifier", 2000000, bytes.fromhex("b" * 56)),
+            ]
+        )
+
+        # Create transaction info without any signatures
+        tx_info = self.create_mock_tx_info()
+        tx_info.signatories = []
+
+        # Should fail - no signatures provided
+        with pytest.raises(AssertionError, match="Transaction must be signed by a non-investor stakeholder"):
+            validate_stakeholder_authorization(datum, tx_info)
+
+        # Should succeed with correct signature
+        tx_info.signatories = [bytes.fromhex("a" * 56)]  # landowner's PKH
+        validate_stakeholder_authorization(datum, tx_info)
+
+    def test_validate_stakeholder_authorization_investor_only_no_signature_required(self):
+        """Test validate_stakeholder_authorization allows investor-only transactions without signatures"""
+        # Create datum with only investor stakeholders
+        datum = self.create_active_project_datum(
+            stakeholders=[
+                self.create_mock_stakeholder_participation("investor", 5000000, b""),
+            ]
+        )
+
+        # Create transaction info without any signatures
+        tx_info = self.create_mock_tx_info()
+        tx_info.signatories = []
+
+        # Should succeed - no signatures required for investor-only
+        validate_stakeholder_authorization(datum, tx_info)
+
+    def test_validate_update_token_changes_comprehensive_mint_success(self):
+        """Test validate_update_token_changes for successful minting scenario"""
+        old_datum = self.create_active_project_datum(
+            stakeholders=[
+                self.create_mock_stakeholder_participation("landowner", 3000000, bytes.fromhex("a" * 56), amount_claimed=500000),
+                self.create_mock_stakeholder_participation("investor", 2000000, b"", amount_claimed=0),
+            ]
+        )
+
+        mint_delta = 1000000
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=old_datum.project_token.token_name,
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=old_datum.project_token.current_supply + mint_delta,
+            ),
+            stakeholders=[
+                StakeHolderParticipation(
+                    stakeholder=old_datum.stakeholders[0].stakeholder,
+                    pkh=old_datum.stakeholders[0].pkh,
+                    participation=old_datum.stakeholders[0].participation,
+                    amount_claimed=800000,  # Increased during minting
+                ),
+                StakeHolderParticipation(
+                    stakeholder=old_datum.stakeholders[1].stakeholder,
+                    pkh=old_datum.stakeholders[1].pkh,
+                    participation=old_datum.stakeholders[1].participation,
+                    amount_claimed=200000,  # Increased during minting
+                ),
+            ],
+            certifications=old_datum.certifications,
+        )
+
+        tx_info = self.create_mock_tx_info()
+        tx_info.signatories = [bytes.fromhex("a" * 56)]  # landowner's PKH
+
+        # Should succeed
+        validate_update_token_changes(old_datum, new_datum, mint_delta, tx_info)
+
+    def test_validate_update_token_changes_comprehensive_burn_success(self):
+        """Test validate_update_token_changes for successful burning scenario"""
+        old_datum = self.create_active_project_datum(
+            stakeholders=[
+                self.create_mock_stakeholder_participation("landowner", 3000000, bytes.fromhex("a" * 56), amount_claimed=1500000),
+                self.create_mock_stakeholder_participation("investor", 2000000, b"", amount_claimed=500000),
+            ]
+        )
+
+        burn_delta = -500000
+        new_datum = DatumProject(
+            protocol_policy_id=old_datum.protocol_policy_id,
+            params=old_datum.params,
+            project_token=TokenProject(
+                policy_id=old_datum.project_token.policy_id,
+                token_name=old_datum.project_token.token_name,
+                total_supply=old_datum.project_token.total_supply,
+                current_supply=old_datum.project_token.current_supply + burn_delta,
+            ),
+            stakeholders=[
+                StakeHolderParticipation(
+                    stakeholder=old_datum.stakeholders[0].stakeholder,
+                    pkh=old_datum.stakeholders[0].pkh,
+                    participation=old_datum.stakeholders[0].participation,
+                    amount_claimed=1200000,  # Decreased during burning
+                ),
+                StakeHolderParticipation(
+                    stakeholder=old_datum.stakeholders[1].stakeholder,
+                    pkh=old_datum.stakeholders[1].pkh,
+                    participation=old_datum.stakeholders[1].participation,
+                    amount_claimed=300000,  # Decreased during burning
+                ),
+            ],
+            certifications=old_datum.certifications,
+        )
+
+        tx_info = self.create_mock_tx_info()
+        tx_info.signatories = [bytes.fromhex("a" * 56)]  # landowner's PKH
+
+        # Should succeed
+        validate_update_token_changes(old_datum, new_datum, burn_delta, tx_info)
 
 
 if __name__ == "__main__":

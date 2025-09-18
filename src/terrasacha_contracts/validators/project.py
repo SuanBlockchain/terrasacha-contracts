@@ -26,6 +26,50 @@ def validate_stakeholder_authorization(datum: DatumProject, tx_info: TxInfo) -> 
     if has_non_investor_stakeholders:
         assert found_authorized_signer, "Transaction must be signed by a non-investor stakeholder"
 
+def validate_update_token_changes(old_datum: DatumProject, new_datum: DatumProject, mint_delta: int, tx_info: TxInfo) -> None:
+    """Consolidated validation for UpdateToken operations"""
+    signatories = tx_info.signatories
+    expected_new_supply = old_datum.project_token.current_supply + mint_delta
+
+    # Supply validation
+    assert new_datum.project_token.current_supply == expected_new_supply, "Current supply must be updated by exactly the delta amount"
+    assert new_datum.project_token.current_supply <= new_datum.project_token.total_supply, "Current supply cannot exceed total supply"
+    assert new_datum.project_token.current_supply >= 0, "Current supply must be non-negative"
+
+    # Immutable fields
+    assert old_datum.protocol_policy_id == new_datum.protocol_policy_id, "Protocol policy ID cannot change"
+    assert old_datum.params.project_id == new_datum.params.project_id, "Project ID cannot change"
+    assert old_datum.params.project_state == new_datum.params.project_state, "Project state cannot change"
+    assert old_datum.project_token.policy_id == new_datum.project_token.policy_id, "Token policy ID cannot change"
+    assert old_datum.project_token.token_name == new_datum.project_token.token_name, "Token name cannot change"
+    assert old_datum.project_token.total_supply == new_datum.project_token.total_supply, "Total supply cannot change"
+    assert len(old_datum.stakeholders) == len(new_datum.stakeholders), "Stakeholders count cannot change"
+    assert len(old_datum.certifications) == len(new_datum.certifications), "Certifications count cannot change"
+
+    # Stakeholder validation
+    for i in range(len(old_datum.stakeholders)):
+        old_stakeholder = old_datum.stakeholders[i]
+        new_stakeholder = new_datum.stakeholders[i]
+
+        # Immutable stakeholder fields
+        assert old_stakeholder.stakeholder == new_stakeholder.stakeholder, "Stakeholder identity cannot change"
+        assert old_stakeholder.pkh == new_stakeholder.pkh, "Stakeholder PKH cannot change"
+        assert old_stakeholder.participation == new_stakeholder.participation, "Stakeholder participation cannot change"
+
+        # Amount claimed validation
+        if mint_delta > 0:
+            assert new_stakeholder.amount_claimed >= old_stakeholder.amount_claimed, "Amount claimed can only increase during minting"
+        else:
+            assert new_stakeholder.amount_claimed <= old_stakeholder.amount_claimed, "Amount claimed can only decrease during burning"
+
+        assert new_stakeholder.amount_claimed >= 0, "Amount claimed must be non-negative"
+        assert new_stakeholder.amount_claimed <= new_stakeholder.participation, "Amount claimed cannot exceed participation"
+
+        # Authorization for claim changes
+        if new_stakeholder.amount_claimed != old_stakeholder.amount_claimed:
+            if old_stakeholder.stakeholder != b"investor":
+                assert old_stakeholder.pkh in signatories, "Stakeholder must sign to claim tokens"
+
 def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> None:
     """
     Validate UpdateProject datum changes.
@@ -167,17 +211,14 @@ def validator(
         # UpdateToken can only be used when project is in active state (state > 0)
         # This path is for token operations after project initialization is complete
         assert datum_project.params.project_state > 0, "UpdateToken can only be used when project_state > 0"
-        
-        # When making any minting or burning of grey tokens, we use this redeemer to update the datum in the token section specifically the current_supply
+
+        # Resolve input/output UTXOs
         project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
         project_output = resolve_linear_output(
             project_input, tx_info, redeemer.project_output_index
         )
 
         project_token = extract_token_from_input(project_input)
-        
-        # Validate stakeholder authorization, except for public "investor" stakeholders, completely bypassing the function when only investors are present
-        validate_stakeholder_authorization(datum_project, tx_info)
 
         # Validate mint amount matches redeemer delta
         grey_token_policy = datum_project.project_token.policy_id
@@ -189,42 +230,15 @@ def validator(
         # Validate NFT continues
         validate_nft_continues(project_output, project_token)
 
-        # Validate datum update with expected current_supply change
+        # Get new datum from output
         project_datum = project_output.datum
         assert isinstance(project_datum, SomeOutputDatum)
         new_datum: DatumProject = project_datum.datum
+
+        # Validate all UpdateToken changes
+        validate_stakeholder_authorization(datum_project, tx_info)
+        validate_update_token_changes(datum_project, new_datum, redeemer.new_supply, tx_info)
         
-        expected_new_supply = datum_project.project_token.current_supply + redeemer.new_supply
-        assert new_datum.project_token.current_supply == expected_new_supply, "Current supply must be updated by exactly the delta amount"
-        
-        # Validate essential fields remain unchanged
-        assert datum_project.protocol_policy_id == new_datum.protocol_policy_id, "Protocol policy ID cannot change"
-        assert datum_project.params.project_id == new_datum.params.project_id, "Project ID cannot change"
-        assert datum_project.params.project_state == new_datum.params.project_state, "Project state cannot change"
-        assert datum_project.project_token.policy_id == new_datum.project_token.policy_id, "Token policy ID cannot change"
-        assert datum_project.project_token.token_name == new_datum.project_token.token_name, "Token name cannot change"
-        assert datum_project.project_token.total_supply == new_datum.project_token.total_supply, "Total supply cannot change"
-        assert len(datum_project.stakeholders) == len(new_datum.stakeholders), "Stakeholders count cannot change"
-        assert len(datum_project.certifications) == len(new_datum.certifications), "Certifications count cannot change"
-        
-        # Validate stakeholder changes for UpdateToken - only amount_claimed can change
-        for i in range(len(datum_project.stakeholders)):
-            old_stakeholder = datum_project.stakeholders[i]
-            new_stakeholder = new_datum.stakeholders[i]
-            
-            # These fields must remain immutable
-            assert old_stakeholder.stakeholder == new_stakeholder.stakeholder, "Stakeholder identity cannot change in UpdateToken"
-            assert old_stakeholder.pkh == new_stakeholder.pkh, "Stakeholder PKH cannot change in UpdateToken" 
-            assert old_stakeholder.participation == new_stakeholder.participation, "Stakeholder participation cannot change in UpdateToken"
-            
-            # Amount claimed validation - can only increase and must not exceed participation
-            assert new_stakeholder.amount_claimed >= old_stakeholder.amount_claimed, "Amount claimed can only increase"
-            assert new_stakeholder.amount_claimed <= new_stakeholder.participation, "Amount claimed cannot exceed participation"
-            assert new_stakeholder.amount_claimed >= 0, "Amount claimed must be non-negative"
-        
-        # Validate supply constraints
-        assert new_datum.project_token.current_supply <= new_datum.project_token.total_supply, "Current supply cannot exceed total supply"
-        assert new_datum.project_token.current_supply >= 0, "Current supply must be non-negative"
     elif isinstance(redeemer, EndProject):
         project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
         project_token = extract_token_from_input(project_input)
@@ -235,3 +249,4 @@ def validator(
         ), "User does not have required token"
     else:
         assert False, "Invalid redeemer type"
+

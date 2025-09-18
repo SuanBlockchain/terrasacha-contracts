@@ -716,7 +716,7 @@ class TokenOperations:
                 stakeholder_list.append(
                     StakeHolderParticipation(
                         stakeholder=stakeholder_name,
-                        pkh=stakeholder_pkh,
+                        pkh=bytes.fromhex(stakeholder_pkh),
                         participation=participation,
                         amount_claimed=0,
                     )
@@ -1242,7 +1242,6 @@ class TokenOperations:
 
     def create_grey_minting_transaction(
         self,
-        destination_address: Optional[pc.Address] = None,
         project_name: Optional[str] = None,
         grey_token_quantity: int = 1,
     ) -> Dict[str, Any]:
@@ -1253,12 +1252,13 @@ class TokenOperations:
         Pre-requisites: Grey token info must already exist in project datum (setup via UpdateProject first)
 
         Args:
-            destination_address: Optional destination for grey token
             project_name: Optional specific project contract name to use
             grey_token_quantity: Number of grey tokens to mint (default: 1)
 
         Returns:
             A dictionary containing the transaction details or an error message
+
+        Note: Grey tokens are always sent to the wallet submitting the transaction (paying fees)
         """
         try:
             project_contract = self.contract_manager.get_project_contract(project_name)
@@ -1326,8 +1326,7 @@ class TokenOperations:
 
             # Get wallet info
             from_address = self.wallet.get_address(0)
-            if destination_address is None:
-                destination_address = from_address
+            destination_address = from_address  # Always use wallet address for grey tokens
 
             # Find suitable UTXO
             user_utxos = self.context.utxos(from_address)

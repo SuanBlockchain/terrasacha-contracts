@@ -5,6 +5,7 @@ Console interface that uses the core Cardano library.
 Handles user interactions, menus, and display formatting.
 """
 
+import copy
 import json
 import os
 import pathlib
@@ -1385,50 +1386,36 @@ class CardanoCLI:
             input("Press Enter to continue...")
             return
 
-        # Get destination address (optional)
+        # Ask for wallet to use for transaction (will pay fees and receive tokens)
+        self.menu.print_section("WALLET SELECTION")
         self.menu.print_info(self.get_available_wallets_info())
-        destination_input = self.menu.get_input(
-            "Enter destination address or wallet name (or press Enter for default wallet)"
+        wallet_input = self.menu.get_input(
+            "Enter wallet name to use for transaction (will pay fees and receive grey tokens) or press Enter for current wallet"
         )
 
-        destination_address = None
-        if destination_input.strip():
-            resolved_address = self.resolve_address_input(destination_input.strip())
-            if resolved_address:
-                try:
-                    destination_address = pc.Address.from_primitive(resolved_address)
-                    if destination_input.strip() in self.wallet_manager.get_wallet_names():
-                        self.menu.print_info(
-                            f"Resolved wallet '{destination_input.strip()}' to: {resolved_address[50:]}..."
-                        )
-                    else:
-                        self.menu.print_info(f"Using specified address: {resolved_address[50:]}...")
-                except Exception as e:
-                    self.menu.print_error(f"Invalid address format: {e}")
-                    input("Press Enter to continue...")
-                    return
-            else:
-                self.menu.print_error(
-                    f"Invalid address or wallet name: {destination_input.strip()}"
-                )
+        if wallet_input.strip():
+            # Switch to the specified wallet if a wallet name is provided
+            resolved_address = self.resolve_address_input(wallet_input.strip(), switch_wallet=True)
+            if not resolved_address:
+                self.menu.print_error(f"Invalid wallet name: {wallet_input.strip()}")
                 input("Press Enter to continue...")
                 return
+            self.menu.print_info(f"Switched to wallet: {wallet_input.strip()}")
         else:
-            self.menu.print_info("Using default wallet address")
+            self.menu.print_info("Using current wallet for transaction")
 
         # Show transaction preview
         self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
         print(f"│ Project Contract: {selected_project}")
         print(f"│ Grey Tokens to Mint: {grey_token_quantity:,}")
-        print(
-            f"│ Destination: {'Default wallet' if not destination_address else 'Specified address'}"
-        )
+        print(f"│ Wallet: {current_wallet} (will pay fees and receive tokens)")
         print("│")
         print("│ ⚠️  This will:")
         print("│    • Use UpdateToken redeemer on project contract")
         print("│    • Increment current_supply in project datum")
         print("│    • Update stakeholder amount_claimed")
-        print("│    • Mint grey tokens to destination address")
+        print("│    • Mint grey tokens to the selected wallet address")
 
         if not self.menu.confirm_action("Proceed with grey token minting?"):
             self.menu.print_info("Grey token minting cancelled")
@@ -1440,7 +1427,6 @@ class CardanoCLI:
 
             # Create the grey token minting transaction
             result = self.token_operations.create_grey_minting_transaction(
-                destination_address=destination_address,
                 project_name=selected_project,
                 grey_token_quantity=grey_token_quantity,
             )
@@ -1484,8 +1470,26 @@ class CardanoCLI:
         self.menu.print_header("GREY TOKEN BURNING", "Burn Grey Tokens")
 
         try:
-            # Get user's wallet address to find grey tokens
-            user_address = self.wallet_manager.get_wallet().get_address()
+            # Ask user to select wallet for token burning
+            wallet_selection = self.select_wallet_for_token_operation("burning grey tokens")
+            if not wallet_selection:
+                self.menu.print_info("Wallet selection cancelled")
+                input("Press Enter to continue...")
+                return
+
+            wallet_name, user_address = wallet_selection
+
+            # Switch to selected wallet if different from current
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_name != current_wallet:
+                success = self.switch_to_wallet(wallet_name)
+                if not success:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_name}")
+                    input("Press Enter to continue...")
+                    return
+                self.menu.print_info(f"Switched to wallet: {wallet_name}")
+
+            # Get UTXOs from selected wallet
             user_utxos = self.context.utxos(user_address)
 
             if not user_utxos:
@@ -1614,6 +1618,7 @@ class CardanoCLI:
 
             # Confirmation
             self.menu.print_info(f"\nBurning Details:")
+            self.menu.print_info(f"  - Wallet: {wallet_name}")
             self.menu.print_info(f"  - Project: {selected_project}")
             self.menu.print_info(f"  - Policy ID: {selected_policy_id}")
             self.menu.print_info(f"  - Token Name: {selected_token_name}")
@@ -1659,6 +1664,124 @@ class CardanoCLI:
 
         except Exception as e:
             self.menu.print_error(f"Grey token burning failed: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def delete_grey_tokens_menu(self):
+        """Delete grey token contracts while preserving project contracts"""
+        self.menu.print_header("DELETE GREY TOKENS", "Remove Grey Token Contracts Only")
+
+        # Get available grey token contracts
+        grey_contracts = self.contract_manager.list_grey_token_contracts()
+        if not grey_contracts:
+            self.menu.print_error("No grey token contracts found")
+            input("Press Enter to continue...")
+            return
+
+        self.menu.print_section("AVAILABLE GREY TOKEN CONTRACTS")
+        self.menu.print_info("Select grey token contract to delete (project contracts will be preserved):")
+
+        for i, contract_name in enumerate(grey_contracts, 1):
+            # Extract project name from grey contract name
+            project_name = contract_name.replace("_grey", "")
+            print(f"│ {i}. {contract_name} (associated with {project_name})")
+
+        print()
+        try:
+            choice = int(
+                self.menu.get_input(
+                    f"Select grey token contract to delete (1-{len(grey_contracts)}, or 0 to cancel)"
+                )
+            )
+
+            if choice == 0:
+                self.menu.print_info("Operation cancelled")
+                input("Press Enter to continue...")
+                return
+
+            elif 1 <= choice <= len(grey_contracts):
+                grey_contract_name = grey_contracts[choice - 1]
+                project_name = grey_contract_name.replace("_grey", "")
+
+                # Show warning
+                self.menu.print_warning(
+                    f"⚠ This will permanently delete grey token contract '{grey_contract_name}'"
+                )
+                self.menu.print_info(
+                    f"ℹ Project contract '{project_name}' and its NFTs will be preserved"
+                )
+
+                if not self.menu.confirm_action("Proceed with grey token contract deletion?"):
+                    self.menu.print_info("Deletion cancelled")
+                    input("Press Enter to continue...")
+                    return
+
+                # Check if it's a reference script that needs UTXO spending
+                contract = self.contract_manager.contracts[grey_contract_name]
+                is_reference_script = (
+                    hasattr(contract, "storage_type")
+                    and contract.storage_type == "reference_script"
+                )
+
+                if is_reference_script:
+                    self.menu.print_section("REFERENCE SCRIPT DELETION")
+                    self.menu.print_info("This grey token contract is stored as a reference script on-chain.")
+                    self.menu.print_info("The reference script UTXO needs to be spent to complete deletion.")
+
+                    # Get wallet selection for UTXO owner
+                    wallet_names = self.wallet_manager.get_wallet_names()
+                    self.menu.print_info("\nSelect wallet that owns the reference script UTXO:")
+                    for i, wallet_name in enumerate(wallet_names, 1):
+                        print(f"{i}. {wallet_name}")
+
+                    try:
+                        wallet_choice = (
+                            int(self.menu.get_input(f"Select wallet (1-{len(wallet_names)})")) - 1
+                        )
+                        if 0 <= wallet_choice < len(wallet_names):
+                            selected_wallet_name = wallet_names[wallet_choice]
+                            selected_wallet = self.wallet_manager.get_wallet(selected_wallet_name)
+                        else:
+                            self.menu.print_error("Invalid wallet selection")
+                            input("Press Enter to continue...")
+                            return
+                    except ValueError:
+                        self.menu.print_error("Invalid input")
+                        input("Press Enter to continue...")
+                        return
+
+                    # Spend the reference script UTXO
+                    destination_address = selected_wallet.enterprise_address
+                    self.menu.print_info("Spending reference script UTXO...")
+                    spend_result = self.contract_manager.spend_reference_script_utxo(
+                        grey_contract_name, selected_wallet, destination_address
+                    )
+                    if not spend_result["success"]:
+                        self.menu.print_error(
+                            f"Failed to spend reference script UTXO: {spend_result['error']}"
+                        )
+                        input("Press Enter to continue...")
+                        return
+                    self.menu.print_success("✓ Reference script UTXO spent successfully")
+                    self.menu.print_info(f"Transaction ID: {spend_result['tx_id']}")
+
+                # Delete the grey token contract
+                result = self.contract_manager.delete_grey_token_contract(grey_contract_name)
+                if result["success"]:
+                    self.menu.print_success(result["message"])
+                    if result.get("saved"):
+                        self.menu.print_success("✓ Updated contracts file saved to disk")
+                    self.menu.print_info(
+                        f"ℹ Project contract '{project_name}' and associated NFTs remain available"
+                    )
+                else:
+                    self.menu.print_error(f"Failed to delete grey token contract: {result['error']}")
+
+            else:
+                self.menu.print_error("Invalid selection")
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a number.")
 
         input("\nPress Enter to continue...")
 
@@ -1888,7 +2011,7 @@ class CardanoCLI:
             "Update Stakeholders (Participation Management)",
             "Update Certifications (Certification Records)",
             "Batch Update All Fields (Accumulate Changes)",
-            "Advance Project State (0→1)",
+            "Update Project State (Any Direction)",
             "Quick State Advance Only",
             "Cancel",
         ]
@@ -1920,7 +2043,7 @@ class CardanoCLI:
             elif choice_num == 6:
                 self.batch_update_all_fields(current_datum, user_address, project_name)
             elif choice_num == 7:
-                self.advance_project_state(current_datum, user_address, project_name)
+                self.update_project_state(current_datum, user_address, project_name)
             elif choice_num == 8:
                 # Quick advance - just increment state
                 self.quick_advance_state(current_datum, user_address, project_name)
@@ -2181,23 +2304,9 @@ class CardanoCLI:
         else:
             new_total_supply = current_datum.project_token.total_supply
 
-        # Current Supply update
-        new_current_input = self.menu.get_input(
-            "Enter new Current Supply or press Enter to keep current"
-        )
-        if new_current_input.strip():
-            try:
-                new_current_supply = int(new_current_input)
-                if new_current_supply < 0:
-                    raise ValueError("Current supply cannot be negative")
-                if new_current_supply > new_total_supply:
-                    raise ValueError("Current supply cannot exceed total supply")
-            except ValueError as e:
-                self.menu.print_error(f"Invalid Current Supply: {e}")
-                input("Press Enter to continue...")
-                return
-        else:
-            new_current_supply = current_datum.project_token.current_supply
+        # Note: Current Supply is automatically managed by grey token minting operations
+        # Manual editing of current_supply is not allowed to maintain data consistency
+        new_current_supply = current_datum.project_token.current_supply
 
         # Show preview
         self.menu.print_section("PREVIEW CHANGES")
@@ -2266,7 +2375,6 @@ class CardanoCLI:
             return
 
         # Generate unique token name for grey tokens
-        import random
         import time
 
         # Create unique token name using project name and timestamp
@@ -2282,27 +2390,6 @@ class CardanoCLI:
         print(f"│ Grey Token Name: {base_name}")
         print("│")
         print("│ This will update the project datum to include grey token information.")
-        print("│ After setup, you can mint grey tokens using the 'Mint Grey Tokens' menu option.")
-
-        # Get token supply settings
-        # try:
-        #     total_supply_input = self.menu.get_input(
-        #         "Enter grey token total supply (default: 1000)"
-        #     )
-        #     total_supply = int(total_supply_input) if total_supply_input.strip() else 1000
-
-        #     if total_supply <= 0:
-        #         raise ValueError("Total supply must be positive")
-
-        # except ValueError as e:
-        #     self.menu.print_error(f"Invalid total supply: {e}")
-        #     input("Press Enter to continue...")
-        #     return
-
-        # if not self.menu.confirm_action("Setup grey tokens for this project?"):
-        #     self.menu.print_info("Grey token setup cancelled")
-        #     input("Press Enter to continue...")
-        #     return
 
         # Create token changes to include grey token info
         token_changes = {
@@ -2311,14 +2398,6 @@ class CardanoCLI:
             # "total_supply": total_supply,
             "current_supply": 0,  # Start with 0 current supply
         }
-
-        self.menu.print_section("PREVIEW GREY TOKEN SETUP")
-        print(f"│ Grey Policy ID: {grey_policy_id}")
-        print(f"│ Grey Token Name: {base_name}")
-        # print(f"│ Total Supply: {total_supply:,}")
-        print(f"│ Initial Current Supply: 0")
-        print("│")
-        print("│ ⚠️  This will replace current token info in project datum")
 
         # Create custom datum and submit using UpdateProject redeemer
         self.create_custom_update_transaction(
@@ -2334,23 +2413,67 @@ class CardanoCLI:
         )
         input("Press Enter to continue...")
 
-    def advance_project_state(self, current_datum, user_address, project_name):
-        """Advance project state with optional field changes"""
-        self.menu.print_section("ADVANCE PROJECT STATE")
+    def update_project_state(self, current_datum, user_address, project_name):
+        """Update project state - can move to any state including reverting"""
+        self.menu.print_section("UPDATE PROJECT STATE")
 
         current_state = current_datum.params.project_state
-        new_state = min(current_state + 1, 3)
         state_names = {0: "Initialized", 1: "Distributed", 2: "Certified", 3: "Closed"}
+        state_descriptions = {
+            0: "Full editing allowed - all fields mutable",
+            1: "Limited editing - basic fields locked",
+            2: "Minimal editing - most fields immutable",
+            3: "Read-only - project closed"
+        }
 
         print(f"│ Current State: {current_state} ({state_names.get(current_state)})")
-        print(f"│ New State: {new_state} ({state_names.get(new_state)})")
         print("│")
-        print("│ ⚠️  WARNING: Once advanced, most fields become immutable!")
+        print("│ Available States:")
+        for state_num, name in state_names.items():
+            status = "CURRENT" if state_num == current_state else ""
+            print(f"│ {state_num}. {name} - {state_descriptions[state_num]} {status}")
+        print("│")
 
-        if not self.menu.confirm_action(
-            f"Advance project state from {current_state} to {new_state}?"
-        ):
-            self.menu.print_info("State advance cancelled")
+        # Get user's choice for new state
+        try:
+            new_state_input = self.menu.get_input("Select new project state (0-3, or press Enter to cancel)")
+            if not new_state_input.strip():
+                self.menu.print_info("State update cancelled")
+                input("Press Enter to continue...")
+                return
+
+            new_state = int(new_state_input)
+            if new_state not in [0, 1, 2, 3]:
+                self.menu.print_error("Invalid state. Must be 0, 1, 2, or 3")
+                input("Press Enter to continue...")
+                return
+
+            if new_state == current_state:
+                self.menu.print_info("State is already set to this value")
+                input("Press Enter to continue...")
+                return
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a number 0-3")
+            input("Press Enter to continue...")
+            return
+
+        # Show warnings based on state change
+        print("│")
+        if new_state < current_state:
+            self.menu.print_warning("⚠️  REVERTING TO LOWER STATE:")
+            print("│   • This will make previously locked fields editable again")
+            print("│   • Use caution as this may affect project integrity")
+        elif new_state > current_state:
+            self.menu.print_warning("⚠️  ADVANCING TO HIGHER STATE:")
+            print("│   • This will lock more fields from editing")
+            print("│   • Higher states provide more restrictions")
+
+        print(f"│ Change: {current_state} ({state_names[current_state]}) → {new_state} ({state_names[new_state]})")
+        print("│")
+
+        if not self.menu.confirm_action(f"Update project state to {new_state} ({state_names[new_state]})"):
+            self.menu.print_info("State update cancelled")
             input("Press Enter to continue...")
             return
 
@@ -2372,7 +2495,7 @@ class CardanoCLI:
             self.display_batch_update_menu(accumulated_changes)
 
             try:
-                choice = self.menu.get_input("Select option (1-8, 0 to cancel)")
+                choice = self.menu.get_input("Select option (1-9, 0 to cancel)")
                 choice_num = int(choice)
 
                 if choice_num == 0:
@@ -2389,8 +2512,10 @@ class CardanoCLI:
                 elif choice_num == 5:
                     self.accumulate_certification_changes(current_datum, accumulated_changes)
                 elif choice_num == 6:
-                    self.review_accumulated_changes(current_datum, accumulated_changes)
+                    self.accumulate_grey_token_changes(current_datum, accumulated_changes, project_name)
                 elif choice_num == 7:
+                    self.review_accumulated_changes(current_datum, accumulated_changes)
+                elif choice_num == 8:
                     if accumulated_changes:
                         self.submit_accumulated_changes(
                             current_datum, user_address, project_name, accumulated_changes
@@ -2399,7 +2524,7 @@ class CardanoCLI:
                     else:
                         self.menu.print_info("No changes accumulated yet")
                         input("Press Enter to continue...")
-                elif choice_num == 8:
+                elif choice_num == 9:
                     accumulated_changes.clear()
                     self.menu.print_success("All accumulated changes cleared")
                     input("Press Enter to continue...")
@@ -2426,6 +2551,7 @@ class CardanoCLI:
             "Update Token Economics (Policy ID, Token Name, Supply)",
             "Update Stakeholders (Participation Management)",
             "Update Certifications (Certification Records)",
+            "Setup Grey Tokens (Compile & Configure)",
             "Review All Changes",
             "Submit All Changes",
             "Clear All Changes",
@@ -2516,8 +2642,7 @@ class CardanoCLI:
                 new_state = int(new_state_input)
                 if new_state < 0 or new_state > 3:
                     raise ValueError("Project state must be between 0 and 3")
-                if new_state < current_state:
-                    raise ValueError("Project state can only move forward")
+                # Allow state changes in any direction - user has been warned in UI
                 accumulated_changes["project_state"] = new_state
                 self.menu.print_success(
                     f"✓ Project State change accumulated: {current_state} → {new_state}"
@@ -2619,27 +2744,8 @@ class CardanoCLI:
                 input("Press Enter to continue...")
                 return
 
-        # Current Supply update
-        new_current_input = self.menu.get_input(
-            "Enter new Current Supply or press Enter to keep current"
-        )
-        if new_current_input.strip():
-            try:
-                new_current_supply = int(new_current_input)
-                if new_current_supply < 0:
-                    raise ValueError("Current supply cannot be negative")
-                # Check against accumulated or current total supply
-                total_to_check = accumulated_changes.get(
-                    "total_supply", current_datum.project_token.total_supply
-                )
-                if new_current_supply > total_to_check:
-                    raise ValueError("Current supply cannot exceed total supply")
-                accumulated_changes["current_supply"] = new_current_supply
-                self.menu.print_success("✓ Current Supply change accumulated")
-            except ValueError as e:
-                self.menu.print_error(f"Invalid Current Supply: {e}")
-                input("Press Enter to continue...")
-                return
+        # Note: Current Supply is automatically managed by grey token minting operations
+        # Manual editing of current_supply is not allowed to maintain data consistency
 
         input("Press Enter to continue...")
 
@@ -2709,6 +2815,18 @@ class CardanoCLI:
                 current_supply = current_datum.project_token.current_supply
                 new_supply = accumulated_changes["current_supply"]
                 print(f"│   • Current Supply: {current_supply:,} → {new_supply:,}")
+            print("│")
+
+        # Grey Token Changes
+        if "grey_token" in accumulated_changes:
+            print("│ 🪙 GREY TOKEN SETUP:")
+            grey_info = accumulated_changes["grey_token"]
+            policy_id = grey_info["policy_id"].hex() if isinstance(grey_info["policy_id"], bytes) else grey_info["policy_id"]
+            token_name = grey_info["token_name"].hex() if isinstance(grey_info["token_name"], bytes) else grey_info["token_name"]
+            print(f"│   • Policy ID: {policy_id}")
+            print(f"│   • Token Name: {token_name}")
+            print(f"│   • Contract: {grey_info['grey_contract_name']}")
+            print("│   • Action: Add grey token info to project datum")
             print("│")
 
         input("Press Enter to continue...")
@@ -2784,8 +2902,8 @@ class CardanoCLI:
             )
         print("│")
 
-        # Get current stakeholders list (start with existing)
-        new_stakeholders = list(current_datum.stakeholders)
+        # Get current stakeholders list (start with existing) - use deep copy to avoid reference issues
+        new_stakeholders = copy.deepcopy(list(current_datum.stakeholders))
 
         # For batch mode, show a simplified direct action menu
         print("│ STAKEHOLDER OPERATIONS:")
@@ -2831,7 +2949,22 @@ class CardanoCLI:
                 return
 
         # Only add to accumulated changes if stakeholders were modified
-        if new_stakeholders != list(current_datum.stakeholders):
+        def stakeholders_are_equal(list1, list2):
+            """Compare two lists of stakeholders for equality"""
+            if len(list1) != len(list2):
+                return False
+
+            for s1, s2 in zip(list1, list2):
+                if (
+                    s1.stakeholder != s2.stakeholder
+                    or s1.pkh != s2.pkh
+                    or s1.participation != s2.participation
+                    or s1.amount_claimed != s2.amount_claimed
+                ):
+                    return False
+            return True
+
+        if not stakeholders_are_equal(new_stakeholders, list(current_datum.stakeholders)):
             accumulated_changes["stakeholders"] = new_stakeholders
             self.menu.print_success(
                 f"✓ Stakeholder changes accumulated ({len(new_stakeholders)} stakeholders)"
@@ -2894,6 +3027,108 @@ class CardanoCLI:
 
         input("Press Enter to continue...")
 
+    def accumulate_grey_token_changes(self, current_datum, accumulated_changes, project_name):
+        """Accumulate grey token setup changes without creating transaction"""
+        self.menu.print_section("ACCUMULATE GREY TOKEN CHANGES")
+
+        # Check if grey tokens already exist
+        grey_contract_name = f"{project_name}_grey"
+        grey_tokens_exist = grey_contract_name in self.contract_manager.contracts
+
+        if grey_tokens_exist:
+            self.menu.print_info("Grey token contract already exists for this project")
+            print(f"│ Existing Contract: {grey_contract_name}")
+
+            grey_contract = self.contract_manager.contracts[grey_contract_name]
+            print(f"│ Policy ID: {grey_contract.policy_id}")
+            print("│")
+
+            if not self.menu.confirm_action("Re-configure grey tokens (will overwrite existing)?"):
+                self.menu.print_info("Grey token setup skipped")
+                input("Press Enter to continue...")
+                return
+        else:
+            self.menu.print_info("Setting up new grey token contract for this project")
+
+        # Get project contract for policy ID parameter
+        try:
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                self.menu.print_error("Project contract not found")
+                input("Press Enter to continue...")
+                return
+
+            # Compile grey contract to get unique policy ID
+            grey_contract = self.contract_manager.create_minting_contract(
+                "grey", bytes.fromhex(project_contract.policy_id)
+            )
+            if not grey_contract:
+                self.menu.print_error("Failed to compile grey minting contract")
+                input("Press Enter to continue...")
+                return
+
+            grey_policy_id = grey_contract.policy_id
+            self.menu.print_success(f"✓ Grey Contract compiled successfully")
+            print(f"│ Policy ID: {grey_policy_id}")
+
+            # Store the grey contract for future use
+            self.contract_manager.contracts[grey_contract_name] = grey_contract
+
+            # Save contracts to disk
+            if self.contract_manager._save_contracts():
+                self.menu.print_success(f"✓ Grey contract saved as: {grey_contract_name}")
+            else:
+                self.menu.print_warning("Grey contract compiled but failed to save to disk")
+
+        except Exception as e:
+            self.menu.print_error(f"Error compiling grey contract: {e}")
+            input("Press Enter to continue...")
+            return
+
+        # Generate unique token name for grey tokens
+        import time
+        base_name = f"GREY_{project_name}_{int(time.time())}"
+        if len(base_name) > 32:  # Cardano token name limit
+            base_name = f"GREY_{int(time.time())}"
+
+        grey_token_name = base_name.encode("utf-8")
+
+        # Allow user to customize token name
+        print("│")
+        print(f"│ Generated Token Name: {grey_token_name.hex()}")
+        print(f"│ Display Name: {base_name}")
+        print("│")
+
+        custom_name = self.menu.get_input("Enter custom token name (or press Enter to use generated)")
+        if custom_name.strip():
+            try:
+                # Validate length
+                if len(custom_name.encode("utf-8")) > 32:
+                    self.menu.print_warning("Token name too long, truncating to 32 bytes")
+                    custom_name = custom_name[:32]
+                grey_token_name = custom_name.encode("utf-8")
+                self.menu.print_info(f"Using custom token name: {custom_name}")
+            except Exception as e:
+                self.menu.print_warning(f"Invalid token name, using generated: {e}")
+
+        # Accumulate the grey token changes
+        grey_token_info = {
+            "policy_id": bytes.fromhex(grey_policy_id),
+            "token_name": grey_token_name,
+            "grey_contract_name": grey_contract_name
+        }
+
+        accumulated_changes["grey_token"] = grey_token_info
+
+        self.menu.print_success("✓ Grey token setup accumulated for batch submission")
+        print(f"│ Policy ID: {grey_policy_id}")
+        print(f"│ Token Name: {grey_token_name.hex()}")
+        print(f"│ Contract: {grey_contract_name}")
+        print("│")
+        print("│ ℹ  Grey token info will be added to project datum when changes are submitted")
+
+        input("Press Enter to continue...")
+
     def create_custom_update_transaction(
         self, current_datum, user_address, project_name, field_updates
     ):
@@ -2902,11 +3137,6 @@ class CardanoCLI:
         try:
             # Build custom datum with user updates
             custom_datum = self.build_custom_datum(current_datum, field_updates)
-
-            if not self.menu.confirm_action("Create transaction with these changes?"):
-                self.menu.print_info("Transaction creation cancelled")
-                input("Press Enter to continue...")
-                return
 
             self.menu.print_info("Creating custom update transaction...")
             result = self.token_operations.create_project_update_transaction(
@@ -2958,14 +3188,23 @@ class CardanoCLI:
             "protocol_policy_id", current_datum.protocol_policy_id
         )
 
-        new_policy_id = field_updates.get("token_policy_id", current_datum.project_token.policy_id)
-        new_token_name = field_updates.get("token_name", current_datum.project_token.token_name)
-        new_total_supply = field_updates.get(
-            "total_supply", current_datum.project_token.total_supply
-        )
-        new_current_supply = field_updates.get(
-            "current_supply", current_datum.project_token.current_supply
-        )
+        # Handle grey token setup if present
+        if "grey_token" in field_updates:
+            grey_token_info = field_updates["grey_token"]
+            new_policy_id = grey_token_info["policy_id"]
+            new_token_name = grey_token_info["token_name"]
+            # Keep existing supply values or set defaults for grey tokens
+            new_total_supply = field_updates.get("total_supply", current_datum.project_token.total_supply)
+            new_current_supply = field_updates.get("current_supply", current_datum.project_token.current_supply)
+        else:
+            new_policy_id = field_updates.get("token_policy_id", current_datum.project_token.policy_id)
+            new_token_name = field_updates.get("token_name", current_datum.project_token.token_name)
+            new_total_supply = field_updates.get(
+                "total_supply", current_datum.project_token.total_supply
+            )
+            new_current_supply = field_updates.get(
+                "current_supply", current_datum.project_token.current_supply
+            )
 
         # Build new structures
         new_params = DatumProjectParams(
@@ -3105,6 +3344,49 @@ class CardanoCLI:
                 return None
         except (ValueError, IndexError):
             self.menu.print_error("Invalid input")
+            return None
+
+    def select_wallet_for_token_operation(self, purpose: str) -> Optional[tuple]:
+        """
+        Ask user to select a wallet for token operations and return wallet info
+
+        Args:
+            purpose: Description of what the wallet will be used for
+
+        Returns:
+            Tuple of (wallet_name, wallet_address) or None if cancelled
+        """
+        wallets = self.wallet_manager.get_wallet_names()
+
+        if not wallets:
+            self.menu.print_error("No wallets available")
+            return None
+
+        self.menu.print_section(f"WALLET SELECTION FOR {purpose.upper()}")
+        self.menu.print_info(f"Select wallet to use for {purpose}:")
+
+        for i, wallet_name in enumerate(wallets, 1):
+            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
+            status = " (CURRENT)" if is_active else ""
+            self.menu.print_menu_option(f"{i}", f"{wallet_name}{status}")
+
+        try:
+            choice = input(f"\nSelect wallet (1-{len(wallets)}, or 'q' to cancel): ").strip().lower()
+            if choice == 'q':
+                return None
+
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(wallets):
+                wallet_name = wallets[choice_num - 1]
+                wallet = self.wallet_manager.get_wallet(wallet_name)
+                wallet_address = wallet.get_address(0)
+                self.menu.print_info(f"Selected wallet: {wallet_name}")
+                return (wallet_name, wallet_address)
+            else:
+                self.menu.print_error(f"Please enter a number between 1 and {len(wallets)}")
+                return None
+        except ValueError:
+            self.menu.print_error("Please enter a valid number")
             return None
 
     def select_storage_type(self) -> Optional[str]:
@@ -3357,10 +3639,11 @@ class CardanoCLI:
             self.menu.print_menu_option("11", "Burn Grey Tokens", "🔥")
             self.menu.print_separator()
             self.menu.print_menu_option("12", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("13", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-12)")
+            choice = self.menu.get_input("Select an option (0-13)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3426,6 +3709,8 @@ class CardanoCLI:
                 self.burn_grey_tokens_menu()
             elif choice == "12":
                 self.delete_empty_contract_menu()
+            elif choice == "13":
+                self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
 
@@ -3562,9 +3847,35 @@ class CardanoCLI:
                     is_project_contract and project_nfts_name in self.contract_manager.contracts
                 )
 
+                grey_contract_name = f"{contract_name}_grey"
+                has_grey_tokens = (
+                    is_project_contract and grey_contract_name in self.contract_manager.contracts
+                )
+
+                # Ask about deletion scope if this is a project contract with grey tokens
+                delete_grey_tokens = True  # Default to delete everything
+                if is_project_contract and has_grey_tokens:
+                    self.menu.print_section("DELETION OPTIONS")
+                    self.menu.print_info("This project has associated grey token contracts.")
+                    self.menu.print_info("Choose deletion scope:")
+                    print("│ 1. Delete project + NFTs + grey tokens (full cascade)")
+                    print("│ 2. Delete project + NFTs only (preserve grey tokens)")
+
+                    scope_choice = self.menu.get_input("Select deletion scope (1-2, default: 1)")
+                    if scope_choice.strip() == "2":
+                        delete_grey_tokens = False
+                        self.menu.print_info("Grey token contracts will be preserved")
+                    else:
+                        self.menu.print_info("Full cascade deletion selected")
+
                 warning_msg = f"⚠ This will permanently delete contract '{contract_name}' if it has zero balance"
                 if has_project_nfts:
                     warning_msg += f"\n  It will also delete the associated '{project_nfts_name}' minting policy"
+                if has_grey_tokens:
+                    if delete_grey_tokens:
+                        warning_msg += f"\n  It will also delete the associated '{grey_contract_name}' contracts"
+                    else:
+                        warning_msg += f"\n  Grey token contracts will be preserved for future use"
 
                 self.menu.print_warning(warning_msg)
                 if not self.menu.confirm_action("Proceed with deletion?"):
@@ -3643,7 +3954,9 @@ class CardanoCLI:
                     self.menu.print_info(f"Destination: {spend_result['destination']}")
 
                 # Attempt deletion (for both reference scripts and local contracts)
-                result = self.contract_manager.delete_contract_if_empty(contract_name)
+                result = self.contract_manager.delete_contract_if_empty(
+                    contract_name, delete_grey_tokens=delete_grey_tokens
+                )
 
                 if result["success"]:
                     self.menu.print_success(result["message"])
@@ -3810,7 +4123,6 @@ class CardanoCLI:
             stakeholder = stakeholders_list[index]
             current_name = stakeholder.stakeholder.decode("utf-8", errors="ignore")
             current_participation = stakeholder.participation
-            current_claimed = stakeholder.amount_claimed
 
             # Edit participation
             new_participation = self.menu.get_input(
@@ -3832,21 +4144,28 @@ class CardanoCLI:
                     self.menu.print_error(f"Invalid participation: {e}")
                     return
 
-            # Edit amount claimed
-            new_claimed = self.menu.get_input(
-                f"Enter new amount claimed (current: {current_claimed:,}) or press Enter to keep"
+            # Edit PKH (Public Key Hash)
+            current_pkh = stakeholder.pkh.hex() if stakeholder.pkh else ""
+            pkh_display = (
+                current_pkh[:16] + "..." if len(current_pkh) > 16 else current_pkh or "empty"
             )
-            if new_claimed.strip():
+            new_pkh = self.menu.get_input(
+                f"Enter new PKH (current: {pkh_display}) or press Enter to keep (56 hex chars or empty)"
+            )
+            if new_pkh.strip():
                 try:
-                    claimed_amount = int(new_claimed)
-                    if claimed_amount < 0 or claimed_amount > stakeholder.participation:
-                        raise ValueError(
-                            f"Amount claimed must be between 0 and {stakeholder.participation:,}"
-                        )
-                    stakeholder.amount_claimed = claimed_amount
+                    if len(new_pkh.strip()) != 56:
+                        raise ValueError("PKH must be exactly 56 hex characters")
+                    pkh_bytes = bytes.fromhex(new_pkh.strip())
+                    stakeholder.pkh = pkh_bytes
+                    self.menu.print_success("✓ PKH updated")
                 except ValueError as e:
-                    self.menu.print_error(f"Invalid amount claimed: {e}")
+                    self.menu.print_error(f"Invalid PKH: {e}")
                     return
+            # If new_pkh is empty (user pressed Enter), keep current PKH (no action needed)
+
+            # Note: Amount claimed is automatically updated when grey tokens are minted
+            # Manual editing of amount_claimed is not allowed to maintain data consistency
 
             self.menu.print_success(f"✓ Updated stakeholder: {current_name}")
 
