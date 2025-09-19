@@ -8,13 +8,11 @@ from terrasacha_contracts.util import *
 class MintProject(PlutusData):
     CONSTR_ID = 0
     protocol_input_index: int  # Index of the input UTXO to be consumed
-    protocol_policy_id: PolicyId  # Policy ID of the protocol
 
 @dataclass()
 class BurnProject(PlutusData):
     CONSTR_ID = 1
     protocol_input_index: int  # Index of the reference input UTXO
-    protocol_policy_id: PolicyId  # Policy ID of the protocol
 
 def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
     """
@@ -29,6 +27,7 @@ def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
 
 def validator(
     oref: TxOutRef,
+    protocol_policy_id: PolicyId,
     redeemer: Union[MintProject, BurnProject],
     context: ScriptContext,
 ) -> None:
@@ -49,9 +48,12 @@ def validator(
     assert len(our_minted) == 2, "Must mint or burn exactly 2 tokens"
 
     protocol_reference_input = tx_info.reference_inputs[redeemer.protocol_input_index].resolved
+    protocol_token = extract_token_from_input(protocol_reference_input)
+
+    assert protocol_token.policy_id == protocol_policy_id, "Wrong protocol token policy ID"
 
     assert check_token_present(
-        redeemer.protocol_policy_id,
+        protocol_token.policy_id,
         protocol_reference_input,
     ), "Protocol reference input must have the protocol token"
 

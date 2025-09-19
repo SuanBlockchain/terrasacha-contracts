@@ -1101,11 +1101,31 @@ class CardanoCLI:
                     self.menu.print_error("Invalid admin index")
                     return
 
+        # Option to update Projects list based on deployed projects
+        projects_name = []
+        deployed_projects = self.contract_manager.list_project_contracts()
+        if deployed_projects:
+            self.menu.print_section("DEPLOYED PROJECTS")
+            self.menu.print_info(
+                "Deployed projects will be added to the protocol's projects list."
+            )
+            for project_name in deployed_projects:
+                projects_name.append(f"{project_name}")
+                self.menu.print_info(f"✓ {project_name} will be included")
+        # oracle_input = self.menu.get_input("Enter new Oracle ID (or press Enter to keep current)")
+        # if oracle_input.strip():
+        #     try:
+        #         new_oracle_id = oracle_input.strip().encode("utf-8")
+        #         self.menu.print_info(f"New Oracle ID: {oracle_input.strip()}")
+        #     except Exception as e:
+        #         self.menu.print_error(f"Invalid Oracle ID: {e}")
+        #         return
         # Create new datum with all updates
         new_datum = DatumProtocol(
             protocol_fee=new_fee_lovelace,
             oracle_id=new_oracle_id,
             project_admins=new_admin_list,  # Use updated admins list
+            projects=projects_name,
         )
 
         # Option to specify user address
@@ -3627,8 +3647,8 @@ class CardanoCLI:
             # Display menu options
             self.menu.print_section("CONTRACT OPERATIONS")
             self.menu.print_menu_option("1", "Display Contracts Info", "✓")
-            self.menu.print_menu_option("2", "Compile/Recompile All Contracts", "✓")
-            self.menu.print_menu_option("3", "Compile New Project Contract Only", "✓")
+            self.menu.print_menu_option("2", "Compile Protocol Contracts", "✓")
+            self.menu.print_menu_option("3", "Compile Project Contracts", "✓")
             self.menu.print_menu_option("4", "Mint Protocol Tokens", "✓")
             self.menu.print_menu_option("5", "Burn Tokens", "✓")
             self.menu.print_menu_option("6", "Update Protocol Datum", "✓")
@@ -3740,11 +3760,6 @@ class CardanoCLI:
             "The new project contract will be automatically assigned the next available index."
         )
 
-        if not self.menu.confirm_action("Proceed with project contract compilation?"):
-            self.menu.print_info("Compilation cancelled")
-            input("\nPress Enter to continue...")
-            return
-
         # Compile project contract
         try:
             # Ask for project wallet selection
@@ -3770,7 +3785,7 @@ class CardanoCLI:
                 self.menu.print_success("✅ Project contract compiled successfully!")
                 self.menu.print_section("COMPILATION RESULTS")
                 print(f"│ Contract Name: {result['project_name'].upper()}")
-                print(f"│ Policy ID: {result['policy_id']}")
+                print(f"│ Policy ID: {result['project_policy_id']}")
                 print(f"│ Used UTXO: {result.get('used_utxo', 'N/A')}")
                 print(f"│ Saved to Disk: {'✓' if result['saved'] else '✗'}")
                 print()

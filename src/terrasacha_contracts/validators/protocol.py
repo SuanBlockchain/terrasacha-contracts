@@ -39,7 +39,6 @@ def validate_datum_update(new_datum: DatumProtocol) -> None:
 
 
 def validator(
-    # oref: TxOutRef,
     token_policy_id: PolicyId,
     _: DatumProtocol,
     redeemer: RedeemerProtocol,

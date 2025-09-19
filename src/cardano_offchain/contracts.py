@@ -17,7 +17,7 @@ from opshin.prelude import TxId, TxOutRef
 
 from cardano_offchain.wallet import CardanoWallet
 
-from .chain_context import CardanoChainContext
+from cardano_offchain.chain_context import CardanoChainContext
 
 
 class ReferenceScriptContract:
@@ -394,22 +394,18 @@ class ContractManager:
             return "⚠ UTXO consumed"
 
     def compile_contracts(
-        self, protocol_address: pc.Address, project_address: pc.Address = None, force: bool = False
+        self, protocol_address: pc.Address, force: bool = False
     ) -> Dict[str, Any]:
         """
-        Compile OpShin smart contracts
+        Compile OpShin protocol smart contracts (protocol_nfts and protocol)
 
         Args:
             protocol_address: Address to get UTXOs from for protocol contract compilation
-            project_address: Address to get UTXOs from for project contract compilation (defaults to protocol_address)
             force: Force recompilation even if contracts exist
 
         Returns:
             Compilation result dictionary
         """
-        # Default project address to protocol address if not provided (backward compatibility)
-        if project_address is None:
-            project_address = protocol_address
         # Check if we need to compile
         if (
             not force
@@ -440,28 +436,6 @@ class ContractManager:
                     "error": "No suitable UTXO found for protocol compilation (need >3 ADA)",
                 }
 
-            # Find suitable UTXO for project contract compilation
-            project_utxos = self.context.utxos(project_address)
-            project_utxo_to_spend = None
-            for utxo in project_utxos:
-                if utxo.output.amount.coin > 3000000:
-                    utxo_ref = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
-                    # Make sure it's a different UTXO if same address and not previously used
-                    if (
-                        protocol_address == project_address
-                        and utxo.input.transaction_id == protocol_utxo_to_spend.input.transaction_id
-                        and utxo.input.index == protocol_utxo_to_spend.input.index
-                    ):
-                        continue
-                    if utxo_ref not in self.used_utxos:
-                        project_utxo_to_spend = utxo
-                        break
-
-            if not project_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No suitable UTXO found for project compilation (need >3 ADA)",
-                }
 
             # Store compilation UTXO metadata for protocol (primary)
             self.compilation_utxo = {
@@ -472,89 +446,63 @@ class ContractManager:
 
             # Track used UTXOs to ensure contract uniqueness
             protocol_utxo_ref = f"{protocol_utxo_to_spend.input.transaction_id.payload.hex()}:{protocol_utxo_to_spend.input.index}"
-            project_utxo_ref = f"{project_utxo_to_spend.input.transaction_id.payload.hex()}:{project_utxo_to_spend.input.index}"
             self.used_utxos.add(protocol_utxo_ref)
-            self.used_utxos.add(project_utxo_ref)
 
-            # Create orefs for each contract
+            # Create oref for protocol contracts
             protocol_oref = TxOutRef(
                 id=TxId(protocol_utxo_to_spend.input.transaction_id.payload),
                 idx=protocol_utxo_to_spend.input.index,
             )
 
-            project_oref = TxOutRef(
-                id=TxId(project_utxo_to_spend.input.transaction_id.payload),
-                idx=project_utxo_to_spend.input.index,
-            )
-
             # Compile contracts (excluding authentication_nfts which needs dynamic compilation)
             compiled_contracts = {}
 
-            # Build protocol validator using protocol wallet UTXO
+            # Build protocol_nfts minting policy first (protocol validator needs its policy ID)
+            protocol_nfts_path = self.minting_contracts_path / "protocol_nfts.py"
+            if protocol_nfts_path.exists():
+                print(
+                    f"Compiling protocol_nfts minting policy using UTXO: {protocol_utxo_to_spend.input.transaction_id}:{protocol_utxo_to_spend.input.index}"
+                )
+                protocol_nfts_contract = build(protocol_nfts_path, protocol_oref)
+                compiled_contracts["protocol_nfts"] = PlutusContract(protocol_nfts_contract)
+
+            # Build protocol validator using protocol_nfts policy ID
             protocol_path = self.spending_contracts_path / "protocol.py"
             if protocol_path.exists():
+                if "protocol_nfts" not in compiled_contracts:
+                    raise Exception("protocol_nfts must be compiled before protocol validator")
+
+                protocol_nfts_policy_id = bytes.fromhex(compiled_contracts["protocol_nfts"].policy_id)
                 print(
-                    f"Compiling protocol contract using UTXO: {protocol_utxo_to_spend.input.transaction_id}:{protocol_utxo_to_spend.input.index}"
+                    f"Compiling protocol contract using protocol_nfts policy ID: {compiled_contracts['protocol_nfts'].policy_id}"
                 )
-                protocol_contract = build(protocol_path, protocol_oref)
+                protocol_contract = build(protocol_path, protocol_nfts_policy_id)
                 compiled_contracts["protocol"] = PlutusContract(protocol_contract)
 
-            # Build project validator (requires protocol policy ID parameter) using project wallet UTXO
-            project_path = self.spending_contracts_path / "project.py"
-            if project_path.exists():
-                protocol_policy_id = bytes.fromhex(PlutusContract(protocol_contract).policy_id)
-                print(
-                    "Using the following Protocol Policy ID to compile the project contract:",
-                    compiled_contracts["protocol"].policy_id,
-                )
-                print(
-                    f"Compiling project contract using UTXO: {project_utxo_to_spend.input.transaction_id}:{project_utxo_to_spend.input.index}"
-                )
-                if protocol_policy_id:
-                    self._set_recursion_limit(2000)
-                    project_contract = build(project_path, project_oref)
-
-                    # Determine project contract name (support multiple projects)
-                    project_name = "project"
-
-                    if not force:
-                        # When not forcing (incremental compilation), check for existing projects
-                        existing_projects = [
-                            name
-                            for name in self.contracts.keys()
-                            if name == "project" or name.startswith("project_")
-                        ]
-                        if existing_projects:
-                            # Find next available index
-                            index = 1
-                            while f"{project_name}_{index}" in self.contracts:
-                                index += 1
-                            project_name = f"{project_name}_{index}"
-                            print(f"Project contract will be stored as: {project_name}")
-                    else:
-                        # When forcing (full recompilation), start fresh with "project"
-                        print(
-                            f"Starting fresh - project contract will be stored as: {project_name}"
-                        )
-
-                    compiled_contracts[project_name] = PlutusContract(project_contract)
 
             if not compiled_contracts:
                 return {"success": False, "error": "No contract files found to compile"}
 
             # Handle contract replacement based on force flag
             if not force:
-                # If not forcing, merge with existing contracts (preserve existing projects)
+                # If not forcing, merge protocol contracts with existing contracts
                 for name, contract in compiled_contracts.items():
                     self.contracts[name] = contract
             else:
-                # If forcing recompilation, completely replace all contracts (start fresh)
-                # This compiles protocol + one new project contract only
-                self.contracts = compiled_contracts
+                # If forcing recompilation, replace only protocol contracts (preserve project contracts)
+                # Remove existing protocol contracts
+                existing_protocol_contracts = ["protocol", "protocol_nfts"]
+                for contract_name in existing_protocol_contracts:
+                    if contract_name in self.contracts:
+                        del self.contracts[contract_name]
+
+                # Add new protocol contracts
+                for name, contract in compiled_contracts.items():
+                    self.contracts[name] = contract
 
             return {
                 "success": True,
-                "message": f"Successfully compiled {len(compiled_contracts)} contracts",
+                "message": f"Successfully compiled {len(compiled_contracts)} protocol contracts",
                 "contracts": list(compiled_contracts.keys()),
                 "saved": False,  # Not saved until deployed
                 "compilation_utxo": self.compilation_utxo,
@@ -565,8 +513,8 @@ class ContractManager:
 
     def compile_project_contract_only(self, project_address: pc.Address = None) -> Dict[str, Any]:
         """
-        Compile only a new project contract using existing protocol contract.
-        This allows creating additional project contracts without recompiling everything.
+        Compile project contracts (project_nfts and project) using existing protocol contracts.
+        This allows creating additional project contracts without recompiling protocol.
 
         Args:
             project_address: Address to get UTXOs from for project contract compilation
@@ -575,11 +523,11 @@ class ContractManager:
             Dictionary containing compilation results
         """
         try:
-            # Check if protocol contract exists
-            if "protocol" not in self.contracts:
+            # Check if protocol contracts exist
+            if "protocol" not in self.contracts or "protocol_nfts" not in self.contracts:
                 return {
                     "success": False,
-                    "error": "Protocol contract must be compiled first. Use compile_contracts() to compile the full suite.",
+                    "error": "Protocol contracts must be compiled first. Use option 2 'Compile Protocol Contracts' first.",
                 }
 
             # Check if project.py exists
@@ -587,10 +535,16 @@ class ContractManager:
             if not project_path.exists():
                 return {"success": False, "error": "Project contract file not found"}
 
-            # Get protocol policy ID from existing contract
-            protocol_contract = self.contracts["protocol"]
+            # Check if project_nfts.py exists
+            project_nfts_path = self.minting_contracts_path / "project_nfts.py"
+            if not project_nfts_path.exists():
+                return {"success": False, "error": "Project NFTs minting policy file not found"}
 
-            # Get a UTXO for unique contract compilation
+            # Get protocol contracts from existing compilation
+            protocol_contract = self.contracts["protocol"]
+            protocol_nfts_contract = self.contracts["protocol_nfts"]
+
+            # Get a UTXO for unique contract compilation (different from protocol)
             if project_address is None:
                 return {
                     "success": False,
@@ -624,26 +578,25 @@ class ContractManager:
                     "error": "No suitable UTXO found for compilation (need >3 ADA)",
                 }
 
-            # utxos = self.api.address_utxos(str(address))
-            # if not utxos:
-            #     return {"success": False, "error": "No UTXOs found at address for project compilation"}
-
-            # Use the first available UTXO for compilation
-            # selected_utxo = utxos[0]
             oref = TxOutRef(
                 id=TxId(utxo_to_spend.input.transaction_id.payload), idx=utxo_to_spend.input.index
             )
 
-            print(
-                f"Compiling project contract using Protocol Policy ID: {protocol_contract.policy_id}"
-            )
-            print(f"Using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}")
+            print(f"Compiling project_nfts minting policy using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}")
+            print(f"Using Protocol Policy ID: {protocol_contract.policy_id}")
 
             # Mark this UTXO as used to ensure uniqueness for future compilations
             utxo_ref = (
                 f"{utxo_to_spend.input.transaction_id.payload.hex()}:{utxo_to_spend.input.index}"
             )
             self.used_utxos.add(utxo_ref)
+
+            # Compile project_nfts minting policy first
+            protocol_policy_id_bytes = bytes.fromhex(protocol_contract.policy_id)
+            project_nfts_contract = build(project_nfts_path, oref, protocol_policy_id_bytes)
+            project_nfts_policy_id = PlutusContract(project_nfts_contract).policy_id
+
+            print(f"Project NFTs policy ID: {project_nfts_policy_id}")
 
             # Determine project contract name (support multiple projects)
             project_name = "project"
@@ -655,18 +608,30 @@ class ContractManager:
                 project_name = f"{project_name}_{index}"
                 print(f"Project contract will be stored as: {project_name}")
 
-            # Compile project contract with oref and protocol_policy_id
+            # Compile project contract with policy IDs
             self._set_recursion_limit(2000)
-            project_contract = build(project_path, oref)
+            protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
+            token_policy_id = bytes.fromhex(project_nfts_policy_id)
 
-            # Add to contracts
+            print(f"Compiling project contract with:")
+            print(f"  Protocol Policy ID: {protocol_contract.policy_id}")
+            print(f"  Token Policy ID: {project_nfts_policy_id}")
+
+            project_contract = build(project_path, protocol_policy_id, token_policy_id)
+
+            # Add contracts to storage
+            project_nfts_name = f"{project_name}_nfts"
+            self.contracts[project_nfts_name] = PlutusContract(project_nfts_contract)
             self.contracts[project_name] = PlutusContract(project_contract)
 
             return {
                 "success": True,
-                "message": f"Successfully compiled project contract as '{project_name}'",
+                "message": f"Successfully compiled project contracts '{project_nfts_name}' and '{project_name}'",
+                "contracts": [project_nfts_name, project_name],
                 "project_name": project_name,
-                "policy_id": PlutusContract(project_contract).policy_id,
+                "project_nfts_name": project_nfts_name,
+                "project_policy_id": PlutusContract(project_contract).policy_id,
+                "project_nfts_policy_id": project_nfts_policy_id,
                 "used_utxo": f"{utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}",
                 "saved": False,  # Not saved until deployed
             }
