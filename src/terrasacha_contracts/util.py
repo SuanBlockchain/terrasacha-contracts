@@ -16,6 +16,7 @@ class DatumProtocol(PlutusData):
     project_admins: List[bytes]  # List of admin public key hashes to allow project auth minting nfts
     protocol_fee: int  # Protocol fee in lovelace
     oracle_id: PolicyId  # Oracle identifier
+    projects: List[bytes]  # List of project IDs (hashes) created under this protocol
 
 @dataclass()
 class UpdateProtocol(PlutusData):

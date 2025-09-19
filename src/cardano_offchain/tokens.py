@@ -229,6 +229,7 @@ class TokenOperations:
                 project_admins=[],  # Empty initially, admins added later via protocol updates
                 protocol_fee=1000000,
                 oracle_id=bytes.fromhex("a" * 56),  # PolicyId format
+                projects=[],  # No projects initially
             )
 
             # Add protocol output
@@ -861,7 +862,6 @@ class TokenOperations:
             protocol_contract = self.contract_manager.get_contract("protocol")
             if not protocol_contract:
                 return {"success": False, "error": "Protocol contract not compiled"}
-            protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
             protocol_address = protocol_contract.testnet_addr
 
             protocol_minting_script = self.contract_manager.get_contract("protocol_nfts")

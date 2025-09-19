@@ -48,7 +48,6 @@ def validator(
     our_minted = mint_value.get(own_policy_id, {b"": 0})
     assert len(our_minted) == 2, "Must mint or burn exactly 2 tokens"
 
-    # Transaction must be signed by one of the admins in the protocol datum
     protocol_reference_input = tx_info.reference_inputs[redeemer.protocol_input_index].resolved
 
     assert check_token_present(
@@ -59,6 +58,7 @@ def validator(
     protocol_datum = protocol_reference_input.datum
     assert isinstance(protocol_datum, SomeOutputDatum)
     protocol_datum_value: DatumProtocol = protocol_datum.datum
+    # Transaction must be signed by one of the admins in the protocol datum
     validate_signatories(protocol_datum_value, tx_info)
 
     if isinstance(redeemer, MintProject):

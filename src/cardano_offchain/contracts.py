@@ -1076,20 +1076,27 @@ class ContractManager:
                     deleted_contracts = [contract_name]
                     del self.contracts[contract_name]
 
-                    # Also delete associated project NFTs and grey token minting policies if they exist
-                    if delete_associated_nfts and (
-                        contract_name == "project" or contract_name.startswith("project_")
-                    ):
-                        project_nfts_name = f"{contract_name}_nfts"
-                        if project_nfts_name in self.contracts:
-                            del self.contracts[project_nfts_name]
-                            deleted_contracts.append(project_nfts_name)
+                    # Also delete associated NFTs and grey token minting policies if they exist
+                    if delete_associated_nfts:
+                        # Handle project contracts
+                        if contract_name == "project" or contract_name.startswith("project_"):
+                            project_nfts_name = f"{contract_name}_nfts"
+                            if project_nfts_name in self.contracts:
+                                del self.contracts[project_nfts_name]
+                                deleted_contracts.append(project_nfts_name)
 
-                        if delete_grey_tokens:
-                            grey_contract_name = f"{contract_name}_grey"
-                            if grey_contract_name in self.contracts:
-                                del self.contracts[grey_contract_name]
-                                deleted_contracts.append(grey_contract_name)
+                            if delete_grey_tokens:
+                                grey_contract_name = f"{contract_name}_grey"
+                                if grey_contract_name in self.contracts:
+                                    del self.contracts[grey_contract_name]
+                                    deleted_contracts.append(grey_contract_name)
+
+                        # Handle protocol contract
+                        elif contract_name == "protocol":
+                            protocol_nfts_name = "protocol_nfts"
+                            if protocol_nfts_name in self.contracts:
+                                del self.contracts[protocol_nfts_name]
+                                deleted_contracts.append(protocol_nfts_name)
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
@@ -1127,19 +1134,27 @@ class ContractManager:
             deleted_contracts = [contract_name]
             del self.contracts[contract_name]
 
-            # Also delete associated project NFTs and grey token minting policies if they exist
-            if delete_associated_nfts and (
-                contract_name == "project" or contract_name.startswith("project_")
-            ):
-                project_nfts_name = f"{contract_name}_nfts"
-                if project_nfts_name in self.contracts:
-                    del self.contracts[project_nfts_name]
-                    deleted_contracts.append(project_nfts_name)
+            # Also delete associated NFTs and grey token minting policies if they exist
+            if delete_associated_nfts:
+                # Handle project contracts
+                if contract_name == "project" or contract_name.startswith("project_"):
+                    project_nfts_name = f"{contract_name}_nfts"
+                    if project_nfts_name in self.contracts:
+                        del self.contracts[project_nfts_name]
+                        deleted_contracts.append(project_nfts_name)
 
-                grey_contract_name = f"{contract_name}_grey"
-                if grey_contract_name in self.contracts:
-                    del self.contracts[grey_contract_name]
-                    deleted_contracts.append(grey_contract_name)
+                    if delete_grey_tokens:
+                        grey_contract_name = f"{contract_name}_grey"
+                        if grey_contract_name in self.contracts:
+                            del self.contracts[grey_contract_name]
+                            deleted_contracts.append(grey_contract_name)
+
+                # Handle protocol contract
+                elif contract_name == "protocol":
+                    protocol_nfts_name = "protocol_nfts"
+                    if protocol_nfts_name in self.contracts:
+                        del self.contracts[protocol_nfts_name]
+                        deleted_contracts.append(protocol_nfts_name)
 
             # Update saved contracts file
             save_success = self._save_contracts()

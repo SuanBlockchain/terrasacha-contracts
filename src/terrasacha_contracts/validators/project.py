@@ -179,6 +179,7 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
 
 def validator(
     oref: TxOutRef,
+    # protocol_policy_id: PolicyId,
     datum_project: DatumProject,
     redeemer: RedeemerProject,
     context: ScriptContext,
