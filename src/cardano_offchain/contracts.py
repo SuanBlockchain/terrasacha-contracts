@@ -88,6 +88,7 @@ class ContractManager:
         self.contracts: Dict[str, PlutusContract] = {}
         self.contract_metadata: Dict[str, Any] = {}
         self.compilation_utxo: Optional[Dict[str, Any]] = None
+        self.project_compilation_utxos: Dict[str, Dict[str, Any]] = {}  # Track compilation UTXOs per project
         self.used_utxos: set = set()  # Track all UTXOs used for contract compilation
 
         # Load existing contracts
@@ -188,17 +189,17 @@ class ContractManager:
         Returns:
             True if saved successfully, False otherwise
         """
-        if not self.contracts:
-            return False
-
+        # Always save the current state, even if empty
         contracts_data = {
             "network": self.network,
             "compilation_timestamp": time.time(),
-            "compilation_utxo": self.compilation_utxo,
-            "used_utxos": list(self.used_utxos),  # Persist used UTXOs for uniqueness tracking
+            "compilation_utxo": self.compilation_utxo if self.contracts else None,
+            "project_compilation_utxos": self.project_compilation_utxos if self.contracts else {},
+            "used_utxos": list(self.used_utxos) if self.contracts else [],  # Clear UTXOs when no contracts
             "contracts": {},
         }
 
+        # If we have contracts, add them to the data
         for name, contract in self.contracts.items():
             # Check if this contract has reference script metadata
             contract_data = {
@@ -225,6 +226,11 @@ class ContractManager:
                 contract_data["cbor_hex"] = contract.cbor.hex()
 
             contracts_data["contracts"][name] = contract_data
+
+        # If all contracts are deleted, clear the used_utxos and project_compilation_utxos as well for a fresh start
+        if not self.contracts:
+            self.used_utxos.clear()
+            self.project_compilation_utxos.clear()
 
         try:
             with open(self._get_contracts_file_path(), "w") as f:
@@ -254,6 +260,9 @@ class ContractManager:
 
             # Load compilation UTXO
             self.compilation_utxo = contracts_data.get("compilation_utxo")
+
+            # Load project compilation UTXOs
+            self.project_compilation_utxos = contracts_data.get("project_compilation_utxos", {})
 
             # Load used UTXOs for uniqueness tracking
             saved_used_utxos = contracts_data.get("used_utxos", [])
@@ -363,6 +372,248 @@ class ContractManager:
             return False
         except Exception:
             return False
+
+    def get_project_compilation_utxo(self, project_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the compilation UTXO information for a specific project contract
+
+        Args:
+            project_name: Name of the project contract (e.g., "project", "project_1")
+
+        Returns:
+            Dictionary containing UTXO information or None if not found
+        """
+        return self.project_compilation_utxos.get(project_name)
+
+    def get_project_compilation_utxo_as_txoutref(self, compilation_utxo: Optional[Dict[str, Any]]) -> Optional[TxOutRef]:
+        """
+        Get the compilation UTXO for a project as a TxOutRef object
+
+        Args:
+            compilation_utxo: Compilation UTXO dictionary from get_project_compilation_utxo()
+
+        Returns:
+            TxOutRef object or None if not found
+        """
+        # compilation_utxo = self.get_project_compilation_utxo(project_name)
+        if not compilation_utxo:
+            return None
+
+        try:
+            return TxOutRef(
+                id=TxId(bytes.fromhex(compilation_utxo["tx_id"])),
+                idx=compilation_utxo["index"]
+            )
+        except Exception:
+            return None
+
+    def get_reserved_utxos(self) -> set:
+        """
+        Get set of UTXO references that are reserved for project compilation.
+        These UTXOs should not be spent by other operations like reference script creation.
+
+        Args:
+            address: Optional address to filter reserved UTXOs by wallet (only returns UTXOs for this address)
+
+        Returns:
+            Set of UTXO references in format "tx_id:index"
+        """
+        reserved_utxos = set()
+
+        # Add protocol compilation UTXO if it exists
+        if self.compilation_utxo:
+            utxo_ref = f"{self.compilation_utxo['tx_id']}:{self.compilation_utxo['index']}"
+            reserved_utxos.add(utxo_ref)
+
+        # Add all project compilation UTXOs
+        for project_name, compilation_info in self.project_compilation_utxos.items():
+            utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+            reserved_utxos.add(utxo_ref)
+
+        return reserved_utxos
+
+    def get_available_utxos(self, address: pc.Address, min_ada: int = 3000000, auto_cleanup: bool = True) -> List[pc.UTxO]:
+        """
+        Get UTXOs from address that are NOT reserved for compilation.
+
+        Args:
+            address: Address to query UTXOs from
+            min_ada: Minimum ADA amount required (default 3 ADA)
+            auto_cleanup: Whether to automatically clean up spent UTXOs from tracking (default True)
+
+        Returns:
+            List of available UTxO objects excluding reserved ones
+        """
+        try:
+            # Automatically clean up spent UTXOs if requested
+            if auto_cleanup:
+                cleanup_result = self.cleanup_spent_utxos(address)
+                if cleanup_result["total_removed"] > 0:
+                    print(f"Cleaned up {cleanup_result['total_removed']} spent UTXOs from tracking")
+
+            # Get all UTXOs from the address
+            all_utxos = self.context.utxos(address)
+
+            # Get reserved UTXO references (should be clean after cleanup)
+            reserved_utxo_refs = self.get_reserved_utxos()
+
+            # Filter out reserved UTXOs and apply minimum ADA requirement
+            available_utxos = []
+            for utxo in all_utxos:
+                utxo_ref = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+
+                # Skip if this UTXO is reserved
+                if utxo_ref in reserved_utxo_refs:
+                    continue
+
+                # Skip if doesn't meet minimum ADA requirement
+                if utxo.output.amount.coin < min_ada:
+                    continue
+
+                available_utxos.append(utxo)
+
+            return available_utxos
+
+        except Exception:
+            return []
+
+    def cleanup_spent_utxos(self, address: pc.Address = None) -> Dict[str, Any]:
+        """
+        Remove spent UTXOs from tracking (used_utxos and compilation_utxos).
+        This should be called periodically to clean up stale UTXO references.
+
+        Args:
+            address: Optional address to check UTXOs against. If None, checks all addresses.
+
+        Returns:
+            Dictionary with cleanup results
+        """
+        cleanup_results = {
+            "removed_used_utxos": [],
+            "removed_compilation_utxos": [],
+            "removed_project_compilation_utxos": [],
+            "total_removed": 0,
+            "errors": []
+        }
+
+        try:
+            # Get all UTXOs for the address if provided
+            if address:
+                available_utxos = self.context.utxos(address)
+                available_utxo_refs = {
+                    f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+                    for utxo in available_utxos
+                }
+            else:
+                available_utxo_refs = None
+
+            # Clean up used_utxos
+            utxos_to_remove = []
+            for utxo_ref in self.used_utxos.copy():
+                if available_utxo_refs is None:
+                    # If no address provided, we can't verify - skip for now
+                    continue
+
+                if utxo_ref not in available_utxo_refs:
+                    utxos_to_remove.append(utxo_ref)
+                    self.used_utxos.remove(utxo_ref)
+                    cleanup_results["removed_used_utxos"].append(utxo_ref)
+
+            # Clean up protocol compilation_utxo
+            if self.compilation_utxo and available_utxo_refs is not None:
+                compilation_ref = f"{self.compilation_utxo['tx_id']}:{self.compilation_utxo['index']}"
+                if compilation_ref not in available_utxo_refs:
+                    cleanup_results["removed_compilation_utxos"].append(compilation_ref)
+                    self.compilation_utxo = None
+
+            # Clean up project_compilation_utxos
+            projects_to_remove = []
+            for project_name, compilation_info in self.project_compilation_utxos.items():
+                if available_utxo_refs is None:
+                    continue
+
+                utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+                if utxo_ref not in available_utxo_refs:
+                    projects_to_remove.append(project_name)
+                    cleanup_results["removed_project_compilation_utxos"].append(f"{project_name}: {utxo_ref}")
+
+            # Remove spent project compilation UTXOs
+            for project_name in projects_to_remove:
+                del self.project_compilation_utxos[project_name]
+
+            cleanup_results["total_removed"] = (
+                len(cleanup_results["removed_used_utxos"]) +
+                len(cleanup_results["removed_compilation_utxos"]) +
+                len(cleanup_results["removed_project_compilation_utxos"])
+            )
+
+            # Save changes if any UTXOs were removed
+            if cleanup_results["total_removed"] > 0:
+                save_success = self._save_contracts()
+                cleanup_results["saved"] = save_success
+                if not save_success:
+                    cleanup_results["errors"].append("Failed to save changes to contracts file")
+
+            return cleanup_results
+
+        except Exception as e:
+            cleanup_results["errors"].append(f"UTXO cleanup failed: {e}")
+            return cleanup_results
+
+    def mark_utxo_as_spent(self, utxo_ref: str, project_name: str = None) -> bool:
+        """
+        Mark a specific UTXO as spent and remove it from tracking.
+        Should be called when a transaction that spends the UTXO is successfully submitted.
+
+        Args:
+            utxo_ref: UTXO reference in format "tx_id:index"
+            project_name: Optional project name if this is a project compilation UTXO
+
+        Returns:
+            True if UTXO was tracked and removed, False if not found
+        """
+        removed = False
+
+        # Remove from used_utxos
+        if utxo_ref in self.used_utxos:
+            self.used_utxos.remove(utxo_ref)
+            removed = True
+            print(f"Removed spent UTXO from used_utxos: {utxo_ref}")
+
+        # Remove from protocol compilation_utxo
+        if self.compilation_utxo:
+            compilation_ref = f"{self.compilation_utxo['tx_id']}:{self.compilation_utxo['index']}"
+            if compilation_ref == utxo_ref:
+                self.compilation_utxo = None
+                removed = True
+                print(f"Removed spent protocol compilation UTXO: {utxo_ref}")
+
+        # Remove from project_compilation_utxos
+        if project_name and project_name in self.project_compilation_utxos:
+            compilation_info = self.project_compilation_utxos[project_name]
+            project_utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+            if project_utxo_ref == utxo_ref:
+                del self.project_compilation_utxos[project_name]
+                removed = True
+                print(f"Removed spent project compilation UTXO for {project_name}: {utxo_ref}")
+        else:
+            # If no project_name provided, check all project UTXOs
+            projects_to_remove = []
+            for proj_name, compilation_info in self.project_compilation_utxos.items():
+                project_utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+                if project_utxo_ref == utxo_ref:
+                    projects_to_remove.append(proj_name)
+                    removed = True
+                    print(f"Removed spent project compilation UTXO for {proj_name}: {utxo_ref}")
+
+            for proj_name in projects_to_remove:
+                del self.project_compilation_utxos[proj_name]
+
+        # Save changes if any UTXO was removed
+        if removed:
+            self._save_contracts()
+
+        return removed
 
     def _set_recursion_limit(self, limit: int = 2000):
 
@@ -479,7 +730,6 @@ class ContractManager:
                 protocol_contract = build(protocol_path, protocol_nfts_policy_id)
                 compiled_contracts["protocol"] = PlutusContract(protocol_contract)
 
-
             if not compiled_contracts:
                 return {"success": False, "error": "No contract files found to compile"}
 
@@ -514,7 +764,6 @@ class ContractManager:
     def compile_project_contract_only(self, project_address: pc.Address = None) -> Dict[str, Any]:
         """
         Compile project contracts (project_nfts and project) using existing protocol contracts.
-        This allows creating additional project contracts without recompiling protocol.
 
         Args:
             project_address: Address to get UTXOs from for project contract compilation
@@ -543,7 +792,6 @@ class ContractManager:
             # Get protocol contracts from existing compilation
             protocol_contract = self.contracts["protocol"]
             protocol_nfts_contract = self.contracts["protocol_nfts"]
-
             # Get a UTXO for unique contract compilation (different from protocol)
             if project_address is None:
                 return {
@@ -583,20 +831,7 @@ class ContractManager:
             )
 
             print(f"Compiling project_nfts minting policy using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}")
-            print(f"Using Protocol Policy ID: {protocol_contract.policy_id}")
-
-            # Mark this UTXO as used to ensure uniqueness for future compilations
-            utxo_ref = (
-                f"{utxo_to_spend.input.transaction_id.payload.hex()}:{utxo_to_spend.input.index}"
-            )
-            self.used_utxos.add(utxo_ref)
-
-            # Compile project_nfts minting policy first
-            protocol_policy_id_bytes = bytes.fromhex(protocol_contract.policy_id)
-            project_nfts_contract = build(project_nfts_path, oref, protocol_policy_id_bytes)
-            project_nfts_policy_id = PlutusContract(project_nfts_contract).policy_id
-
-            print(f"Project NFTs policy ID: {project_nfts_policy_id}")
+            print(f"Using Protocol Policy ID: {protocol_nfts_contract.policy_id}")
 
             # Determine project contract name (support multiple projects)
             project_name = "project"
@@ -608,21 +843,45 @@ class ContractManager:
                 project_name = f"{project_name}_{index}"
                 print(f"Project contract will be stored as: {project_name}")
 
+            # Reserve compilation UTXO BEFORE any compilation to prevent conflicts
+            compilation_utxo_info = {
+                "tx_id": utxo_to_spend.input.transaction_id.payload.hex(),
+                "index": utxo_to_spend.input.index,
+                "amount": utxo_to_spend.output.amount.coin,
+                "compilation_timestamp": time.time(),
+            }
+            self.project_compilation_utxos[project_name] = compilation_utxo_info
+
+            # Mark this UTXO as used to ensure uniqueness for future compilations
+            utxo_ref = (
+                f"{utxo_to_spend.input.transaction_id.payload.hex()}:{utxo_to_spend.input.index}"
+            )
+            self.used_utxos.add(utxo_ref)
+
+            # Compile project_nfts minting policy first
+            protocol_nfts_policy_id_bytes = bytes.fromhex(protocol_nfts_contract.policy_id)
+            project_nfts_contract = build(project_nfts_path, oref, protocol_nfts_policy_id_bytes)
+            project_nfts_policy_id = PlutusContract(project_nfts_contract).policy_id
+
+            print(f"Project NFTs policy ID: {project_nfts_policy_id}")
+
             # Compile project contract with policy IDs
             self._set_recursion_limit(2000)
-            protocol_policy_id = bytes.fromhex(protocol_contract.policy_id)
             token_policy_id = bytes.fromhex(project_nfts_policy_id)
 
             print(f"Compiling project contract with:")
             print(f"  Protocol Policy ID: {protocol_contract.policy_id}")
             print(f"  Token Policy ID: {project_nfts_policy_id}")
 
-            project_contract = build(project_path, protocol_policy_id, token_policy_id)
+            project_contract = build(project_path, token_policy_id)
 
             # Add contracts to storage
             project_nfts_name = f"{project_name}_nfts"
             self.contracts[project_nfts_name] = PlutusContract(project_nfts_contract)
             self.contracts[project_name] = PlutusContract(project_contract)
+
+            # Save contracts to JSON file
+            save_success = self._save_contracts()
 
             return {
                 "success": True,
@@ -633,7 +892,7 @@ class ContractManager:
                 "project_policy_id": PlutusContract(project_contract).policy_id,
                 "project_nfts_policy_id": project_nfts_policy_id,
                 "used_utxo": f"{utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}",
-                "saved": False,  # Not saved until deployed
+                "saved": save_success,
             }
 
         except Exception as e:
@@ -870,12 +1129,14 @@ class ContractManager:
         except Exception:
             return None
 
-    def mark_contract_as_deployed(self, contract_names: List[str]) -> bool:
+    def mark_contract_as_deployed(self, contract_names: List[str], cleanup_address: pc.Address = None) -> bool:
         """
-        Mark contracts as deployed and save them to disk
+        Mark contracts as deployed and save them to disk.
+        Also performs UTXO cleanup to remove spent compilation UTXOs.
 
         Args:
             contract_names: List of contract names to mark as deployed
+            cleanup_address: Optional address to clean up spent UTXOs from
 
         Returns:
             True if saved successfully, False otherwise
@@ -884,6 +1145,12 @@ class ContractManager:
         for name in contract_names:
             if name not in self.contracts:
                 return False
+
+        # Clean up spent UTXOs if address provided
+        if cleanup_address:
+            cleanup_result = self.cleanup_spent_utxos(cleanup_address)
+            if cleanup_result["total_removed"] > 0:
+                print(f"Cleaned up {cleanup_result['total_removed']} spent compilation UTXOs after deployment")
 
         # Save contracts to disk now that they're deployed
         return self._save_contracts()

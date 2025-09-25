@@ -45,22 +45,20 @@ class DatumProjectParams(PlutusData):
     project_metadata: bytes  # Metadata URI or hash
     project_state: int  # 0=initialized, 1=distributed, 2=certified 3=closed
 
-
 @dataclass()
 class TokenProject(PlutusData):
     CONSTR_ID = 2
     policy_id: bytes  # Minting policy ID for the project tokens
     token_name: bytes  # Token name for the project tokens
     total_supply: int  # Total supply of tokens for the project (Grey tokens representing carbon credits promises)
-    current_supply: int  # Current supply of tokens minted (Grey tokens)
 
 @dataclass()
 class StakeHolderParticipation(PlutusData):
     CONSTR_ID = 3
     stakeholder: bytes  # Stakeholder public name (investor, landowner, verifier, etc.) Investor is a keyword that do not require pkh)
     pkh: bytes  # Stakeholder public key hash
-    participation: int  # Participation amount in lovelace
-    amount_claimed: int  # Amount already claimed in lovelace
+    participation: int  # Participation amount in project grey tokens
+    claimed: BoolData  # Whether the stakeholder has claimed their share of tokens
 
 
 @dataclass()
@@ -74,7 +72,6 @@ class Certification(PlutusData):
 @dataclass()
 class DatumProject(PlutusData):
     CONSTR_ID = 0
-    protocol_policy_id: bytes  # Protocol policy ID
     params: DatumProjectParams
     project_token: TokenProject
     stakeholders: List[StakeHolderParticipation]  # List of stakeholders and their participation
@@ -91,9 +88,7 @@ class UpdateProject(PlutusData):
 class UpdateToken(PlutusData):
     CONSTR_ID = 3
     project_input_index: int
-    user_input_index: int
     project_output_index: int
-    new_supply: int
 
 @dataclass()
 class EndProject(PlutusData):

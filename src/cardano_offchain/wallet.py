@@ -215,6 +215,56 @@ class CardanoWallet:
         addr_info = self.addresses[index - 1]
         return addr_info["staking_address"] if use_staking else addr_info["enterprise_address"]
 
+    def find_wallet_index_by_address(self, target_address: pc.Address, max_search: int = 20) -> Optional[int]:
+        """
+        Find the wallet index that corresponds to a given address within this wallet
+
+        Args:
+            target_address: The address to search for
+            max_search: Maximum number of wallet indices to search (default: 20)
+
+        Returns:
+            Wallet index if found, None otherwise
+        """
+        target_primitive = target_address.to_primitive()
+
+        # Check main addresses first (index 0)
+        if self.enterprise_address.to_primitive() == target_primitive:
+            return 0
+        if self.staking_address.to_primitive() == target_primitive:
+            return 0
+
+        # Search through generated addresses by actually generating them and comparing
+        # Use the exact same logic as generate_addresses method
+        for i in range(1, max_search + 1):
+            try:
+                # Use the exact same derivation logic as generate_addresses
+                payment_derivation = f"m/1852'/1815'/0'/0/{i}"
+                payment_key = self.wallet.derive_from_path(payment_derivation)
+                payment_skey = pc.ExtendedSigningKey.from_hdwallet(payment_key)
+
+                # Create enterprise address (payment only)
+                enterprise_addr = pc.Address(
+                    payment_part=payment_skey.to_verification_key().hash(),
+                    network=self.cardano_network
+                )
+
+                # Create staking address (payment + staking)
+                staking_addr = pc.Address(
+                    payment_part=payment_skey.to_verification_key().hash(),
+                    staking_part=self.staking_skey.to_verification_key().hash(),
+                    network=self.cardano_network,
+                )
+
+                if (enterprise_addr.to_primitive() == target_primitive or
+                    staking_addr.to_primitive() == target_primitive):
+                    return i
+
+            except Exception as e:
+                # Skip this index if derivation fails
+                continue
+        return None
+
     def get_signing_key(self, index: int = 0) -> pc.ExtendedSigningKey:
         """
         Get signing key by index
