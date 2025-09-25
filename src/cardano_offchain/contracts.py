@@ -1295,6 +1295,14 @@ class ContractManager:
                                 del self.contracts[grey_contract_name]
                                 deleted_contracts.append(grey_contract_name)
 
+                    # Clean up compilation tracking for deleted project contracts
+                    if contract_name == "project" or contract_name.startswith("project_"):
+                        if contract_name in self.project_compilation_utxos:
+                            compilation_info = self.project_compilation_utxos[contract_name]
+                            utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+                            self.used_utxos.discard(utxo_ref)
+                            del self.project_compilation_utxos[contract_name]
+
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
                     return {
@@ -1329,6 +1337,14 @@ class ContractManager:
                             if protocol_nfts_name in self.contracts:
                                 del self.contracts[protocol_nfts_name]
                                 deleted_contracts.append(protocol_nfts_name)
+
+                    # Clean up compilation tracking for deleted project contracts
+                    if contract_name == "project" or contract_name.startswith("project_"):
+                        if contract_name in self.project_compilation_utxos:
+                            compilation_info = self.project_compilation_utxos[contract_name]
+                            utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+                            self.used_utxos.discard(utxo_ref)
+                            del self.project_compilation_utxos[contract_name]
 
                     save_success = self._save_contracts()
                     message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (unused address - zero balance)"
@@ -1387,6 +1403,14 @@ class ContractManager:
                     if protocol_nfts_name in self.contracts:
                         del self.contracts[protocol_nfts_name]
                         deleted_contracts.append(protocol_nfts_name)
+
+            # Clean up compilation tracking for deleted project contracts
+            if contract_name == "project" or contract_name.startswith("project_"):
+                if contract_name in self.project_compilation_utxos:
+                    compilation_info = self.project_compilation_utxos[contract_name]
+                    utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
+                    self.used_utxos.discard(utxo_ref)
+                    del self.project_compilation_utxos[contract_name]
 
             # Update saved contracts file
             save_success = self._save_contracts()
