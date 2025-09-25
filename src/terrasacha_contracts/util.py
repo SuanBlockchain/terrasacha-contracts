@@ -16,6 +16,7 @@ class DatumProtocol(PlutusData):
     project_admins: List[bytes]  # List of admin public key hashes to allow project auth minting nfts
     protocol_fee: int  # Protocol fee in lovelace
     oracle_id: PolicyId  # Oracle identifier
+    projects: List[bytes]  # List of project IDs (hashes) created under this protocol
 
 @dataclass()
 class UpdateProtocol(PlutusData):
@@ -32,6 +33,70 @@ class EndProtocol(PlutusData):
     user_input_index: int
 
 RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
+
+################################################
+# Project Data Types
+################################################
+
+@dataclass()
+class DatumProjectParams(PlutusData):
+    CONSTR_ID = 1
+    project_id: bytes  # Project Identifier
+    project_metadata: bytes  # Metadata URI or hash
+    project_state: int  # 0=initialized, 1=distributed, 2=certified 3=closed
+
+@dataclass()
+class TokenProject(PlutusData):
+    CONSTR_ID = 2
+    policy_id: bytes  # Minting policy ID for the project tokens
+    token_name: bytes  # Token name for the project tokens
+    total_supply: int  # Total supply of tokens for the project (Grey tokens representing carbon credits promises)
+
+@dataclass()
+class StakeHolderParticipation(PlutusData):
+    CONSTR_ID = 3
+    stakeholder: bytes  # Stakeholder public name (investor, landowner, verifier, etc.) Investor is a keyword that do not require pkh)
+    pkh: bytes  # Stakeholder public key hash
+    participation: int  # Participation amount in project grey tokens
+    claimed: BoolData  # Whether the stakeholder has claimed their share of tokens
+
+
+@dataclass()
+class Certification(PlutusData):
+    CONSTR_ID = 4
+    certification_date: int  # Certification date as POSIX timestamp
+    quantity: int  # Quantity of carbon credits certified
+    real_certification_date: int  # Real certification date as POSIX timestamp (after verification)
+    real_quantity: int  # Real quantity of carbon credits certified (after verification)
+
+@dataclass()
+class DatumProject(PlutusData):
+    CONSTR_ID = 0
+    params: DatumProjectParams
+    project_token: TokenProject
+    stakeholders: List[StakeHolderParticipation]  # List of stakeholders and their participation
+    certifications: List[Certification]  # List of certification info for the project
+
+@dataclass()
+class UpdateProject(PlutusData):
+    CONSTR_ID = 1
+    project_input_index: int
+    user_input_index: int
+    project_output_index: int
+
+@dataclass()
+class UpdateToken(PlutusData):
+    CONSTR_ID = 3
+    project_input_index: int
+    project_output_index: int
+
+@dataclass()
+class EndProject(PlutusData):
+    CONSTR_ID = 2
+    project_input_index: int
+    user_input_index: int
+
+RedeemerProject = Union[UpdateProject, UpdateToken, EndProject]
 
 ################################################
 # Generic functions

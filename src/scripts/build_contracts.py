@@ -18,8 +18,18 @@ def build_contract(contract_path: str, output_dir: str, contract_name: str) -> O
     print(f"Building {contract_name}...")
 
     try:
-        # Build the contract
-        contract = build(contract_path)
+        # Build the contract with special handling for project contract
+        if contract_name == "project":
+            # Project contract needs higher recursion limit
+            import sys
+            old_limit = sys.getrecursionlimit()
+            sys.setrecursionlimit(2000)
+            try:
+                contract = build(contract_path)
+            finally:
+                sys.setrecursionlimit(old_limit)
+        else:
+            contract = build(contract_path)
 
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)

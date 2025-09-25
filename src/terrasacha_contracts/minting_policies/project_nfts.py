@@ -7,14 +7,12 @@ from terrasacha_contracts.util import *
 @dataclass()
 class MintProject(PlutusData):
     CONSTR_ID = 0
-    # protocol_input_index: int  # Index of the input UTXO to be consumed
-    protocol_policy_id: PolicyId  # Policy ID of the protocol
+    protocol_input_index: int  # Index of the input UTXO to be consumed
 
 @dataclass()
 class BurnProject(PlutusData):
     CONSTR_ID = 1
-    # protocol_input_index: int  # Index of the reference input UTXO
-    protocol_policy_id: PolicyId  # Policy ID of the protocol
+    protocol_input_index: int  # Index of the reference input UTXO
 
 def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
     """
@@ -29,6 +27,7 @@ def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
 
 def validator(
     oref: TxOutRef,
+    protocol_policy_id: PolicyId,
     redeemer: Union[MintProject, BurnProject],
     context: ScriptContext,
 ) -> None:
@@ -48,17 +47,20 @@ def validator(
     our_minted = mint_value.get(own_policy_id, {b"": 0})
     assert len(our_minted) == 2, "Must mint or burn exactly 2 tokens"
 
-    # Transaction must be signed by one of the admins in the protocol datum
-    protocol_reference_input = tx_info.reference_inputs[0].resolved
+    protocol_reference_input = tx_info.reference_inputs[redeemer.protocol_input_index].resolved
+    protocol_token = extract_token_from_input(protocol_reference_input)
+
+    assert protocol_token.policy_id == protocol_policy_id, "Wrong protocol token policy ID"
 
     assert check_token_present(
-        redeemer.protocol_policy_id,
+        protocol_token.policy_id,
         protocol_reference_input,
     ), "Protocol reference input must have the protocol token"
 
     protocol_datum = protocol_reference_input.datum
     assert isinstance(protocol_datum, SomeOutputDatum)
     protocol_datum_value: DatumProtocol = protocol_datum.datum
+    # Transaction must be signed by one of the admins in the protocol datum
     validate_signatories(protocol_datum_value, tx_info)
 
     if isinstance(redeemer, MintProject):
@@ -66,8 +68,6 @@ def validator(
         # 1. Validate that the specified UTXO is consumed
         assert has_utxo(context, oref), "UTxO not consumed"
 
-        
-        
         # Generate unique token names based on UTXO reference
         project_token_name = unique_token_name(oref, PREFIX_REFERENCE_NFT)
         user_token_name = unique_token_name(oref, PREFIX_USER_NFT)
@@ -81,6 +81,5 @@ def validator(
         for output in tx_info.outputs:
             token_amount = sum(output.value.get(own_policy_id, {b"": 0}).values())
             assert token_amount == 0, "Cannot send tokens to outputs when burning"
-
     else:
         assert False, "Invalid redeemer type"
