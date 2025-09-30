@@ -1030,6 +1030,65 @@ class ContractManager:
         grey_contract_name = f"{project_name}_grey"
         return self.contracts.get(grey_contract_name)
 
+    def compile_grey_contract(self, project_name: str) -> Dict[str, Any]:
+        """
+        Compile grey token minting contract for a specific project.
+        Grey contract requires the project NFTs minting policy ID as a compilation parameter.
+
+        Args:
+            project_name: Name of the project to compile grey contract for
+
+        Returns:
+            Dictionary containing compilation results
+        """
+        try:
+            # Get the project contract
+            project_contract = self.get_project_contract(project_name)
+            if not project_contract:
+                return {
+                    "success": False,
+                    "error": f"Project contract '{project_name}' not found. Compile the project first.",
+                }
+
+            # Get the project NFTs minting policy contract
+            project_nfts_contract = self.get_project_nfts_contract(project_name)
+            if not project_nfts_contract:
+                return {
+                    "success": False,
+                    "error": f"Project NFTs contract for '{project_name}' not found. Compile the project first.",
+                }
+
+            # Check if grey.py exists
+            grey_path = self.minting_contracts_path / "grey.py"
+            if not grey_path.exists():
+                return {"success": False, "error": "Grey contract file (grey.py) not found"}
+
+            # Compile grey contract with project NFTs policy_id as parameter
+            project_nfts_policy_id_bytes = bytes.fromhex(project_nfts_contract.policy_id)
+            grey_contract = self.create_minting_contract("grey", project_nfts_policy_id_bytes)
+
+            if not grey_contract:
+                return {"success": False, "error": "Failed to compile grey contract"}
+
+            # Store grey contract with naming convention: {project_name}_grey
+            grey_contract_name = f"{project_name}_grey"
+            self.contracts[grey_contract_name] = grey_contract
+
+            # Save to disk
+            saved = self.mark_contract_as_deployed([grey_contract_name])
+
+            return {
+                "success": True,
+                "grey_contract_name": grey_contract_name,
+                "grey_policy_id": grey_contract.policy_id,
+                "project_name": project_name,
+                "project_nfts_policy_id": project_nfts_contract.policy_id,
+                "saved": saved,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Grey contract compilation failed: {e}"}
+
     def get_contracts_info(self) -> Dict[str, Any]:
         """
         Get comprehensive contract information

@@ -12,6 +12,7 @@ import pathlib
 import time
 from typing import Any, Dict, List, Optional
 
+from opshin.builder import PlutusContract
 import pycardano as pc
 from dotenv import load_dotenv
 
@@ -1778,8 +1779,13 @@ class CardanoCLI:
 
         input("\nPress Enter to continue...")
 
-    def update_project_menu(self):
-        """Update project datum submenu"""
+    def update_project_menu(self, project_name=None, auto_grey_policy_id=None):
+        """Update project datum submenu
+
+        Args:
+            project_name: Optional pre-selected project name
+            auto_grey_policy_id: Optional grey policy ID to auto-populate in token updates
+        """
         self.menu.print_header("PROJECT UPDATE", "Update Project Parameters")
 
         contracts = self.contract_manager.list_contracts()
@@ -1794,6 +1800,12 @@ class CardanoCLI:
             if not project_contracts:
                 self.menu.print_error("No project contracts found")
                 return
+
+            # If project_name provided, use it directly
+            if project_name and project_name in project_contracts:
+                selected_project = project_name
+                project_contract = self.contract_manager.get_project_contract(selected_project)
+                self.menu.print_info(f"Using project contract: {selected_project.upper()}")
             elif len(project_contracts) == 1:
                 # Only one project contract available
                 selected_project = project_contracts[0]
@@ -1887,7 +1899,7 @@ class CardanoCLI:
                     return
 
             # Allow comprehensive project updates regardless of project state for ProjectUpdate operations
-            self.handle_initialization_update(current_datum, user_address, selected_project)
+            self.handle_initialization_update(current_datum, user_address, selected_project, auto_grey_policy_id)
 
         except Exception as e:
             self.menu.print_error(f"Project update failed: {e}")
@@ -1957,8 +1969,15 @@ class CardanoCLI:
             print("│")
             print("│ 🔒 Project is LOCKED - Only token operations available")
 
-    def handle_initialization_update(self, current_datum, user_address, project_name):
-        """Handle project updates during initialization phase (state == 0)"""
+    def handle_initialization_update(self, current_datum, user_address, project_name, auto_grey_policy_id=None):
+        """Handle project updates during initialization phase (state == 0)
+
+        Args:
+            current_datum: Current project datum
+            user_address: User address for authorization
+            project_name: Project name
+            auto_grey_policy_id: Optional grey policy ID to auto-populate
+        """
         self.menu.print_section("PROJECT INITIALIZATION UPDATE")
         print("│ All project fields can be modified in initialization phase")
         print("│")
@@ -1970,7 +1989,7 @@ class CardanoCLI:
         print("│")
 
         # Directly call the batch update function
-        self.batch_update_all_fields(current_datum, user_address, project_name)
+        self.batch_update_all_fields(current_datum, user_address, project_name, auto_grey_policy_id)
 
     def handle_locked_project_update(self, current_datum):
         """Handle project updates for locked projects (state >= 1)"""
@@ -2242,14 +2261,27 @@ class CardanoCLI:
 
 
 
-    def batch_update_all_fields(self, current_datum, user_address, project_name):
-        """Batch update menu allowing accumulation of changes across all categories"""
+    def batch_update_all_fields(self, current_datum, user_address, project_name, auto_grey_policy_id=None):
+        """Batch update menu allowing accumulation of changes across all categories
+
+        Args:
+            current_datum: Current project datum
+            user_address: User address for authorization
+            project_name: Project name
+            auto_grey_policy_id: Optional grey policy ID to auto-populate in token updates
+        """
         self.menu.print_section("BATCH UPDATE ALL FIELDS")
         print("│ Accumulate changes across all categories before creating transaction")
         print("│")
 
         # Initialize change accumulator
         accumulated_changes = {}
+
+        # Auto-populate grey policy ID if provided
+        if auto_grey_policy_id:
+            accumulated_changes["token_policy_id"] = bytes.fromhex(auto_grey_policy_id)
+            self.menu.print_success(f"✓ Grey token policy ID auto-populated: {auto_grey_policy_id}")
+            print("│")
 
         while True:
             self.display_batch_update_menu(accumulated_changes)
@@ -2264,7 +2296,7 @@ class CardanoCLI:
                 elif choice_num == 1:
                     self.accumulate_project_info_changes(current_datum, accumulated_changes)
                 elif choice_num == 2:
-                    self.accumulate_token_changes(current_datum, accumulated_changes)
+                    self.accumulate_token_changes(current_datum, accumulated_changes, auto_grey_policy_id)
                 elif choice_num == 3:
                     self.accumulate_stakeholder_changes(current_datum, accumulated_changes)
                 elif choice_num == 4:
@@ -2400,15 +2432,27 @@ class CardanoCLI:
         input("Press Enter to continue...")
 
 
-    def accumulate_token_changes(self, current_datum, accumulated_changes):
-        """Accumulate token economics changes without creating transaction"""
+    def accumulate_token_changes(self, current_datum, accumulated_changes, auto_grey_policy_id=None):
+        """Accumulate token economics changes without creating transaction
+
+        Args:
+            current_datum: Current project datum
+            accumulated_changes: Dictionary to accumulate changes
+            auto_grey_policy_id: Optional grey policy ID to display as default
+        """
         self.menu.print_section("ACCUMULATE TOKEN CHANGES")
 
         # Token Policy ID update
         current_policy = current_datum.project_token.policy_id.hex()
         print(f"│ Current Token Policy ID: {current_policy}")
+
+        # Show auto-populated grey policy ID if available
+        if auto_grey_policy_id and "token_policy_id" in accumulated_changes:
+            print(f"│ Grey Token Policy ID (auto-populated): {auto_grey_policy_id}")
+            print("│")
+
         new_policy_input = self.menu.get_input(
-            "Enter new Token Policy ID (56 hex chars) or press Enter to keep current"
+            "Enter new Token Policy ID (56 hex chars) or press Enter to keep current/auto-populated"
         )
 
         if new_policy_input.strip():
@@ -2422,6 +2466,10 @@ class CardanoCLI:
                 self.menu.print_error(f"Invalid Token Policy ID: {e}")
                 input("Press Enter to continue...")
                 return
+        elif auto_grey_policy_id and "token_policy_id" not in accumulated_changes:
+            # If user pressed Enter and grey policy was provided but not already set, set it now
+            accumulated_changes["token_policy_id"] = bytes.fromhex(auto_grey_policy_id)
+            self.menu.print_success(f"✓ Grey token policy ID kept: {auto_grey_policy_id}")
 
         # Token Name update - with string-to-bytes conversion
         current_token_name = current_datum.project_token.token_name
@@ -2753,12 +2801,11 @@ class CardanoCLI:
         except ValueError:
             self.menu.print_error("Invalid input - please enter a number")
 
-        # Only add to accumulated changes if certifications were modified
-        if new_certifications != list(current_datum.certifications):
-            accumulated_changes["certifications"] = new_certifications
-            self.menu.print_success(
-                f"✓ Certification changes accumulated ({len(new_certifications)} certifications)"
-            )
+        # Always mark certifications as changed when user goes through edit flow
+        accumulated_changes["certifications"] = new_certifications
+        self.menu.print_success(
+            f"✓ Certification changes accumulated ({len(new_certifications)} certifications)"
+        )
 
         input("Press Enter to continue...")
 
@@ -2904,6 +2951,27 @@ class CardanoCLI:
             )
             changes_made = True
 
+        # Check certifications changes
+        if len(old_datum.certifications) != len(new_datum.certifications):
+            print(f"│ Certifications Count: {len(old_datum.certifications)} → {len(new_datum.certifications)}")
+            changes_made = True
+        else:
+            # Check if any certification details changed
+            for i, (old_cert, new_cert) in enumerate(zip(old_datum.certifications, new_datum.certifications)):
+                if (old_cert.certification_date != new_cert.certification_date or
+                    old_cert.quantity != new_cert.quantity or
+                    old_cert.real_certification_date != new_cert.real_certification_date or
+                    old_cert.real_quantity != new_cert.real_quantity):
+                    print(f"│ Certification #{i+1}:")
+                    if old_cert.certification_date != new_cert.certification_date:
+                        print(f"│   Date: {old_cert.certification_date} → {new_cert.certification_date}")
+                    if old_cert.quantity != new_cert.quantity:
+                        print(f"│   Quantity: {old_cert.quantity:,} → {new_cert.quantity:,}")
+                    if old_cert.real_certification_date != new_cert.real_certification_date:
+                        print(f"│   Real Date: {old_cert.real_certification_date} → {new_cert.real_certification_date}")
+                    if old_cert.real_quantity != new_cert.real_quantity:
+                        print(f"│   Real Quantity: {old_cert.real_quantity:,} → {new_cert.real_quantity:,}")
+                    changes_made = True
 
         if not changes_made:
             print("│ No changes detected")
@@ -3415,21 +3483,22 @@ class CardanoCLI:
             self.menu.print_menu_option("1", "Display Contracts Info", "✓")
             self.menu.print_menu_option("2", "Compile Protocol Contracts", "✓")
             self.menu.print_menu_option("3", "Compile Project Contracts", "✓")
-            self.menu.print_menu_option("4", "Mint Protocol Tokens", "✓")
-            self.menu.print_menu_option("5", "Burn Tokens", "✓")
-            self.menu.print_menu_option("6", "Update Protocol Datum", "✓")
-            self.menu.print_menu_option("7", "Create Project", "✓")
-            self.menu.print_menu_option("8", "Burn Project Tokens", "✓")
-            self.menu.print_menu_option("9", "Update Project Datum", "✓")
-            self.menu.print_menu_option("10", "Mint Grey Tokens", "🪙")
-            self.menu.print_menu_option("11", "Burn Grey Tokens", "🔥")
+            self.menu.print_menu_option("4", "Compile Grey Contract", "⚙️")
+            self.menu.print_menu_option("5", "Mint Protocol Tokens", "✓")
+            self.menu.print_menu_option("6", "Burn Tokens", "✓")
+            self.menu.print_menu_option("7", "Update Protocol Datum", "✓")
+            self.menu.print_menu_option("8", "Create Project", "✓")
+            self.menu.print_menu_option("9", "Burn Project Tokens", "✓")
+            self.menu.print_menu_option("10", "Update Project Datum", "✓")
+            self.menu.print_menu_option("11", "Mint Grey Tokens", "🪙")
+            self.menu.print_menu_option("12", "Burn Grey Tokens", "🔥")
             self.menu.print_separator()
-            self.menu.print_menu_option("12", "Delete Empty Contract", "🗑")
-            self.menu.print_menu_option("13", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("13", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("14", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-13)")
+            choice = self.menu.get_input("Select an option (0-14)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3478,24 +3547,26 @@ class CardanoCLI:
             elif choice == "3":
                 self.compile_project_only_menu()
             elif choice == "4":
-                self.mint_protocol_token()
+                self.compile_grey_contract_menu()
             elif choice == "5":
-                self.burn_tokens_menu()
+                self.mint_protocol_token()
             elif choice == "6":
-                self.update_protocol_menu()
+                self.burn_tokens_menu()
             elif choice == "7":
-                self.create_project_menu()
+                self.update_protocol_menu()
             elif choice == "8":
-                self.burn_project_tokens_menu()
+                self.create_project_menu()
             elif choice == "9":
-                self.update_project_menu()
+                self.burn_project_tokens_menu()
             elif choice == "10":
-                self.mint_grey_tokens_menu()
+                self.update_project_menu()
             elif choice == "11":
-                self.burn_grey_tokens_menu()
+                self.mint_grey_tokens_menu()
             elif choice == "12":
-                self.delete_empty_contract_menu()
+                self.burn_grey_tokens_menu()
             elif choice == "13":
+                self.delete_empty_contract_menu()
+            elif choice == "14":
                 self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
@@ -3565,6 +3636,97 @@ class CardanoCLI:
             else:
                 self.menu.print_error(f"❌ Compilation failed: {result['error']}")
 
+        except Exception as e:
+            self.menu.print_error(f"❌ Compilation error: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def compile_grey_contract_menu(self):
+        """Compile grey token contract for a specific project"""
+        self.menu.print_header("GREY CONTRACT COMPILATION", "Compile Grey Token Minting Policy")
+
+        # Get available project contracts
+        project_contracts = self.contract_manager.list_project_contracts()
+
+        if not project_contracts:
+            self.menu.print_error("No project contracts found!")
+            self.menu.print_info("You must compile a project contract first (Option 3)")
+            input("\nPress Enter to continue...")
+            return
+
+        # Display available project contracts
+        self.menu.print_section("AVAILABLE PROJECT CONTRACTS")
+        for i, contract_name in enumerate(project_contracts, 1):
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(contract_name)
+            print(f"│ {i}. {contract_name.upper()}")
+            print(f"│    Project NFTs Policy ID: {project_nfts_contract.policy_id}")
+
+            # Check if grey contract already exists for this project
+            grey_contract = self.contract_manager.get_grey_token_contract(contract_name)
+            if grey_contract:
+                print(f"│    ⚠ Grey contract already exists (Policy ID: {grey_contract.policy_id})")
+            print()
+
+        # Ask user to select project
+        try:
+            choice_input = self.menu.get_input(
+                f"Select project contract for grey token compilation (1-{len(project_contracts)}, or 0 to cancel)"
+            )
+            choice = int(choice_input)
+
+            if choice == 0:
+                self.menu.print_info("Compilation cancelled")
+                input("\nPress Enter to continue...")
+                return
+
+            if not (1 <= choice <= len(project_contracts)):
+                self.menu.print_error("Invalid selection")
+                input("\nPress Enter to continue...")
+                return
+
+            selected_project = project_contracts[choice - 1]
+
+            # Check if grey contract already exists
+            existing_grey: PlutusContract | None = self.contract_manager.get_grey_token_contract(selected_project)
+            if existing_grey:
+                self.menu.print_warning(f"⚠ Grey contract already exists for '{selected_project}'")
+                if not self.menu.confirm_action("Overwrite existing grey contract?"):
+                    self.menu.print_info("Compilation cancelled")
+                    input("\nPress Enter to continue...")
+                    return
+
+            # Compile grey contract
+            self.menu.print_info(f"Compiling grey token contract for '{selected_project}'...")
+            result = self.contract_manager.compile_grey_contract(selected_project)
+
+            if result["success"]:
+                self.menu.print_success("✅ Grey contract compiled successfully!")
+                self.menu.print_section("COMPILATION RESULTS")
+                print(f"│ Grey Contract Name: {result['grey_contract_name'].upper()}")
+                print(f"│ Grey Policy ID: {result['grey_policy_id']}")
+                print(f"│ Project Name: {result['project_name'].upper()}")
+                print(f"│ Project NFTs Policy ID: {result['project_nfts_policy_id']}")
+                print(f"│ Saved to Disk: {'✓' if result['saved'] else '✗'}")
+                print()
+
+                self.menu.print_info("Grey token contract is now ready for minting operations")
+                self.menu.print_info("The grey policy ID will be auto-populated in the project datum update")
+
+                # Ask if user wants to update project datum
+                if self.menu.confirm_action("Do you want to update the project datum with this grey contract info?"):
+                    self.menu.print_info("Redirecting to project datum update menu...")
+                    input("\nPress Enter to continue to datum update...")
+                    # Automatically redirect to update_project_menu with grey policy ID pre-filled
+                    self.update_project_menu(
+                        project_name=result['project_name'],
+                        auto_grey_policy_id=result['grey_policy_id']
+                    )
+                    return  # Exit after redirect to avoid "Press Enter to continue" prompt
+            else:
+                self.menu.print_error(f"❌ Compilation failed: {result['error']}")
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a number.")
         except Exception as e:
             self.menu.print_error(f"❌ Compilation error: {e}")
 
@@ -4045,39 +4207,68 @@ class CardanoCLI:
             cert = certifications_list[index]
 
             # Handle real certification fields based on project state
-            if project_state == 1:
-                # Project state is 1: real fields cannot be changed and must be empty
-                cert.real_certification_date = 0
-                cert.real_quantity = 0
-                self.menu.print_info("Real certification fields set to empty (project state is 1 - changes not allowed)")
-            else:
-                # Edit real certification date (can only increase)
-                new_real_date = self.menu.get_input(
-                    f"Enter new real certification date (current: {cert.real_certification_date}) or press Enter to keep"
-                )
-                if new_real_date.strip():
-                    try:
-                        real_date = int(new_real_date)
-                        if real_date < cert.real_certification_date:
-                            raise ValueError("Real certification date can only increase")
-                        cert.real_certification_date = real_date
-                    except ValueError as e:
-                        self.menu.print_error(f"Invalid real date: {e}")
-                        return
+            # if project_state == 1:
+            #     # Project state is 1: real fields cannot be changed and must be empty
+            #     cert.real_certification_date = 0
+            #     cert.real_quantity = 0
+            #     self.menu.print_info("Real certification fields set to empty (project state is 1 - changes not allowed)")
+            # else:
 
-                # Edit real quantity (can only increase)
-                new_real_quantity = self.menu.get_input(
-                    f"Enter new real quantity (current: {cert.real_quantity:,}) or press Enter to keep"
-                )
-                if new_real_quantity.strip():
-                    try:
-                        real_qty = int(new_real_quantity)
-                        if real_qty < cert.real_quantity:
-                            raise ValueError("Real quantity can only increase")
-                        cert.real_quantity = real_qty
-                    except ValueError as e:
-                        self.menu.print_error(f"Invalid real quantity: {e}")
-                        return
+            # Edit certification date
+            new_cert_date = self.menu.get_input(
+                f"Enter new certification date (current: {cert.certification_date}) or press Enter to keep"
+            )
+            if new_cert_date.strip():
+                try:
+                    certification_date = int(new_cert_date)
+                    if certification_date < 0:
+                        raise ValueError("Certification date must be positive")
+                    cert.certification_date = certification_date
+                except ValueError as e:
+                    self.menu.print_error(f"Invalid certification date: {e}")
+                    return
+                
+            # Edit quantity
+            new_quantity = self.menu.get_input(
+                f"Enter new quantity (current: {cert.quantity:,}) or press Enter to keep"
+            )
+            if new_quantity.strip():
+                try:
+                    cert_quantity = int(new_quantity)
+                    if cert_quantity <= 0:
+                        raise ValueError("Quantity must be positive")
+                    cert.quantity = cert_quantity
+                except ValueError as e:
+                    self.menu.print_error(f"Invalid quantity: {e}")
+                    return
+
+            # Edit real certification date (can only increase)
+            new_real_date = self.menu.get_input(
+                f"Enter new real certification date (current: {cert.real_certification_date}) or press Enter to keep"
+            )
+            if new_real_date.strip():
+                try:
+                    real_date = int(new_real_date)
+                    if real_date < cert.real_certification_date:
+                        raise ValueError("Real certification date can only increase")
+                    cert.real_certification_date = real_date
+                except ValueError as e:
+                    self.menu.print_error(f"Invalid real date: {e}")
+                    return
+
+            # Edit real quantity (can only increase)
+            new_real_quantity = self.menu.get_input(
+                f"Enter new real quantity (current: {cert.real_quantity:,}) or press Enter to keep"
+            )
+            if new_real_quantity.strip():
+                try:
+                    real_qty = int(new_real_quantity)
+                    if real_qty < cert.real_quantity:
+                        raise ValueError("Real quantity can only increase")
+                    cert.real_quantity = real_qty
+                except ValueError as e:
+                    self.menu.print_error(f"Invalid real quantity: {e}")
+                    return
 
             self.menu.print_success(f"✓ Updated certification")
 

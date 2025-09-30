@@ -8,7 +8,7 @@ Handles minting, burning, and token management operations.
 from typing import Any, Dict, Optional
 
 import pycardano as pc
-from opshin.prelude import TxId, TxOutRef, TrueData
+from opshin.prelude import TxId, TxOutRef, FalseData
 
 from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
 from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject
@@ -698,7 +698,7 @@ class TokenOperations:
                         stakeholder=stakeholder_name,
                         pkh=bytes.fromhex(stakeholder_pkh),
                         participation=participation,
-                        claimed=TrueData(),
+                        claimed=FalseData(),
                     )
                 )
                 total_supply += participation

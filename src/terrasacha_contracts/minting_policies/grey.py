@@ -102,7 +102,7 @@ def validate_mint_operation(
         assert (
             found_authorized_stakeholder
         ), "Transaction must be signed by a registered stakeholder"
-        assert not authorized_stakeholder.claimed, "Stakeholder has already claimed their tokens"
+        assert authorized_stakeholder.claimed == FalseData(), "Stakeholder has already claimed their tokens"
         assert (
             minted_amount == authorized_stakeholder.participation
         ), "Must mint exactly the stakeholder's full participation amount"
