@@ -12,6 +12,7 @@ from opshin.prelude import TxId, TxOutRef, FalseData
 
 from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
 from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject
+from terrasacha_contracts.minting_policies.grey import BurnGrey, MintGrey
 from terrasacha_contracts.util import (
     PREFIX_REFERENCE_NFT,
     PREFIX_USER_NFT,
@@ -1274,115 +1275,37 @@ class TokenOperations:
                     "error": "No project UTXO found with specified policy ID",
                 }
 
+            # Get user info
+            from_address = self.wallet.get_address(0)
+            # Find suitable UTXO
+            user_utxos = self.context.utxos(from_address)
+            if not user_utxos:
+                return {"success": False, "error": "No user UTXOs found"}
+            # user_utxo_to_spend = None
+            # for utxo in user_utxos:
+            #     if utxo.output.amount.coin > 3000000:
+            #         user_utxo_to_spend = utxo
+            #         break
+
+            # if not user_utxo_to_spend:
+            #     return {
+            #         "success": False,
+            #         "error": "No suitable UTXO found for minting (need >3 ADA)",
+            #     }
+            user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                user_utxos, project_minting_policy_id
+            )
+            if not user_utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No user UTXO found with specified policy ID",
+                }
+            
             # Get input datum info
             try:
                 project_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)
             except Exception as e:
                 return {"success": False, "error": f"Failed to get project datum: {e}"}
-
-            # Validate project state - UpdateToken can only be used when project_state > 0
-            # if project_datum.params.project_state <= 0:
-            #     return {
-            #         "success": False,
-            #         "error": "UpdateToken can only be used when project_state > 0. Project must be active for grey token minting.",
-            #     }
-
-            # Check if grey token info exists in project datum
-            # For now, we assume it uses the same policy_id and token_name as project token
-            # In future, this should be separate grey token info in the datum
-            # if (
-            #     not project_datum.project_token.policy_id
-            #     or not project_datum.project_token.token_name
-            # ):
-            #     return {
-            #         "success": False,
-            #         "error": "Grey token info not found in project datum. Setup grey tokens first via Update Project menu.",
-            #     }
-
-            # Get wallet info
-            from_address = self.wallet.get_address(0)
-            destination_address = from_address  # Always use wallet address for grey tokens
-
-            # Find suitable UTXO
-            user_utxos = self.context.utxos(from_address)
-            user_utxo_to_spend = None
-            for utxo in user_utxos:
-                if utxo.output.amount.coin > 3000000:
-                    user_utxo_to_spend = utxo
-                    break
-
-            if not user_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No suitable UTXO found for minting (need >3 ADA)",
-                }
-
-            # Dynamically compile grey minting contract with the project PolicyID
-            grey_minting_contract = self.contract_manager.create_minting_contract(
-                "grey", bytes.fromhex(project_contract.policy_id)
-            )
-            if not grey_minting_contract:
-                return {"success": False, "error": "Failed to compile grey minting contract"}
-
-            grey_minting_script = grey_minting_contract.cbor
-            grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
-
-            # Read grey token info from project datum (policy_id should match grey contract policy_id)
-            grey_token_policy_id = bytes.fromhex(grey_minting_contract.policy_id)
-            grey_token_name = project_datum.project_token.token_name
-
-            # Update project datum - increment current_supply by minted quantity
-            new_current_supply = project_datum.project_token.current_supply + grey_token_quantity
-
-            # Validate supply constraints
-            if new_current_supply > project_datum.project_token.total_supply:
-                return {
-                    "success": False,
-                    "error": f"Cannot mint {grey_token_quantity} tokens. Would exceed total supply ({project_datum.project_token.total_supply})",
-                }
-
-            new_token_project = TokenProject(
-                policy_id=project_datum.project_token.policy_id,
-                token_name=grey_token_name,
-                total_supply=project_datum.project_token.total_supply,
-                current_supply=new_current_supply,
-            )
-
-            # Update stakeholders datum - preserve all stakeholders, only update amount_claimed for the minting user
-            new_stakeholders = []
-            user_pkh = self.wallet.get_payment_verification_key_hash().hex()
-
-            for stakeholder in project_datum.stakeholders:
-                # Create a copy of the stakeholder
-                updated_stakeholder = StakeHolderParticipation(
-                    stakeholder=stakeholder.stakeholder,
-                    pkh=stakeholder.pkh,
-                    participation=stakeholder.participation,
-                    amount_claimed=stakeholder.amount_claimed,
-                )
-
-                # Update amount_claimed if this stakeholder matches the current user
-                if stakeholder.pkh == user_pkh:
-                    new_amount_claimed = stakeholder.amount_claimed + grey_token_quantity
-                    # Validate that amount_claimed doesn't exceed participation
-                    if new_amount_claimed > stakeholder.participation:
-                        return {
-                            "success": False,
-                            "error": f"Cannot mint {grey_token_quantity} tokens. Would exceed your participation limit ({stakeholder.participation})",
-                        }
-                    updated_stakeholder.amount_claimed = new_amount_claimed
-                elif stakeholder.stakeholder == b"investor" and stakeholder.pkh == b"":
-                    # Handle investor stakeholder with empty PKH
-                    new_amount_claimed = stakeholder.amount_claimed + grey_token_quantity
-                    if new_amount_claimed > stakeholder.participation:
-                        return {
-                            "success": False,
-                            "error": f"Cannot mint {grey_token_quantity} tokens. Would exceed investor participation limit ({stakeholder.participation})",
-                        }
-                    updated_stakeholder.amount_claimed = new_amount_claimed
-
-                # Always append the stakeholder (either updated or unchanged)
-                new_stakeholders.append(updated_stakeholder)
 
             # Calculate transaction input indices for UpdateToken redeemer
             payment_utxos = user_utxos
@@ -1392,21 +1315,34 @@ class TokenOperations:
             project_index = all_inputs_utxos.index(project_utxo_to_spend)
             user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
+            # Dynamically compile grey minting contract with the project PolicyID
+            grey_minting_contract = self.contract_manager.create_minting_contract(
+                "grey", project_minting_policy_id
+            )
+            if not grey_minting_contract:
+                return {"success": False, "error": "Failed to compile grey minting contract"}
+
+            grey_minting_script = grey_minting_contract.cbor
+            grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
+            grey_token_name = project_datum.project_token.token_name
+
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
 
-            builder.add_input(user_utxo_to_spend)
+            for u in payment_utxos:
+                builder.add_input(u)
 
-            # Add minting script for grey tokens
-            builder.add_minting_script(script=grey_minting_script, redeemer=pc.Redeemer(Mint()))
-
-            # Add project UTXO as script input with UpdateToken redeemer - handle both local and reference scripts
             project_redeemer = pc.Redeemer(
                 UpdateToken(
                     project_input_index=project_index,
+                    project_output_index=0,
+                )
+            )
+            project_redeemer = pc.Redeemer(
+                UpdateProject(
+                    project_input_index=project_index,
                     user_input_index=user_index,
                     project_output_index=0,
-                    new_supply=new_current_supply,  # Pass the new total current_supply, not just the minted quantity
                 )
             )
 
@@ -1441,18 +1377,26 @@ class TokenOperations:
                     redeemer=project_redeemer,
                 )
 
+            # Add minting script for grey tokens
+            builder.add_minting_script(script=grey_minting_script, redeemer=pc.Redeemer(MintGrey(project_input_index=project_index, project_output_index=0)))
+
             # Create grey token asset using correct token name from datum
             grey_asset = pc.Asset({pc.AssetName(grey_token_name): grey_token_quantity})
             grey_multi_asset = pc.MultiAsset({grey_minting_policy_id: grey_asset})
 
             builder.mint = grey_multi_asset
 
+            # New project state
+            new_params = DatumProjectParams(
+                project_id=project_datum.params.project_id,
+                project_metadata=project_datum.params.project_metadata,
+                project_state=1,  # Move to token sale state
+            )
             # Create updated project datum
             new_project_datum = DatumProject(
-                protocol_policy_id=project_datum.protocol_policy_id,
-                params=project_datum.params,
-                project_token=new_token_project,
-                stakeholders=new_stakeholders,
+                params=new_params,
+                project_token=project_datum.project_token,
+                stakeholders=project_datum.stakeholders,
                 certifications=project_datum.certifications,
             )
 
@@ -1482,13 +1426,13 @@ class TokenOperations:
             min_val_user = pc.min_lovelace(
                 self.context,
                 output=pc.TransactionOutput(
-                    destination_address,
+                    from_address,
                     user_value,
                     datum=None,
                 ),
             )
             user_output = pc.TransactionOutput(
-                address=destination_address,
+                address=from_address,
                 amount=pc.Value(coin=min_val_user, multi_asset=grey_multi_asset),
                 datum=None,
             )
@@ -1506,7 +1450,6 @@ class TokenOperations:
                 "minting_policy_id": grey_minting_contract.policy_id,
                 "project_id": project_datum.params.project_id.hex(),
                 "quantity": grey_token_quantity,
-                "new_current_supply": new_current_supply,
             }
 
         except Exception as e:

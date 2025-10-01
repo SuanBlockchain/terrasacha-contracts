@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from opshin.builder import PlutusContract
@@ -39,6 +40,14 @@ from terrasacha_contracts.validators.project import (
     Certification,
 )
 from opshin.prelude import TrueData
+
+
+@dataclass
+class WalletSelection:
+    """Result of wallet/address selection"""
+    address: pc.Address
+    wallet_name: Optional[str]  # None if custom address was entered
+    should_switch_wallet: bool  # Whether to switch to this wallet
 
 
 class CardanoCLI:
@@ -352,19 +361,17 @@ class CardanoCLI:
         """Send ADA submenu"""
         try:
             # Select source wallet (where to send ADA from)
-            source_selection = self.select_wallet_or_address_for_source("sending ADA from")
+            source_selection = self.select_wallet_or_address("sending ADA from", mode="source")
             if not source_selection:
                 self.menu.print_info("Send ADA cancelled")
                 return
 
-            source_address, source_wallet_name, should_switch = source_selection
-
             # Switch to source wallet if a wallet was selected
-            if should_switch and source_wallet_name:
-                if self.switch_to_wallet(source_wallet_name):
-                    self.menu.print_info(f"Switched to wallet: {source_wallet_name}")
+            if source_selection.should_switch_wallet and source_selection.wallet_name:
+                if self.switch_to_wallet(source_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {source_selection.wallet_name}")
                 else:
-                    self.menu.print_error(f"Failed to switch to wallet: {source_wallet_name}")
+                    self.menu.print_error(f"Failed to switch to wallet: {source_selection.wallet_name}")
                     return
 
             # Show available balances
@@ -375,18 +382,16 @@ class CardanoCLI:
             )
 
             # Select destination address
-            destination_selection = self.select_wallet_or_address_for_destination("sending ADA to")
+            destination_selection = self.select_wallet_or_address("sending ADA to", mode="destination")
             if not destination_selection:
                 self.menu.print_info("Send ADA cancelled")
                 return
 
-            to_address, destination_wallet_name = destination_selection
-
             amount = float(input("Amount (ADA): "))
 
-            print(f"Sending {amount} ADA to {to_address}")
+            print(f"Sending {amount} ADA to {destination_selection.address}")
 
-            tx = self.transactions.create_simple_transaction(to_address, amount)
+            tx = self.transactions.create_simple_transaction(destination_selection.address, amount)
             if tx:
                 tx_id = self.transactions.submit_transaction(tx)
                 if tx_id:
@@ -532,16 +537,14 @@ class CardanoCLI:
         self.menu.print_info("This will mint two NFTs: one protocol token and one user token")
 
         # Select destination for the user token
-        destination_selection = self.select_wallet_or_address_for_destination("user token delivery")
+        destination_selection = self.select_wallet_or_address("user token delivery", mode="destination")
         if not destination_selection:
             self.menu.print_info("Protocol token minting cancelled")
             return
 
-        destination_address, destination_wallet_name = destination_selection
-
         try:
             self.menu.print_info("Creating minting transaction...")
-            result = self.token_operations.create_minting_transaction(destination_address)
+            result = self.token_operations.create_minting_transaction(destination_selection.address)
 
             if not result["success"]:
                 self.menu.print_error(f"Failed to create transaction: {result['error']}")
@@ -717,12 +720,10 @@ class CardanoCLI:
             print(f"  {i}. {name.decode('utf-8')}: {participation:,} ({percentage:.2f}%)")
 
         # Destination address selection
-        destination_selection = self.select_wallet_or_address_for_destination("user token delivery")
+        destination_selection = self.select_wallet_or_address("user token delivery", mode="destination")
         if not destination_selection:
             self.menu.print_info("Project creation cancelled")
             return
-
-        destination_address, destination_wallet_name = destination_selection
 
         # Ask which wallet to use for the transaction (important for compilation UTXO)
         self.menu.print_section("WALLET SELECTION FOR MINTING")
@@ -764,7 +765,7 @@ class CardanoCLI:
                 project_id=project_id,
                 project_metadata=project_metadata,
                 stakeholders=stakeholders,
-                destination_address=destination_address,
+                destination_address=destination_selection.address,
                 project_name=selected_project_name,
                 wallet_override=wallet_override,
             )
@@ -802,7 +803,7 @@ class CardanoCLI:
                         if project_nfts_name in self.contract_manager.contracts:
                             deployed_contracts.append(project_nfts_name)
 
-                    if self.contract_manager.mark_contract_as_deployed(deployed_contracts, destination_address):
+                    if self.contract_manager.mark_contract_as_deployed(deployed_contracts, destination_selection.address):
                         self.menu.print_success(
                             "✓ Project contracts saved to disk (deployment confirmed)"
                         )
@@ -834,24 +835,22 @@ class CardanoCLI:
         )
 
         # Select source wallet containing tokens to burn
-        source_selection = self.select_wallet_or_address_for_source("token burning")
+        source_selection = self.select_wallet_or_address("token burning", mode="source")
         if not source_selection:
             self.menu.print_info("Token burning cancelled")
             return
 
-        user_address, source_wallet_name, should_switch = source_selection
-
         # Switch to source wallet if a wallet was selected
-        if should_switch and source_wallet_name:
-            if self.switch_to_wallet(source_wallet_name):
-                self.menu.print_info(f"Switched to wallet: {source_wallet_name}")
+        if source_selection.should_switch_wallet and source_selection.wallet_name:
+            if self.switch_to_wallet(source_selection.wallet_name):
+                self.menu.print_info(f"Switched to wallet: {source_selection.wallet_name}")
             else:
-                self.menu.print_error(f"Failed to switch to wallet: {source_wallet_name}")
+                self.menu.print_error(f"Failed to switch to wallet: {source_selection.wallet_name}")
                 return
 
         try:
             self.menu.print_info("Creating burn transaction...")
-            result = self.token_operations.create_burn_transaction(user_address)
+            result = self.token_operations.create_burn_transaction(source_selection.address)
 
             if not result["success"]:
                 self.menu.print_error(f"Failed to create transaction: {result['error']}")
@@ -1139,29 +1138,24 @@ class CardanoCLI:
         )
 
         # Select wallet containing user tokens for protocol update
-        source_selection = self.select_wallet_or_address_for_source("protocol update authorization")
+        source_selection = self.select_wallet_or_address("protocol update authorization", mode="source")
         if not source_selection:
             self.menu.print_info("Protocol update cancelled")
             return
 
-        user_address, source_wallet_name, should_switch = source_selection
-
         # Switch to source wallet if a wallet was selected
-        if should_switch and source_wallet_name:
-            if self.switch_to_wallet(source_wallet_name):
-                self.menu.print_info(f"Switched to wallet: {source_wallet_name}")
+        if source_selection.should_switch_wallet and source_selection.wallet_name:
+            if self.switch_to_wallet(source_selection.wallet_name):
+                self.menu.print_info(f"Switched to wallet: {source_selection.wallet_name}")
             else:
-                self.menu.print_error(f"Failed to switch to wallet: {source_wallet_name}")
+                self.menu.print_error(f"Failed to switch to wallet: {source_selection.wallet_name}")
                 return
-
-        if user_address is None:
-            self.menu.print_info("Using default wallet address")
 
         # Create and submit transaction
         try:
             self.menu.print_info("Creating protocol update transaction...")
             result = self.token_operations.create_protocol_update_transaction(
-                user_address, new_datum
+                source_selection.address, new_datum
             )
 
             if not result["success"]:
@@ -1277,26 +1271,24 @@ class CardanoCLI:
         )
 
         # Select wallet containing project tokens to burn
-        source_selection = self.select_wallet_or_address_for_source("project token burning")
+        source_selection = self.select_wallet_or_address("project token burning", mode="source")
         if not source_selection:
             self.menu.print_info("Project token burning cancelled")
             return
 
-        user_address, source_wallet_name, should_switch = source_selection
-
         # Switch to source wallet if a wallet was selected
-        if should_switch and source_wallet_name:
-            if self.switch_to_wallet(source_wallet_name):
-                self.menu.print_info(f"Switched to wallet: {source_wallet_name}")
+        if source_selection.should_switch_wallet and source_selection.wallet_name:
+            if self.switch_to_wallet(source_selection.wallet_name):
+                self.menu.print_info(f"Switched to wallet: {source_selection.wallet_name}")
             else:
-                self.menu.print_error(f"Failed to switch to wallet: {source_wallet_name}")
+                self.menu.print_error(f"Failed to switch to wallet: {source_selection.wallet_name}")
                 return
 
         try:
             self.menu.print_info("Creating project burn transaction...")
 
             result = self.token_operations.create_project_burn_transaction(
-                user_address, selected_project
+                source_selection.address, selected_project
             )
 
             if not result["success"]:
@@ -1384,22 +1376,26 @@ class CardanoCLI:
             return
 
         # Ask for wallet to use for transaction (will pay fees and receive tokens)
-        self.menu.print_section("WALLET SELECTION")
-        self.menu.print_info(self.get_available_wallets_info())
-        wallet_input = self.menu.get_input(
-            "Enter wallet name to use for transaction (will pay fees and receive grey tokens) or press Enter for current wallet"
+        wallet_selection = self.select_wallet_or_address(
+            "transaction (will pay fees and receive grey tokens)",
+            mode="wallet_only",
+            allow_custom_address=False
         )
+        if not wallet_selection:
+            self.menu.print_info("Grey token minting cancelled")
+            input("Press Enter to continue...")
+            return
 
-        if wallet_input.strip():
-            # Switch to the specified wallet if a wallet name is provided
-            resolved_address = self.resolve_address_input(wallet_input.strip(), switch_wallet=True)
-            if not resolved_address:
-                self.menu.print_error(f"Invalid wallet name: {wallet_input.strip()}")
-                input("Press Enter to continue...")
-                return
-            self.menu.print_info(f"Switched to wallet: {wallet_input.strip()}")
-        else:
-            self.menu.print_info("Using current wallet for transaction")
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
+                    input("Press Enter to continue...")
+                    return
 
         # Show transaction preview
         self.menu.print_section("TRANSACTION PREVIEW")
@@ -1407,10 +1403,6 @@ class CardanoCLI:
         print(f"│ Project Contract: {selected_project}")
         print(f"│ Grey Tokens to Mint: {grey_token_quantity:,}")
         print(f"│ Wallet: {current_wallet} (will pay fees and receive tokens)")
-        print("│")
-        print("│ ⚠️  This will:")
-        print("│    • Use UpdateToken redeemer on project contract")
-        print("│    • Mint grey tokens to the selected wallet address")
 
         if not self.menu.confirm_action("Proceed with grey token minting?"):
             self.menu.print_info("Grey token minting cancelled")
@@ -1465,26 +1457,24 @@ class CardanoCLI:
 
         try:
             # Ask user to select wallet for token burning
-            wallet_selection = self.select_wallet_for_token_operation("burning grey tokens")
+            wallet_selection = self.select_wallet_or_address("burning grey tokens", mode="wallet_only", allow_custom_address=False)
             if not wallet_selection:
                 self.menu.print_info("Wallet selection cancelled")
                 input("Press Enter to continue...")
                 return
 
-            wallet_name, user_address = wallet_selection
-
             # Switch to selected wallet if different from current
             current_wallet = self.wallet_manager.get_default_wallet_name()
-            if wallet_name != current_wallet:
-                success = self.switch_to_wallet(wallet_name)
+            if wallet_selection.wallet_name and wallet_selection.wallet_name != current_wallet:
+                success = self.switch_to_wallet(wallet_selection.wallet_name)
                 if not success:
-                    self.menu.print_error(f"Failed to switch to wallet: {wallet_name}")
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
                     input("Press Enter to continue...")
                     return
-                self.menu.print_info(f"Switched to wallet: {wallet_name}")
+                self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
 
             # Get UTXOs from selected wallet
-            user_utxos = self.context.utxos(user_address)
+            user_utxos = self.context.utxos(wallet_selection.address)
 
             if not user_utxos:
                 self.menu.print_error("No UTXOs found in wallet")
@@ -1612,7 +1602,7 @@ class CardanoCLI:
 
             # Confirmation
             self.menu.print_info(f"\nBurning Details:")
-            self.menu.print_info(f"  - Wallet: {wallet_name}")
+            self.menu.print_info(f"  - Wallet: {wallet_selection.wallet_name}")
             self.menu.print_info(f"  - Project: {selected_project}")
             self.menu.print_info(f"  - Policy ID: {selected_policy_id}")
             self.menu.print_info(f"  - Token Name: {selected_token_name}")
@@ -1883,23 +1873,21 @@ class CardanoCLI:
             self.display_enhanced_project_status(current_datum)
 
             # Select wallet containing user tokens for project update
-            source_selection = self.select_wallet_or_address_for_source("project update authorization")
+            source_selection = self.select_wallet_or_address("project update authorization", mode="source")
             if not source_selection:
                 self.menu.print_info("Project update cancelled")
                 return
 
-            user_address, source_wallet_name, should_switch = source_selection
-
             # Switch to source wallet if a wallet was selected
-            if should_switch and source_wallet_name:
-                if self.switch_to_wallet(source_wallet_name):
-                    self.menu.print_info(f"Switched to wallet: {source_wallet_name}")
+            if source_selection.should_switch_wallet and source_selection.wallet_name:
+                if self.switch_to_wallet(source_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {source_selection.wallet_name}")
                 else:
-                    self.menu.print_error(f"Failed to switch to wallet: {source_wallet_name}")
+                    self.menu.print_error(f"Failed to switch to wallet: {source_selection.wallet_name}")
                     return
 
             # Allow comprehensive project updates regardless of project state for ProjectUpdate operations
-            self.handle_initialization_update(current_datum, user_address, selected_project, auto_grey_policy_id)
+            self.handle_initialization_update(current_datum, source_selection.address, selected_project, auto_grey_policy_id)
 
         except Exception as e:
             self.menu.print_error(f"Project update failed: {e}")
@@ -2976,132 +2964,94 @@ class CardanoCLI:
         if not changes_made:
             print("│ No changes detected")
 
-    def select_wallet_for_compilation(self, purpose: str) -> Optional[pc.Address]:
+    def select_wallet_or_address(
+        self,
+        purpose: str,
+        mode: str = "wallet_only",
+        allow_custom_address: bool = True
+    ) -> Optional[WalletSelection]:
         """
-        Ask user to select a wallet for compilation and return its address
+        Unified wallet/address selection function
 
         Args:
             purpose: Description of what the wallet will be used for
+            mode: Selection mode - "wallet_only", "source", or "destination"
+            allow_custom_address: Whether to allow custom address input (ignored for wallet_only mode)
 
         Returns:
-            Address of selected wallet or None if cancelled
+            WalletSelection object with address, wallet_name, and should_switch_wallet
+            Returns None if cancelled
         """
         wallets = self.wallet_manager.get_wallet_names()
 
-        self.menu.print_section(f"WALLET SELECTION FOR {purpose.upper()}")
-        self.menu.print_info(f"Select wallet to use for {purpose}:")
+        if not wallets:
+            self.menu.print_error("No wallets available. Please add a wallet first.")
+            return None
 
+        # Determine section title based on mode
+        if mode == "source":
+            section_title = f"SOURCE SELECTION FOR {purpose.upper()}"
+            prompt_text = f"Select source wallet for {purpose}:"
+        elif mode == "destination":
+            section_title = f"DESTINATION SELECTION FOR {purpose.upper()}"
+            prompt_text = f"Select destination for {purpose}:"
+        else:  # wallet_only
+            section_title = f"WALLET SELECTION FOR {purpose.upper()}"
+            prompt_text = f"Select wallet to use for {purpose}:"
+
+        self.menu.print_section(section_title)
+        self.menu.print_info(prompt_text)
+
+        # Show wallet options
         for i, wallet_name in enumerate(wallets, 1):
             is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
             status = " (CURRENT)" if is_active else ""
-            print(f"│ {i}. {wallet_name}{status}")
+            if mode == "wallet_only":
+                print(f"│ {i}. {wallet_name}{status}")
+            else:
+                self.menu.print_menu_option(f"{i}", f"{wallet_name}{status}")
 
+        # Add custom address option if allowed and not wallet_only mode
+        max_option = len(wallets)
+        if allow_custom_address and mode != "wallet_only":
+            max_option += 1
+            if mode == "source":
+                self.menu.print_menu_option(f"{max_option}", "Enter custom address")
+            else:
+                self.menu.print_menu_option(f"{max_option}", "Enter custom address")
+            self.menu.print_menu_option("0", "Cancel")
+
+        # Get user choice
         try:
-            choice = int(self.menu.get_input(f"Select wallet (1-{len(wallets)}, or 0 to cancel)"))
+            if mode == "wallet_only":
+                choice = int(self.menu.get_input(f"Select wallet (1-{len(wallets)}, or 0 to cancel)"))
+            else:
+                choice_input = input(f"\nSelect option (0-{max_option}): ").strip()
+                if choice_input == '0':
+                    return None
+                choice = int(choice_input)
+
             if choice == 0:
                 return None
             elif 1 <= choice <= len(wallets):
+                # Wallet selected
                 wallet_name = wallets[choice - 1]
                 wallet = self.wallet_manager.get_wallet(wallet_name)
-                self.menu.print_info(f"Selected wallet: {wallet_name}")
-                return wallet.get_address(0)
-            else:
-                self.menu.print_error("Invalid choice")
-                return None
-        except (ValueError, IndexError):
-            self.menu.print_error("Invalid input")
-            return None
-
-    def select_wallet_for_token_operation(self, purpose: str) -> Optional[tuple]:
-        """
-        Ask user to select a wallet for token operations and return wallet info
-
-        Args:
-            purpose: Description of what the wallet will be used for
-
-        Returns:
-            Tuple of (wallet_name, wallet_address) or None if cancelled
-        """
-        wallets = self.wallet_manager.get_wallet_names()
-
-        if not wallets:
-            self.menu.print_error("No wallets available")
-            return None
-
-        self.menu.print_section(f"WALLET SELECTION FOR {purpose.upper()}")
-        self.menu.print_info(f"Select wallet to use for {purpose}:")
-
-        for i, wallet_name in enumerate(wallets, 1):
-            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
-            status = " (CURRENT)" if is_active else ""
-            self.menu.print_menu_option(f"{i}", f"{wallet_name}{status}")
-
-        try:
-            choice = input(f"\nSelect wallet (1-{len(wallets)}, or 'q' to cancel): ").strip().lower()
-            if choice == 'q':
-                return None
-
-            choice_num = int(choice)
-            if 1 <= choice_num <= len(wallets):
-                wallet_name = wallets[choice_num - 1]
-                wallet = self.wallet_manager.get_wallet(wallet_name)
                 wallet_address = wallet.get_address(0)
                 self.menu.print_info(f"Selected wallet: {wallet_name}")
-                return (wallet_name, wallet_address)
-            else:
-                self.menu.print_error(f"Please enter a number between 1 and {len(wallets)}")
-                return None
-        except ValueError:
-            self.menu.print_error("Please enter a valid number")
-            return None
 
-    def select_wallet_or_address_for_destination(self, purpose: str) -> Optional[tuple]:
-        """
-        Ask user to select a wallet or enter a custom address for destination
+                # Determine if we should switch wallet based on mode
+                should_switch = (mode == "source")
 
-        Args:
-            purpose: Description of what the destination will be used for
-
-        Returns:
-            Tuple of (address, wallet_name_or_none) or None if cancelled
-            - address: The selected address (from wallet or custom)
-            - wallet_name_or_none: Wallet name if wallet selected, None if custom address
-        """
-        wallets = self.wallet_manager.get_wallet_names()
-
-        if not wallets:
-            self.menu.print_error("No wallets available. Please add a wallet first.")
-            return None
-
-        self.menu.print_section(f"DESTINATION SELECTION FOR {purpose.upper()}")
-        self.menu.print_info(f"Select destination for {purpose}:")
-
-        # Show wallet options
-        for i, wallet_name in enumerate(wallets, 1):
-            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
-            status = " (CURRENT)" if is_active else ""
-            self.menu.print_menu_option(f"{i}", f"{wallet_name}{status}")
-
-        # Add custom address option
-        self.menu.print_menu_option(f"{len(wallets) + 1}", "Enter custom address")
-        self.menu.print_menu_option("0", "Cancel")
-
-        try:
-            choice = input(f"\nSelect option (0-{len(wallets) + 1}): ").strip()
-            if choice == '0':
-                return None
-
-            choice_num = int(choice)
-            if 1 <= choice_num <= len(wallets):
-                # Wallet selected
-                wallet_name = wallets[choice_num - 1]
-                wallet = self.wallet_manager.get_wallet(wallet_name)
-                wallet_address = wallet.get_address(0)
-                self.menu.print_info(f"Selected wallet: {wallet_name}")
-                return (wallet_address, wallet_name)
-            elif choice_num == len(wallets) + 1:
+                return WalletSelection(
+                    address=wallet_address,
+                    wallet_name=wallet_name,
+                    should_switch_wallet=should_switch
+                )
+            elif allow_custom_address and mode != "wallet_only" and choice == len(wallets) + 1:
                 # Custom address option selected
-                custom_address = self.menu.get_input("Enter destination address").strip()
+                address_prompt = "Enter source address" if mode == "source" else "Enter destination address"
+                custom_address = self.menu.get_input(address_prompt).strip()
                 if not custom_address:
                     self.menu.print_error("Address cannot be empty")
                     return None
@@ -3115,84 +3065,16 @@ class CardanoCLI:
                 try:
                     address_obj = pc.Address.from_primitive(resolved_address)
                     self.menu.print_info(f"Using custom address: {resolved_address[50:]}...")
-                    return (address_obj, None)
+                    return WalletSelection(
+                        address=address_obj,
+                        wallet_name=None,
+                        should_switch_wallet=False
+                    )
                 except Exception as e:
                     self.menu.print_error(f"Invalid address format: {e}")
                     return None
             else:
-                self.menu.print_error(f"Please enter a number between 0 and {len(wallets) + 1}")
-                return None
-        except ValueError:
-            self.menu.print_error("Please enter a valid number")
-            return None
-
-    def select_wallet_or_address_for_source(self, purpose: str) -> Optional[tuple]:
-        """
-        Ask user to select a wallet or enter a custom address for source operations
-
-        Args:
-            purpose: Description of what the source will be used for
-
-        Returns:
-            Tuple of (address, wallet_name_or_none, switch_wallet) or None if cancelled
-            - address: The selected address (from wallet or custom)
-            - wallet_name_or_none: Wallet name if wallet selected, None if custom address
-            - switch_wallet: Boolean indicating if we should switch to the selected wallet
-        """
-        wallets = self.wallet_manager.get_wallet_names()
-
-        if not wallets:
-            self.menu.print_error("No wallets available. Please add a wallet first.")
-            return None
-
-        self.menu.print_section(f"SOURCE SELECTION FOR {purpose.upper()}")
-        self.menu.print_info(f"Select source wallet for {purpose}:")
-
-        # Show wallet options
-        for i, wallet_name in enumerate(wallets, 1):
-            is_active = wallet_name == self.wallet_manager.get_default_wallet_name()
-            status = " (CURRENT)" if is_active else ""
-            self.menu.print_menu_option(f"{i}", f"{wallet_name}{status}")
-
-        # Add custom address option
-        self.menu.print_menu_option(f"{len(wallets) + 1}", "Enter custom address")
-        self.menu.print_menu_option("0", "Cancel")
-
-        try:
-            choice = input(f"\nSelect option (0-{len(wallets) + 1}): ").strip()
-            if choice == '0':
-                return None
-
-            choice_num = int(choice)
-            if 1 <= choice_num <= len(wallets):
-                # Wallet selected
-                wallet_name = wallets[choice_num - 1]
-                wallet = self.wallet_manager.get_wallet(wallet_name)
-                wallet_address = wallet.get_address(0)
-                self.menu.print_info(f"Selected wallet: {wallet_name}")
-                return (wallet_address, wallet_name, True)  # True = switch to this wallet
-            elif choice_num == len(wallets) + 1:
-                # Custom address option selected
-                custom_address = self.menu.get_input("Enter source address").strip()
-                if not custom_address:
-                    self.menu.print_error("Address cannot be empty")
-                    return None
-
-                # Validate the address
-                resolved_address = self.resolve_address_input(custom_address)
-                if not resolved_address:
-                    self.menu.print_error(f"Invalid address: {custom_address}")
-                    return None
-
-                try:
-                    address_obj = pc.Address.from_primitive(resolved_address)
-                    self.menu.print_info(f"Using custom address: {resolved_address[50:]}...")
-                    return (address_obj, None, False)  # False = don't switch wallet
-                except Exception as e:
-                    self.menu.print_error(f"Invalid address format: {e}")
-                    return None
-            else:
-                self.menu.print_error(f"Please enter a number between 0 and {len(wallets) + 1}")
+                self.menu.print_error(f"Please enter a number between 0 and {max_option}")
                 return None
         except ValueError:
             self.menu.print_error("Please enter a valid number")
@@ -3261,9 +3143,10 @@ class CardanoCLI:
         if use_different_funding:
             # Select funding wallet
             self.menu.print_info("Select funding wallet (will pay transaction fees and provide UTXOs):")
-            funding_address = self.select_wallet_for_compilation("funding the reference script transaction")
-            if not funding_address:
+            funding_selection = self.select_wallet_or_address("funding the reference script transaction", mode="wallet_only", allow_custom_address=False)
+            if not funding_selection:
                 return None
+            funding_address = funding_selection.address
         else:
             # Use compilation wallet for funding
             funding_address = source_address
@@ -3271,9 +3154,10 @@ class CardanoCLI:
         # Select destination wallet (where reference script UTXO will be sent)
         self.menu.print_info("Select destination wallet (will receive reference script UTXO):")
         print("│ You can choose the same wallet or a different one")
-        destination_address = self.select_wallet_for_compilation("storage of the reference script")
-        if not destination_address:
+        destination_selection = self.select_wallet_or_address("storage of the reference script", mode="wallet_only", allow_custom_address=False)
+        if not destination_selection:
             return None
+        destination_address = destination_selection.address
 
         # Get the wallet instance for the funding address to use for signing
         funding_wallet = None
@@ -3508,16 +3392,18 @@ class CardanoCLI:
             elif choice == "2":
                 try:
                     # Ask for protocol wallet selection
-                    protocol_address = self.select_wallet_for_compilation("protocol contract")
-                    if not protocol_address:
+                    protocol_selection = self.select_wallet_or_address("protocol contract", mode="wallet_only", allow_custom_address=False)
+                    if not protocol_selection:
                         self.menu.print_info("Compilation cancelled")
                         continue
+                    protocol_address = protocol_selection.address
 
                     # Ask for project wallet selection
-                    project_address = self.select_wallet_for_compilation("project contract")
-                    if not project_address:
+                    project_selection = self.select_wallet_or_address("project contract", mode="wallet_only", allow_custom_address=False)
+                    if not project_selection:
                         self.menu.print_info("Compilation cancelled")
                         continue
+                    project_address = project_selection.address
 
                     # Ask for storage type
                     storage_type = self.select_storage_type()
@@ -3597,13 +3483,16 @@ class CardanoCLI:
         # Compile project contract
         try:
             # Ask for project wallet selection
-            project_address = self.select_wallet_for_compilation(
-                "compilation of new project contract"
+            project_selection = self.select_wallet_or_address(
+                "compilation of new project contract",
+                mode="wallet_only",
+                allow_custom_address=False
             )
-            if not project_address:
+            if not project_selection:
                 self.menu.print_info("Compilation cancelled")
                 input("\nPress Enter to continue...")
                 return
+            project_address = project_selection.address
 
             # Ask for storage type
             storage_type = self.select_storage_type()
@@ -3860,18 +3749,16 @@ class CardanoCLI:
                         return
 
                     # Select destination for remaining ADA
-                    destination_selection = self.select_wallet_or_address_for_destination("remaining ADA from contract deletion")
+                    destination_selection = self.select_wallet_or_address("remaining ADA from contract deletion", mode="destination")
                     if not destination_selection:
                         self.menu.print_info("Contract deletion cancelled")
                         input("Press Enter to continue...")
                         return
 
-                    destination_address, destination_wallet_name = destination_selection
-
                     # Spend the reference script UTXO
                     self.menu.print_info("Spending reference script UTXO...")
                     spend_result = self.contract_manager.spend_reference_script_utxo(
-                        contract_name, selected_wallet, destination_address
+                        contract_name, selected_wallet, destination_selection.address
                     )
 
                     if not spend_result["success"]:

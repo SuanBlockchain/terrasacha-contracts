@@ -238,3 +238,9 @@ def validate_nft_continues(tx_output: TxOut, expected_token: Token) -> None:
     token_amount = tx_output_tokens.get(expected_token_name, 0)
 
     assert token_amount == 1, f"NFT {expected_token_name.hex()} must continue to output"
+
+def get_total_participation(stakeholders: List[StakeHolderParticipation]) -> int:
+    total = 0
+    for stakeholder in stakeholders:
+        total += stakeholder.participation
+    return total
