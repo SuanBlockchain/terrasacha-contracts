@@ -8,7 +8,7 @@ Handles minting, burning, and token management operations.
 from typing import Any, Dict, Optional
 
 import pycardano as pc
-from opshin.prelude import TxId, TxOutRef, FalseData
+from opshin.prelude import TxId, TxOutRef, FalseData, TrueData
 
 from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
 from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject
@@ -1220,6 +1220,7 @@ class TokenOperations:
         self,
         project_name: Optional[str] = None,
         grey_token_quantity: int = 1,
+        minting_mode: str = "free",
     ) -> Dict[str, Any]:
         """
         Create a minting transaction for grey tokens
@@ -1230,6 +1231,7 @@ class TokenOperations:
         Args:
             project_name: Optional specific project contract name to use
             grey_token_quantity: Number of grey tokens to mint (default: 1)
+            minting_mode: Minting mode - "free" (requires authorization token) or "authorized" (any wallet, contract validates)
 
         Returns:
             A dictionary containing the transaction details or an error message
@@ -1277,43 +1279,56 @@ class TokenOperations:
 
             # Get user info
             from_address = self.wallet.get_address(0)
-            # Find suitable UTXO
             user_utxos = self.context.utxos(from_address)
             if not user_utxos:
                 return {"success": False, "error": "No user UTXOs found"}
-            # user_utxo_to_spend = None
-            # for utxo in user_utxos:
-            #     if utxo.output.amount.coin > 3000000:
-            #         user_utxo_to_spend = utxo
-            #         break
 
-            # if not user_utxo_to_spend:
-            #     return {
-            #         "success": False,
-            #         "error": "No suitable UTXO found for minting (need >3 ADA)",
-            #     }
-            user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
-                user_utxos, project_minting_policy_id
-            )
-            if not user_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No user UTXO found with specified policy ID",
-                }
-            
+            # Mode-specific UTXO selection and index calculation
+            if minting_mode == "free":
+                # Free mode: Requires authorization token (project NFT)
+                user_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                    user_utxos, project_minting_policy_id
+                )
+                if not user_utxo_to_spend:
+                    return {
+                        "success": False,
+                        "error": "No user UTXO found with specified policy ID (authorization token required for free minting)",
+                    }
+
+                # Calculate indices including user UTXO
+                payment_utxos = user_utxos
+                all_inputs_utxos = self.transactions.sorted_utxos(
+                    payment_utxos + [project_utxo_to_spend]
+                )
+                project_index = all_inputs_utxos.index(project_utxo_to_spend)
+                user_index = all_inputs_utxos.index(user_utxo_to_spend)
+            else:
+                # Authorized mode: Any wallet can attempt, find UTXO for fees
+                utxo_to_spend = None
+                for utxo in user_utxos:
+                    if utxo.output.amount.coin > 3000000:
+                        utxo_to_spend = utxo
+                        break
+
+                if not utxo_to_spend:
+                    return {
+                        "success": False,
+                        "error": "No suitable UTXO found for minting (need >3 ADA)",
+                    }
+
+                # Calculate indices without user token requirement
+                payment_utxos = user_utxos
+                all_inputs_utxos = self.transactions.sorted_utxos(
+                    payment_utxos + [project_utxo_to_spend]
+                )
+                project_index = all_inputs_utxos.index(project_utxo_to_spend)
+                user_index = None  # Not needed for authorized mode
+
             # Get input datum info
             try:
                 project_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)
             except Exception as e:
                 return {"success": False, "error": f"Failed to get project datum: {e}"}
-
-            # Calculate transaction input indices for UpdateToken redeemer
-            payment_utxos = user_utxos
-            all_inputs_utxos = self.transactions.sorted_utxos(
-                payment_utxos + [project_utxo_to_spend]
-            )
-            project_index = all_inputs_utxos.index(project_utxo_to_spend)
-            user_index = all_inputs_utxos.index(user_utxo_to_spend)
 
             # Dynamically compile grey minting contract with the project PolicyID
             grey_minting_contract = self.contract_manager.create_minting_contract(
@@ -1332,19 +1347,24 @@ class TokenOperations:
             for u in payment_utxos:
                 builder.add_input(u)
 
-            project_redeemer = pc.Redeemer(
-                UpdateToken(
-                    project_input_index=project_index,
-                    project_output_index=0,
+            # Select redeemer based on minting mode
+            if minting_mode == "free":
+                # Free mode: Use UpdateProject redeemer (requires authorization token)
+                project_redeemer = pc.Redeemer(
+                    UpdateProject(
+                        project_input_index=project_index,
+                        user_input_index=user_index,
+                        project_output_index=0,
+                    )
                 )
-            )
-            project_redeemer = pc.Redeemer(
-                UpdateProject(
-                    project_input_index=project_index,
-                    user_input_index=user_index,
-                    project_output_index=0,
+            else:
+                # Authorized mode: Use UpdateToken redeemer (contract validates authorization)
+                project_redeemer = pc.Redeemer(
+                    UpdateToken(
+                        project_input_index=project_index,
+                        project_output_index=0,
+                    )
                 )
-            )
 
             if project_info["type"] == "reference_script":
                 # For reference scripts, we need to find the actual UTXO containing the reference script
@@ -1386,17 +1406,48 @@ class TokenOperations:
 
             builder.mint = grey_multi_asset
 
-            # New project state
-            new_params = DatumProjectParams(
-                project_id=project_datum.params.project_id,
-                project_metadata=project_datum.params.project_metadata,
-                project_state=1,  # Move to token sale state
-            )
-            # Create updated project datum
+            # Create updated project datum based on minting mode
+            if minting_mode == "free":
+                # Free mode: Change project state to 1, keep stakeholders unchanged
+                new_params = DatumProjectParams(
+                    project_id=project_datum.params.project_id,
+                    project_metadata=project_datum.params.project_metadata,
+                    project_state=1,  # Move to token sale state
+                )
+                new_stakeholders = project_datum.stakeholders  # Keep original
+            else:
+                # Authorized mode: Keep state unchanged, mark stakeholder as claimed
+                new_params = DatumProjectParams(
+                    project_id=project_datum.params.project_id,
+                    project_metadata=project_datum.params.project_metadata,
+                    project_state=project_datum.params.project_state,  # Keep current state
+                )
+
+                # Get signing wallet's PKH to identify which stakeholder is claiming
+                payment_vkey_hash = self.wallet.get_payment_verification_key_hash()
+
+                # Update stakeholders: mark the authorized one as claimed
+                new_stakeholders = []
+                for stakeholder in project_datum.stakeholders:
+                    if stakeholder.pkh == payment_vkey_hash:
+                        # This is the authorized stakeholder - mark as claimed
+                        new_stakeholders.append(
+                            StakeHolderParticipation(
+                                stakeholder=stakeholder.stakeholder,
+                                pkh=stakeholder.pkh,
+                                participation=stakeholder.participation,
+                                claimed=TrueData(),  # Mark as claimed
+                            )
+                        )
+                    else:
+                        # Keep other stakeholders unchanged
+                        new_stakeholders.append(stakeholder)
+
+            # Create updated project datum with mode-specific changes
             new_project_datum = DatumProject(
                 params=new_params,
                 project_token=project_datum.project_token,
-                stakeholders=project_datum.stakeholders,
+                stakeholders=new_stakeholders,
                 certifications=project_datum.certifications,
             )
 
@@ -1460,46 +1511,89 @@ class TokenOperations:
 
     def burn_grey_tokens(
         self,
-        grey_token_policy_id: str,
-        grey_token_name: str,
-        burn_quantity: int = 1,
         project_name: Optional[str] = None,
+        burn_quantity: int = 1,
     ) -> Dict[str, Any]:
         """
         Create a burning transaction for grey tokens that only interacts with the grey contract.
         Bypasses project contract validation - grey contract always succeeds for burning.
 
         Args:
-            grey_token_policy_id: Policy ID of the grey tokens to burn
-            grey_token_name: Token name of the grey tokens to burn (hex string)
-            burn_quantity: Number of grey tokens to burn (default: 1)
             project_name: Optional project name for grey contract compilation
+            burn_quantity: Number of grey tokens to burn (default: 1)
 
         Returns:
             A dictionary containing the transaction details or an error message
         """
         try:
+            # Get project contract and NFTs contract
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+
+            if not project_contract or not project_nfts_contract:
+                return {"success": False, "error": "Project contract or NFTs contract not found"}
+
+            project_minting_policy_id = pc.ScriptHash(
+                bytes.fromhex(project_nfts_contract.policy_id)
+            )
+
+            # Find the name of the project contract being used
+            project_contract_name = self.contract_manager.get_project_name_from_contract(
+                project_contract
+            )
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
+
+            project_address = project_contract.testnet_addr
+
+            # Find project UTXO to get grey token name from datum
+            project_utxos = self.context.utxos(project_address)
+            if not project_utxos:
+                return {"success": False, "error": "No project UTXOs found"}
+
+            project_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                project_utxos, project_minting_policy_id
+            )
+            if not project_utxo_to_spend:
+                return {
+                    "success": False,
+                    "error": "No project UTXO found with specified policy ID",
+                }
+
+            # Get project datum to extract grey token name
+            try:
+                project_datum = DatumProject.from_cbor(project_utxo_to_spend.output.datum.cbor)
+            except Exception as e:
+                return {"success": False, "error": f"Failed to get project datum: {e}"}
+
+            grey_token_name = project_datum.project_token.token_name
+
+            # Dynamically compile grey minting contract with the project PolicyID
+            grey_minting_contract = self.contract_manager.create_minting_contract(
+                "grey", project_minting_policy_id
+            )
+            if not grey_minting_contract:
+                return {"success": False, "error": "Failed to compile grey minting contract"}
+
+            grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
+
             # Get user wallet address for finding UTXOs
-            from_address = self.wallet.get_address()
+            from_address = self.wallet.get_address(0)
 
             # Find UTXOs containing the grey tokens to burn
             user_utxos = self.context.utxos(from_address)
             if not user_utxos:
                 return {"success": False, "error": "No UTXOs found in wallet"}
 
-            # Convert policy ID and token name for UTXO searching
-            grey_policy_id_bytes = pc.ScriptHash(bytes.fromhex(grey_token_policy_id))
-            grey_token_name_bytes = bytes.fromhex(grey_token_name)
-
             # Find UTXOs that contain the grey tokens to burn
             grey_token_utxos = []
             total_available = 0
 
             for utxo in user_utxos:
-                if grey_policy_id_bytes in utxo.output.amount.multi_asset:
-                    asset_dict = utxo.output.amount.multi_asset[grey_policy_id_bytes]
-                    if pc.AssetName(grey_token_name_bytes) in asset_dict:
-                        token_amount = asset_dict[pc.AssetName(grey_token_name_bytes)]
+                if grey_minting_policy_id in utxo.output.amount.multi_asset:
+                    asset_dict = utxo.output.amount.multi_asset[grey_minting_policy_id]
+                    if pc.AssetName(grey_token_name) in asset_dict:
+                        token_amount = asset_dict[pc.AssetName(grey_token_name)]
                         grey_token_utxos.append(utxo)
                         total_available += token_amount
 
@@ -1509,36 +1603,13 @@ class TokenOperations:
                     "error": f"Insufficient grey tokens. Available: {total_available}, Required: {burn_quantity}",
                 }
 
-            # Get or compile the grey minting contract for burning
-            # We need a project contract to get the policy_id parameter for grey contract compilation
-            project_contract = self.contract_manager.get_project_contract(project_name)
-            if not project_contract:
-                return {
-                    "success": False,
-                    "error": "Project contract not found - needed for grey contract compilation",
-                }
-
-            # Compile grey contract with project policy_id as parameter
-            grey_minting_contract = self.contract_manager.create_minting_contract(
-                "grey", bytes.fromhex(project_contract.policy_id)
-            )
-            if not grey_minting_contract:
-                return {"success": False, "error": "Failed to compile grey minting contract"}
-
-            # Verify the policy ID matches
-            if grey_minting_contract.policy_id != grey_token_policy_id:
-                return {
-                    "success": False,
-                    "error": f"Policy ID mismatch. Expected: {grey_token_policy_id}, Got: {grey_minting_contract.policy_id}",
-                }
-
             # Select sufficient UTXOs to cover the burn amount
             selected_utxos = []
             selected_tokens = 0
             for utxo in grey_token_utxos:
                 selected_utxos.append(utxo)
-                asset_dict = utxo.output.amount.multi_asset[grey_policy_id_bytes]
-                token_amount = asset_dict[pc.AssetName(grey_token_name_bytes)]
+                asset_dict = utxo.output.amount.multi_asset[grey_minting_policy_id]
+                token_amount = asset_dict[pc.AssetName(grey_token_name)]
                 selected_tokens += token_amount
                 if selected_tokens >= burn_quantity:
                     break
@@ -1563,12 +1634,12 @@ class TokenOperations:
             builder.add_input(fee_utxos[0])
 
             # Create negative mint value (burning)
-            grey_asset = pc.Asset({pc.AssetName(grey_token_name_bytes): -burn_quantity})
-            grey_multi_asset = pc.MultiAsset({grey_policy_id_bytes: grey_asset})
+            grey_asset = pc.Asset({pc.AssetName(grey_token_name): -burn_quantity})
+            grey_multi_asset = pc.MultiAsset({grey_minting_policy_id: grey_asset})
 
-            # Add minting script for burning with Burn redeemer
+            # Add minting script for burning with BurnGrey redeemer
             builder.add_minting_script(
-                script=grey_minting_contract.cbor, redeemer=pc.Redeemer(Burn())
+                script=grey_minting_contract.cbor, redeemer=pc.Redeemer(BurnGrey())
             )
 
             # Set the burn amount in the transaction
@@ -1579,8 +1650,8 @@ class TokenOperations:
 
             if remaining_tokens > 0:
                 # Return remaining grey tokens to user
-                remaining_asset = pc.Asset({pc.AssetName(grey_token_name_bytes): remaining_tokens})
-                remaining_multi_asset = pc.MultiAsset({grey_policy_id_bytes: remaining_asset})
+                remaining_asset = pc.Asset({pc.AssetName(grey_token_name): remaining_tokens})
+                remaining_multi_asset = pc.MultiAsset({grey_minting_policy_id: remaining_asset})
 
                 # Calculate minimum lovelace for token output
                 token_value = pc.Value(0, remaining_multi_asset)
@@ -1604,8 +1675,8 @@ class TokenOperations:
                 "success": True,
                 "transaction": signed_tx,
                 "tx_id": signed_tx.id.payload.hex(),
-                "grey_token_name": grey_token_name,
-                "grey_policy_id": grey_token_policy_id,
+                "grey_token_name": grey_token_name.hex(),
+                "grey_policy_id": grey_minting_contract.policy_id,
                 "burned_quantity": burn_quantity,
                 "remaining_tokens": remaining_tokens,
                 "total_burned_value": burn_quantity,

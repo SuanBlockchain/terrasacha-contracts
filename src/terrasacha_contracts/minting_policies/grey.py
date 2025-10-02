@@ -14,21 +14,14 @@ class BurnGrey(PlutusData):
     CONSTR_ID = 1
 
 def validate_mint_operation(
-    project_id: PolicyId, project_reference_input: TxOut, own_policy_id: PolicyId, our_minted: Dict[TokenName, int]
-) -> DatumProject:
+    project_datum_value: DatumProject, own_policy_id: PolicyId, our_minted: Dict[TokenName, int]
+) -> None:
     """
     Validate that the project input is valid and return the project datum.
     - Project input must contain the project NFT
     - Project token policy must match our minting policy
     - Project must be in appropriate state for token operations
     """
-    
-    assert check_token_present(
-        project_id, project_reference_input
-    ), "Project input must have the project token"
-    project_datum = project_reference_input.datum
-    assert isinstance(project_datum, SomeOutputDatum)
-    project_datum_value: DatumProject = project_datum.datum
 
     # Validate project token configuration
     datum_token_policy_id = project_datum_value.project_token.policy_id
@@ -37,55 +30,46 @@ def validate_mint_operation(
     datum_token_name = project_datum_value.project_token.token_name
     assert our_minted.get(datum_token_name, 0) > 0, "Must mint the correct token"
 
-    return project_datum_value
-
-def validate_project_state_for_mint(project_datum: DatumProject, project_output: TxOut, our_minted: Dict[TokenName, int]) -> None:
+def validate_project_state_for_mint(project_input_datum_value: DatumProject, project_output_datum_value: DatumProject, our_minted: Dict[TokenName, int], signatories: List[PubKeyHash]) -> None:
     # Check if this is the "free minting" period (state 0→1 transition)
-    project_input_state = project_datum.params.project_state
-    # assert project_input_state == 0, "Can only mint during free minting period (input state must be 0)"
-
-    # Find project output state from outputs
-    project_output_datum = project_output.datum
-    assert isinstance(project_output_datum, SomeOutputDatum)
-    project_output_datum_value: DatumProject = project_output_datum.datum
+    project_input_state = project_input_datum_value.params.project_state
     project_output_state = project_output_datum_value.params.project_state
 
-#     # assert project_output_state == 1, "Can only mint during free minting period (output state must be 1)"
-
     is_free_minting_period = project_input_state == 0 and project_output_state == 1
+    minted_quantity = our_minted.get(project_input_datum_value.project_token.token_name, 0)
     if is_free_minting_period:
 #         # During free minting period (state 0→1), any amount can be minted
 #         # No additional validations required - this is the initial token distribution
-        total_supply = project_datum.project_token.total_supply
-        total_participation = get_total_participation(project_datum.stakeholders)
-        minted_quantity = our_minted.get(project_datum.project_token.token_name, 0)
+        total_supply = project_input_datum_value.project_token.total_supply
+        total_participation = get_total_participation(project_input_datum_value.stakeholders)
         assert minted_quantity + total_participation == total_supply, "Minted quantity plus stakeholder participation cannot exceed total supply"
     else:
-        assert False, "Can only mint during free minting period (0→1 transition)"
-        #  elif project_datum.params.project_state >= 1:
-#         # After free minting period, only authorized stakeholders can mint their allocation
-#         assert len(tx_info.signatories) > 0, "Transaction must be signed by a stakeholder"
-#         assert (
-#             len(project_datum.stakeholders) > 0
-#         ), "Project must have stakeholders for token operations"
+        assert project_input_datum_value.params.project_state == 1, "Can only mint during free minting period (input state must be 0)"
+        assert len(signatories) > 0, "Transaction must be signed by a stakeholder"
+        assert (
+            len(project_input_datum_value.stakeholders) > 0
+        ), "Project must have stakeholders for token operations"
 
-#         # Find the authorized stakeholder
-#         found_authorized_stakeholder = False
-#         authorized_stakeholder = project_datum.stakeholders[0]  # Default to avoid None type
+        # Find the authorized stakeholder
+        found_authorized_stakeholder = False
+        # authorized_stakeholder = project_input_datum_value.stakeholders[0]  # Default to avoid None type
 
-#         for signer_pkh in tx_info.signatories:
-#             for stakeholder in project_datum.stakeholders:
-#                 if stakeholder.pkh == signer_pkh:
-#                     authorized_stakeholder = stakeholder
-#                     found_authorized_stakeholder = True
+        for signer_pkh in signatories:
+            for stakeholder in project_input_datum_value.stakeholders:
+                if stakeholder.pkh == signer_pkh:
+                    # authorized_stakeholder = stakeholder
+                    assert stakeholder.claimed == FalseData(), "Stakeholder has already claimed their tokens"
+                    assert (
+                        minted_quantity == stakeholder.participation
+                    ), "Must mint exactly the stakeholder's full participation amount"
+                    found_authorized_stakeholder = True
+                else:
+                    assert False, "Non-authorized stakeholders cannot change their claim status"
 
-#         assert (
-#             found_authorized_stakeholder
-#         ), "Transaction must be signed by a registered stakeholder"
-#         assert authorized_stakeholder.claimed == FalseData(), "Stakeholder has already claimed their tokens"
-#         assert (
-#             minted_amount == authorized_stakeholder.participation
-#         ), "Must mint exactly the stakeholder's full participation amount"
+        assert (
+            found_authorized_stakeholder
+        ), "Transaction must be signed by a registered stakeholder"     
+
 
 def validate_burn_operation(
     our_minted: Dict[bytes, int],
@@ -143,12 +127,28 @@ def validator(
         # assert True, "Minting always succeeds for now"
         # Validate project reference and get datum
         project_reference_input = tx_info.inputs[redeemer.project_input_index].resolved
-        project_datum = validate_mint_operation(project_id, project_reference_input, own_policy_id, our_minted)
+        
+        assert check_token_present(
+            project_id, project_reference_input
+        ), "Project input must have the project token"
+
+        project_datum = project_reference_input.datum
+        assert isinstance(project_datum, SomeOutputDatum), "Project input must have a datum"
+        project_input_datum_value: DatumProject = project_datum.datum
+
+        validate_mint_operation(project_input_datum_value, own_policy_id, our_minted)
 
         project_output = resolve_linear_output(
             project_reference_input, tx_info, redeemer.project_output_index
         )
-        validate_project_state_for_mint(project_datum, project_output, our_minted)
+
+        project_output_datum = project_output.datum
+        assert isinstance(project_output_datum, SomeOutputDatum), "Project output must have a datum"
+        project_output_datum_value: DatumProject = project_output_datum.datum
+
+        signatories = tx_info.signatories
+
+        validate_project_state_for_mint(project_input_datum_value, project_output_datum_value, our_minted, signatories)
 
     elif isinstance(redeemer, BurnGrey):
         # validate_burn_operation(our_minted, project_datum, tx_info, own_policy_id)

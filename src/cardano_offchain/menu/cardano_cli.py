@@ -1360,6 +1360,30 @@ class CardanoCLI:
                 input("Press Enter to continue...")
                 return
 
+        # Select minting mode
+        self.menu.print_section("MINTING MODE SELECTION")
+        self.menu.print_info("Choose minting mode:")
+        print("│ 1. Free Minting (requires project NFT authorization token in wallet)")
+        print("│ 2. Authorized Minting (any wallet, onchain contract validates authorization)")
+        print()
+
+        try:
+            mode_choice = int(self.menu.get_input("Select minting mode (1-2)"))
+            if mode_choice == 1:
+                minting_mode = "free"
+                self.menu.print_info("Selected: Free Minting (requires authorization token)")
+            elif mode_choice == 2:
+                minting_mode = "authorized"
+                self.menu.print_info("Selected: Authorized Minting (contract validates)")
+            else:
+                self.menu.print_error("Invalid mode selection")
+                input("Press Enter to continue...")
+                return
+        except (ValueError, IndexError):
+            self.menu.print_error("Invalid input for mode selection")
+            input("Press Enter to continue...")
+            return
+
         # Get grey token quantity
         try:
             quantity_input = self.menu.get_input("Enter number of grey tokens to mint (default: 1)")
@@ -1400,7 +1424,9 @@ class CardanoCLI:
         # Show transaction preview
         self.menu.print_section("TRANSACTION PREVIEW")
         current_wallet = self.wallet_manager.get_default_wallet_name()
+        mode_display = "Free Minting" if minting_mode == "free" else "Authorized Minting"
         print(f"│ Project Contract: {selected_project}")
+        print(f"│ Minting Mode: {mode_display}")
         print(f"│ Grey Tokens to Mint: {grey_token_quantity:,}")
         print(f"│ Wallet: {current_wallet} (will pay fees and receive tokens)")
 
@@ -1416,6 +1442,7 @@ class CardanoCLI:
             result = self.token_operations.create_grey_minting_transaction(
                 project_name=selected_project,
                 grey_token_quantity=grey_token_quantity,
+                minting_mode=minting_mode,
             )
 
             if result["success"]:
@@ -1455,192 +1482,132 @@ class CardanoCLI:
         """Burn grey tokens - bypasses project contract validation"""
         self.menu.print_header("GREY TOKEN BURNING", "Burn Grey Tokens")
 
-        try:
-            # Ask user to select wallet for token burning
-            wallet_selection = self.select_wallet_or_address("burning grey tokens", mode="wallet_only", allow_custom_address=False)
-            if not wallet_selection:
-                self.menu.print_info("Wallet selection cancelled")
+        contracts = self.contract_manager.list_contracts()
+        if not contracts:
+            self.menu.print_error("No contracts available for grey token burning")
+            input("Press Enter to continue...")
+            return
+
+        # Project contract selection
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            self.menu.print_error("No project contracts found")
+            input("Press Enter to continue...")
+            return
+        elif len(project_contracts) == 1:
+            # Only one project contract available
+            selected_project = project_contracts[0]
+            self.menu.print_info(f"Using project contract: {selected_project.upper()}")
+        else:
+            # Multiple project contracts - let user choose
+            self.menu.print_section("PROJECT CONTRACT SELECTION")
+            self.menu.print_info("Multiple project contracts available:")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+
+            try:
+                choice = (
+                    int(
+                        self.menu.get_input(
+                            f"Select project contract for grey token burning (1-{len(project_contracts)})"
+                        )
+                    )
+                    - 1
+                )
+                if 0 <= choice < len(project_contracts):
+                    selected_project = project_contracts[choice]
+                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                else:
+                    self.menu.print_error("Invalid project selection")
+                    input("Press Enter to continue...")
+                    return
+            except (ValueError, IndexError):
+                self.menu.print_error("Invalid input for project selection")
                 input("Press Enter to continue...")
                 return
 
-            # Switch to selected wallet if different from current
+        # Ask for wallet to use for transaction (containing tokens to burn)
+        wallet_selection = self.select_wallet_or_address(
+            "transaction (containing grey tokens to burn)",
+            mode="wallet_only",
+            allow_custom_address=False
+        )
+        if not wallet_selection:
+            self.menu.print_info("Grey token burning cancelled")
+            input("Press Enter to continue...")
+            return
+
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
             current_wallet = self.wallet_manager.get_default_wallet_name()
-            if wallet_selection.wallet_name and wallet_selection.wallet_name != current_wallet:
-                success = self.switch_to_wallet(wallet_selection.wallet_name)
-                if not success:
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
                     self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
                     input("Press Enter to continue...")
                     return
-                self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
 
-            # Get UTXOs from selected wallet
-            user_utxos = self.context.utxos(wallet_selection.address)
+        # Get grey token quantity
+        try:
+            quantity_input = self.menu.get_input("Enter number of grey tokens to burn (default: 1)")
+            burn_quantity = int(quantity_input) if quantity_input.strip() else 1
 
-            if not user_utxos:
-                self.menu.print_error("No UTXOs found in wallet")
+            if burn_quantity <= 0:
+                self.menu.print_error("Quantity must be positive")
                 input("Press Enter to continue...")
                 return
 
-            # Get stored grey token contracts
-            grey_contracts = self.contract_manager.list_grey_token_contracts()
-            if not grey_contracts:
-                self.menu.print_error("No grey token contracts found. Setup grey tokens first.")
-                input("Press Enter to continue...")
-                return
+        except ValueError:
+            self.menu.print_error("Invalid quantity. Please enter a number.")
+            input("Press Enter to continue...")
+            return
 
-            # Find grey tokens in wallet that match stored contracts
-            grey_tokens = {}  # {contract_name: {policy_id: {token_name: amount}}}
+        # Show transaction preview
+        self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
+        print(f"│ Project Contract: {selected_project}")
+        print(f"│ Grey Tokens to Burn: {burn_quantity:,}")
+        print(f"│ Wallet: {current_wallet} (containing tokens)")
 
-            for contract_name in grey_contracts:
-                grey_contract = self.contract_manager.get_grey_token_contract(
-                    contract_name.replace("_grey", "")  # Extract project name
-                )
-                if not grey_contract:
-                    continue
+        if not self.menu.confirm_action("Proceed with grey token burning?"):
+            self.menu.print_info("Grey token burning cancelled")
+            input("Press Enter to continue...")
+            return
 
-                policy_id_hex = grey_contract.policy_id
-                grey_tokens[contract_name] = {}
-
-                # Check user UTXOs for tokens with this policy ID
-                for utxo in user_utxos:
-                    if utxo.output.amount.multi_asset:
-                        for policy_id, assets in utxo.output.amount.multi_asset.items():
-                            if policy_id.payload.hex() == policy_id_hex:
-                                if policy_id_hex not in grey_tokens[contract_name]:
-                                    grey_tokens[contract_name][policy_id_hex] = {}
-
-                                for asset_name, amount in assets.items():
-                                    token_name_hex = asset_name.payload.hex()
-                                    if (
-                                        token_name_hex
-                                        not in grey_tokens[contract_name][policy_id_hex]
-                                    ):
-                                        grey_tokens[contract_name][policy_id_hex][
-                                            token_name_hex
-                                        ] = 0
-                                    grey_tokens[contract_name][policy_id_hex][
-                                        token_name_hex
-                                    ] += amount
-
-            # Filter out contracts with no tokens
-            grey_tokens = {k: v for k, v in grey_tokens.items() if v}
-
-            if not grey_tokens:
-                self.menu.print_error("No grey tokens found in wallet for stored contracts")
-                input("Press Enter to continue...")
-                return
-
-            # Display available grey tokens
-            self.menu.print_info("Available Grey Tokens:")
-            token_options = []
-            option_num = 1
-
-            for contract_name, policy_data in grey_tokens.items():
-                project_name = contract_name.replace("_grey", "")
-                for policy_id, tokens in policy_data.items():
-                    for token_name, amount in tokens.items():
-                        short_policy = f"{policy_id[:8]}...{policy_id[-8:]}"
-                        short_token = (
-                            f"{token_name[:8]}...{token_name[-8:]}"
-                            if len(token_name) > 16
-                            else token_name
-                        )
-                        self.menu.print_menu_option(
-                            f"{option_num}",
-                            f"Project: {project_name}, Policy: {short_policy}, Token: {short_token}, Amount: {amount}",
-                        )
-                        token_options.append((policy_id, token_name, amount, project_name))
-                        option_num += 1
-
-            if not token_options:
-                self.menu.print_error("No valid grey tokens found")
-                input("Press Enter to continue...")
-                return
-
-            # Token selection
-            while True:
-                try:
-                    choice = (
-                        input(f"\nSelect token to burn (1-{len(token_options)}) or 'q' to quit: ")
-                        .strip()
-                        .lower()
-                    )
-                    if choice == "q":
-                        return
-
-                    token_index = int(choice) - 1
-                    if 0 <= token_index < len(token_options):
-                        (
-                            selected_policy_id,
-                            selected_token_name,
-                            available_amount,
-                            selected_project,
-                        ) = token_options[token_index]
-                        break
-                    else:
-                        self.menu.print_error(
-                            f"Please enter a number between 1 and {len(token_options)}"
-                        )
-                except ValueError:
-                    self.menu.print_error("Please enter a valid number")
-
-            # Quantity selection
-            while True:
-                try:
-                    quantity_input = input(
-                        f"\nEnter quantity to burn (max: {available_amount}): "
-                    ).strip()
-                    burn_quantity = int(quantity_input)
-                    if 1 <= burn_quantity <= available_amount:
-                        break
-                    else:
-                        self.menu.print_error(
-                            f"Please enter a quantity between 1 and {available_amount}"
-                        )
-                except ValueError:
-                    self.menu.print_error("Please enter a valid number")
-
-            # Confirmation
-            self.menu.print_info(f"\nBurning Details:")
-            self.menu.print_info(f"  - Wallet: {wallet_selection.wallet_name}")
-            self.menu.print_info(f"  - Project: {selected_project}")
-            self.menu.print_info(f"  - Policy ID: {selected_policy_id}")
-            self.menu.print_info(f"  - Token Name: {selected_token_name}")
-            self.menu.print_info(f"  - Quantity: {burn_quantity}")
-
-            confirm = input("\nProceed with burning? (y/n): ").strip().lower()
-            if confirm != "y":
-                self.menu.print_info("Burning cancelled")
-                input("Press Enter to continue...")
-                return
-
-            # Create and submit burning transaction
+        try:
             self.menu.print_info("Creating grey token burning transaction...")
 
+            # Create the grey token burning transaction
             result = self.token_operations.burn_grey_tokens(
-                grey_token_policy_id=selected_policy_id,
-                grey_token_name=selected_token_name,
-                burn_quantity=burn_quantity,
                 project_name=selected_project,
+                burn_quantity=burn_quantity,
             )
 
             if result["success"]:
-                self.menu.print_success("Grey token burning transaction created successfully!")
-                self.menu.print_info(f"Transaction ID: {result['tx_id']}")
-                self.menu.print_info(f"Burned Quantity: {result['burned_quantity']}")
-                self.menu.print_info(f"Remaining Tokens: {result['remaining_tokens']}")
+                self.menu.print_success("✓ Grey token burning transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Grey Token Name: {result['grey_token_name']}")
+                print(f"│ Grey Policy ID: {result['grey_policy_id']}")
+                print(f"│ Quantity Burned: {result['burned_quantity']:,}")
+                print(f"│ Remaining Tokens: {result['remaining_tokens']:,}")
 
-                # Submit transaction
-                submit = input("\nSubmit transaction to blockchain? (y/n): ").strip().lower()
-                if submit == "y":
-                    try:
-                        self.context.submit_tx(result["transaction"])
-                        self.menu.print_success("Transaction submitted successfully!")
-                        self.menu.print_info(f"Transaction ID: {result['tx_id']}")
-                    except Exception as submit_error:
-                        self.menu.print_error(f"Failed to submit transaction: {submit_error}")
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ Grey token burning transaction submitted!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info(
+                            "Grey tokens have been burned successfully"
+                        )
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
                 else:
-                    self.menu.print_info("Transaction created but not submitted")
+                    self.menu.print_info("Transaction not submitted")
             else:
                 self.menu.print_error(
                     f"Failed to create grey token burning transaction: {result['error']}"
@@ -4038,34 +4005,28 @@ class CardanoCLI:
             self.menu.print_error(f"Invalid quantity: {e}")
             return
 
-        # Handle real certification date based on project state
-        if project_state == 1:
-            # Project state is 1: real fields must be empty
-            real_certification_date = 0
-            real_cert_quantity = 0
-            self.menu.print_info("Real certification fields set to empty (project state is 1)")
-        else:
-            real_date = self.menu.get_input(
-                "Enter real certification date (POSIX timestamp, default: same as cert date)"
-            )
-            try:
-                real_certification_date = int(real_date) if real_date.strip() else certification_date
-                if real_certification_date < 0:
-                    raise ValueError("Real certification date must be positive")
-            except ValueError as e:
-                self.menu.print_error(f"Invalid real certification date: {e}")
-                return
+        # Project state is 1: real fields must be empty
+        real_date = self.menu.get_input(
+            "Enter real certification date (POSIX timestamp, default: 0)"
+        )
+        try:
+            real_certification_date = int(real_date) if real_date.strip() else 0
+            if real_certification_date < 0:
+                raise ValueError("Real certification date must be positive")
+        except ValueError as e:
+            self.menu.print_error(f"Invalid real certification date: {e}")
+            return
 
-            real_quantity = self.menu.get_input(
-                "Enter real quantity certified (default: same as quantity)"
-            )
-            try:
-                real_cert_quantity = int(real_quantity) if real_quantity.strip() else cert_quantity
-                if real_cert_quantity < 0:
-                    raise ValueError("Real quantity must be non-negative")
-            except ValueError as e:
-                self.menu.print_error(f"Invalid real quantity: {e}")
-                return
+        real_quantity = self.menu.get_input(
+            "Enter real quantity certified (default: 0)"
+        )
+        try:
+            real_cert_quantity = int(real_quantity) if real_quantity.strip() else 0
+            if real_cert_quantity < 0:
+                raise ValueError("Real quantity must be non-negative")
+        except ValueError as e:
+            self.menu.print_error(f"Invalid real quantity: {e}")
+            return
 
         new_certification = Certification(
             certification_date=certification_date,

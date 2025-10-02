@@ -97,14 +97,6 @@ def validate_stakeholder_claim(
     for i in range(len(old_datum.stakeholders)):
         old_stakeholder = old_datum.stakeholders[i]
         new_stakeholder = new_datum.stakeholders[i]
-        
-        # These fields must remain unchanged in all cases
-        assert (old_stakeholder.stakeholder == new_stakeholder.stakeholder
-                    ), "Stakeholder identity cannot change"
-        assert old_stakeholder.pkh == new_stakeholder.pkh, "Stakeholder PKH cannot change"
-        assert (
-            old_stakeholder.participation == new_stakeholder.participation
-        ), "Stakeholder participation cannot change"
 
         if old_stakeholder.pkh == authorized_stakeholder_pkh:
             # This is the authorized stakeholder - validate their claim
@@ -114,9 +106,7 @@ def validate_stakeholder_claim(
             assert new_stakeholder.claimed == TrueData(), "Authorized stakeholder must be marked as claimed"
         else:
             # Non-authorized stakeholders cannot change ANY field
-            assert (
-                old_stakeholder.claimed == new_stakeholder.claimed
-            ), "Non-authorized stakeholders cannot change their claimed status"
+            assert False, "Non-authorized stakeholders cannot change their claim status"
 
 def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> None:
     """
@@ -160,7 +150,6 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             old_datum.project_token.total_supply == new_datum.project_token.total_supply
         ), "Total supply cannot be changed after project lock (state >= 1)"
 
-        # All stakeholder data must be identical
         assert len(old_datum.stakeholders) == len(
             new_datum.stakeholders
         ), "Stakeholders count cannot change after project lock (state >= 1)"
@@ -170,12 +159,14 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             assert (
                 old_stakeholder.stakeholder == new_stakeholder.stakeholder
             ), "Stakeholder identity cannot change after project lock (state >= 1)"
-            # assert (
-            #     old_stakeholder.pkh == new_stakeholder.pkh
-            # ), "Stakeholder PKH cannot change after project lock (state >= 1)"
             assert (
                 old_stakeholder.participation == new_stakeholder.participation
             ), "Stakeholder participation cannot change after project lock (state >= 1)"
+            # Between states 1 and 2, it is possible to update pkh in state 1
+            # Claim status must remain always constant under this action
+            assert (
+                old_stakeholder.claimed == new_stakeholder.claimed
+            ), "Stakeholder claimed status cannot change after project lock (state >= 1)"
 
         # All certification data must be identical
         assert len(old_datum.certifications) == len(
@@ -198,6 +189,14 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
                 assert (
                     new_cert.real_quantity == 0
                 ), "Real certification quantity must be empty in project state 1"
+            elif old_datum.params.project_state == 2:
+                # In state 2, real values can be updated (after verification)
+                assert (
+                    old_cert.real_certification_date <= new_cert.real_certification_date
+                ), "Real certification date can only move forward in project state 2"
+                assert (
+                    old_cert.real_quantity <= new_cert.real_quantity
+                ), "Real certification quantity can only move forward in project state 2"
 
     else:
         ##################################################################################################
@@ -212,12 +211,12 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             # Participation must be non-negative
             assert stakeholder.participation >= 0, "Stakeholder participation must be non-negative"
             total_participation += stakeholder.participation
-        #     assert (
-        #         stakeholder.claimed == FalseData()
-        # ), "Sum of stakeholder participation cannot exceed total supply"
             assert (
-                total_participation <= new_datum.project_token.total_supply
-            ), "Sum of stakeholder participation cannot exceed total supply"
+                stakeholder.claimed == FalseData()
+            ), "Stakeholder claimed status cannot change after project lock (state >= 1)"
+        assert (
+            total_participation <= new_datum.project_token.total_supply
+        ), "Sum of stakeholder participation cannot exceed total supply"
 
         # Certification validation rules
         total_certification_quantity = 0
@@ -236,6 +235,9 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
 
             assert cert.certification_date >= 0, "Certification date must be non-negative"
             assert cert.quantity >= 0, "Certification quantity must be non-negative"
+        
+        assert (total_certification_quantity == new_datum.project_token.total_supply
+                    ), "Sum of certification quantities must equal total supply"
 
 def validator(
     token_policy_id: PolicyId,
