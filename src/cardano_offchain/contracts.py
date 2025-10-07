@@ -1155,6 +1155,146 @@ class ContractManager:
         """
         return list(self.contracts.keys())
 
+    def get_contract_datum(self, contract_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Query and decode the datum from a contract's UTXO on the blockchain
+
+        Args:
+            contract_name: Name of the contract to query (e.g., "protocol", "project", "project_1")
+
+        Returns:
+            Dictionary containing decoded datum data or None if not found/invalid
+        """
+        if contract_name not in self.contracts:
+            return {
+                "success": False,
+                "error": f"Contract '{contract_name}' not found in compiled contracts"
+            }
+
+        contract = self.contracts[contract_name]
+
+        # Skip minting policies - they don't have UTXOs with datums
+        if contract_name.endswith("_nfts") or contract_name.endswith("_grey"):
+            return {
+                "success": False,
+                "error": f"'{contract_name}' is a minting policy and doesn't have datum data"
+            }
+
+        try:
+            # Get contract address
+            contract_address = (
+                contract.testnet_addr
+                if self.chain_context.cardano_network == pc.Network.TESTNET
+                else contract.mainnet_addr
+            )
+
+            # Query UTXOs at the contract address
+            try:
+                utxos = self.context.utxos(contract_address)
+            except Exception as api_error:
+                if hasattr(api_error, "status_code") and api_error.status_code == 404:
+                    return {
+                        "success": False,
+                        "error": f"No UTXOs found at contract address (contract never used)"
+                    }
+                raise
+
+            if not utxos:
+                return {
+                    "success": False,
+                    "error": f"No UTXOs found at contract address"
+                }
+
+            # Get the first UTXO (contracts should typically have one UTXO with the state)
+            utxo = utxos[0]
+
+            # Extract datum
+            if not utxo.output.datum:
+                return {
+                    "success": False,
+                    "error": "UTXO does not contain a datum"
+                }
+
+            # Decode datum based on contract type
+            from terrasacha_contracts.validators.protocol import DatumProtocol
+            from terrasacha_contracts.validators.project import DatumProject
+
+            try:
+                # Determine contract type and decode accordingly
+                if contract_name == "protocol":
+                    datum = DatumProtocol.from_cbor(utxo.output.datum.cbor)
+                    return {
+                        "success": True,
+                        "contract_name": contract_name,
+                        "contract_type": "protocol",
+                        "datum": {
+                            "project_admins": [admin.hex() for admin in datum.project_admins],
+                            "protocol_fee": datum.protocol_fee,
+                            "oracle_id": datum.oracle_id.hex(),
+                            "projects": [proj.hex() for proj in datum.projects]
+                        },
+                        "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
+                        "balance": utxo.output.amount.coin,
+                        "balance_ada": utxo.output.amount.coin / 1_000_000
+                    }
+                elif contract_name.startswith("project") and not contract_name.endswith("_nfts"):
+                    datum = DatumProject.from_cbor(utxo.output.datum.cbor)
+                    return {
+                        "success": True,
+                        "contract_name": contract_name,
+                        "contract_type": "project",
+                        "datum": {
+                            "params": {
+                                "project_id": datum.params.project_id.hex(),
+                                "project_metadata": datum.params.project_metadata.hex(),
+                                "project_state": datum.params.project_state
+                            },
+                            "project_token": {
+                                "policy_id": datum.project_token.policy_id.hex(),
+                                "token_name": datum.project_token.token_name.hex(),
+                                "total_supply": datum.project_token.total_supply
+                            },
+                            "stakeholders": [
+                                {
+                                    "stakeholder": sh.stakeholder.hex(),
+                                    "pkh": sh.pkh.hex(),
+                                    "participation": sh.participation,
+                                    "claimed": str(sh.claimed)
+                                }
+                                for sh in datum.stakeholders
+                            ],
+                            "certifications": [
+                                {
+                                    "certification_date": cert.certification_date,
+                                    "quantity": cert.quantity,
+                                    "real_certification_date": cert.real_certification_date,
+                                    "real_quantity": cert.real_quantity
+                                }
+                                for cert in datum.certifications
+                            ]
+                        },
+                        "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
+                        "balance": utxo.output.amount.coin,
+                        "balance_ada": utxo.output.amount.coin / 1_000_000
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Unknown contract type for datum decoding: {contract_name}"
+                    }
+
+            except Exception as decode_error:
+                return {
+                    "success": False,
+                    "error": f"Failed to decode datum: {str(decode_error)}"
+                }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to query contract datum: {str(e)}"
+            }
+
     def create_minting_contract(
         self, contract_name: str, utxo_ref: TxOutRef
     ) -> Optional[PlutusContract]:

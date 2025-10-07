@@ -2689,6 +2689,7 @@ class CardanoCLI:
                     s1.stakeholder != s2.stakeholder
                     or s1.pkh != s2.pkh
                     or s1.participation != s2.participation
+                    or str(s1.claimed) != str(s2.claimed)
                 ):
                     return False
             return True
@@ -2905,6 +2906,41 @@ class CardanoCLI:
                 f"│ Total Supply: {old_datum.project_token.total_supply:,} → {new_datum.project_token.total_supply:,}"
             )
             changes_made = True
+
+        # Check stakeholders changes
+        if len(old_datum.stakeholders) != len(new_datum.stakeholders):
+            print(f"│ Stakeholders Count: {len(old_datum.stakeholders)} → {len(new_datum.stakeholders)}")
+            changes_made = True
+        else:
+            # Check if any stakeholder details changed
+            for i, (old_sh, new_sh) in enumerate(zip(old_datum.stakeholders, new_datum.stakeholders)):
+                if (old_sh.stakeholder != new_sh.stakeholder or
+                    old_sh.pkh != new_sh.pkh or
+                    old_sh.participation != new_sh.participation or
+                    str(old_sh.claimed) != str(new_sh.claimed)):
+
+                    sh_name = old_sh.stakeholder.decode("utf-8", errors="ignore")
+                    print(f"│ Stakeholder #{i+1} ({sh_name}):")
+
+                    if old_sh.stakeholder != new_sh.stakeholder:
+                        old_name = old_sh.stakeholder.decode("utf-8", errors="ignore")
+                        new_name = new_sh.stakeholder.decode("utf-8", errors="ignore")
+                        print(f"│   Name: {old_name} → {new_name}")
+
+                    if old_sh.pkh != new_sh.pkh:
+                        old_pkh = old_sh.pkh.hex()[:16] + "..." if old_sh.pkh else "empty"
+                        new_pkh = new_sh.pkh.hex()[:16] + "..." if new_sh.pkh else "empty"
+                        print(f"│   PKH: {old_pkh} → {new_pkh}")
+
+                    if old_sh.participation != new_sh.participation:
+                        print(f"│   Participation: {old_sh.participation:,} → {new_sh.participation:,}")
+
+                    if str(old_sh.claimed) != str(new_sh.claimed):
+                        old_claimed = "True" if str(old_sh.claimed) == "TrueData()" else "False"
+                        new_claimed = "True" if str(new_sh.claimed) == "TrueData()" else "False"
+                        print(f"│   Claimed: {old_claimed} → {new_claimed}")
+
+                    changes_made = True
 
         # Check certifications changes
         if len(old_datum.certifications) != len(new_datum.certifications):
@@ -3344,12 +3380,13 @@ class CardanoCLI:
             self.menu.print_menu_option("11", "Mint Grey Tokens", "🪙")
             self.menu.print_menu_option("12", "Burn Grey Tokens", "🔥")
             self.menu.print_separator()
-            self.menu.print_menu_option("13", "Delete Empty Contract", "🗑")
-            self.menu.print_menu_option("14", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("13", "Query Contract Datum", "🔍")
+            self.menu.print_menu_option("14", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("15", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-14)")
+            choice = self.menu.get_input("Select an option (0-15)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3418,8 +3455,10 @@ class CardanoCLI:
             elif choice == "12":
                 self.burn_grey_tokens_menu()
             elif choice == "13":
-                self.delete_empty_contract_menu()
+                self.query_contract_datum_menu()
             elif choice == "14":
+                self.delete_empty_contract_menu()
+            elif choice == "15":
                 self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
@@ -3585,6 +3624,148 @@ class CardanoCLI:
             self.menu.print_error("Invalid input. Please enter a number.")
         except Exception as e:
             self.menu.print_error(f"❌ Compilation error: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def query_contract_datum_menu(self):
+        """Query and display datum data from Protocol or Project contracts on-chain"""
+        self.menu.print_header("QUERY CONTRACT DATUM", "View On-Chain Contract State")
+
+        contracts = self.contract_manager.list_contracts()
+        if not contracts:
+            self.menu.print_error("No contracts available")
+            input("\nPress Enter to continue...")
+            return
+
+        # Filter for contracts that have datums (spending validators only)
+        queryable_contracts = [
+            name for name in contracts
+            if not name.endswith(("_nfts", "_grey"))
+        ]
+
+        if not queryable_contracts:
+            self.menu.print_error("No queryable contracts found (only minting policies exist)")
+            input("\nPress Enter to continue...")
+            return
+
+        self.menu.print_section("AVAILABLE CONTRACTS TO QUERY")
+        for i, contract_name in enumerate(queryable_contracts, 1):
+            contract_type = "Protocol" if contract_name == "protocol" else "Project"
+            print(f"│ {i}. {contract_name.upper()} ({contract_type})")
+
+        print()
+
+        try:
+            choice = int(
+                self.menu.get_input(
+                    f"Select contract to query (1-{len(queryable_contracts)}, or 0 to cancel)"
+                )
+            )
+            if choice == 0:
+                self.menu.print_info("Query cancelled")
+                input("\nPress Enter to continue...")
+                return
+            elif 1 <= choice <= len(queryable_contracts):
+                contract_name = queryable_contracts[choice - 1]
+
+                self.menu.print_info(f"Querying datum for '{contract_name}'...")
+
+                result = self.contract_manager.get_contract_datum(contract_name)
+
+                if not result["success"]:
+                    self.menu.print_error(f"Failed to query datum: {result['error']}")
+                    input("\nPress Enter to continue...")
+                    return
+
+                # Display the datum data based on contract type
+                self.menu.print_section("CONTRACT STATE")
+                print(f"│ Contract: {result['contract_name'].upper()}")
+                print(f"│ Type: {result['contract_type'].capitalize()}")
+                print(f"│ UTXO: {result['utxo_ref']}")
+                print(f"│ Balance: {result['balance_ada']:.6f} ADA")
+                print()
+
+                if result["contract_type"] == "protocol":
+                    self.menu.print_section("PROTOCOL DATUM")
+                    datum = result["datum"]
+
+                    print(f"│ Protocol Fee: {datum['protocol_fee']} lovelace")
+                    print(f"│ Oracle ID: {datum['oracle_id']}")
+                    print()
+
+                    print(f"│ Project Admins ({len(datum['project_admins'])}):")
+                    if datum['project_admins']:
+                        for i, admin in enumerate(datum['project_admins'], 1):
+                            print(f"│   {i}. {admin}")
+                    else:
+                        print(f"│   (none)")
+                    print()
+
+                    print(f"│ Projects ({len(datum['projects'])}):")
+                    if datum['projects']:
+                        for i, proj in enumerate(datum['projects'], 1):
+                            print(f"│   {i}. {proj}")
+                    else:
+                        print(f"│   (none)")
+
+                elif result["contract_type"] == "project":
+                    self.menu.print_section("PROJECT DATUM")
+                    datum = result["datum"]
+
+                    # Project Parameters
+                    print(f"│ PROJECT PARAMETERS:")
+                    print(f"│   Project ID: {datum['params']['project_id']}")
+                    print(f"│   Metadata: {datum['params']['project_metadata']}")
+
+                    state_names = {0: "Initialized", 1: "Distributed", 2: "Certified", 3: "Closed"}
+                    state_str = state_names.get(datum['params']['project_state'], f"Unknown({datum['params']['project_state']})")
+                    print(f"│   State: {state_str} ({datum['params']['project_state']})")
+                    print()
+
+                    # Project Token
+                    print(f"│ PROJECT TOKEN:")
+                    print(f"│   Policy ID: {datum['project_token']['policy_id']}")
+                    print(f"│   Token Name: {datum['project_token']['token_name']}")
+                    print(f"│   Total Supply: {datum['project_token']['total_supply']}")
+                    print()
+
+                    # Stakeholders
+                    print(f"│ STAKEHOLDERS ({len(datum['stakeholders'])}):")
+                    if datum['stakeholders']:
+                        for i, sh in enumerate(datum['stakeholders'], 1):
+                            print(f"│   {i}. Stakeholder: {sh['stakeholder']}")
+                            print(f"│      PKH: {sh['pkh']}")
+                            print(f"│      Participation: {sh['participation']}")
+                            print(f"│      Claimed: {sh['claimed']}")
+                            if i < len(datum['stakeholders']):
+                                print(f"│")
+                    else:
+                        print(f"│   (none)")
+                    print()
+
+                    # Certifications
+                    print(f"│ CERTIFICATIONS ({len(datum['certifications'])}):")
+                    if datum['certifications']:
+                        for i, cert in enumerate(datum['certifications'], 1):
+                            print(f"│   {i}. Certification Date: {cert['certification_date']}")
+                            print(f"│      Quantity: {cert['quantity']}")
+                            print(f"│      Real Cert Date: {cert['real_certification_date']}")
+                            print(f"│      Real Quantity: {cert['real_quantity']}")
+                            if i < len(datum['certifications']):
+                                print(f"│")
+                    else:
+                        print(f"│   (none)")
+
+                self.menu.print_footer()
+                self.menu.print_success("✓ Datum query completed successfully")
+
+            else:
+                self.menu.print_error("Invalid selection")
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a number.")
+        except Exception as e:
+            self.menu.print_error(f"Query failed: {str(e)}")
 
         input("\nPress Enter to continue...")
 
@@ -3939,7 +4120,23 @@ class CardanoCLI:
                     return
             # If new_pkh is empty (user pressed Enter), keep current PKH (no action needed)
 
-            # Note: Amount claimed is automatically updated when grey tokens are minted
+            # Edit claimed status
+            current_claimed = str(stakeholder.claimed)
+            claimed_display = "True" if current_claimed == "TrueData()" else "False"
+            new_claimed_input = self.menu.get_input(
+                f"Edit claimed status? Current: {claimed_display} (enter 'true' or 'false', or press Enter to keep)"
+            )
+            if new_claimed_input.strip():
+                claimed_str = new_claimed_input.strip().lower()
+                if claimed_str in ["true", "t", "1", "yes"]:
+                    stakeholder.claimed = TrueData()
+                    self.menu.print_success("✓ Claimed status set to True")
+                elif claimed_str in ["false", "f", "0", "no"]:
+                    from opshin.prelude import FalseData
+                    stakeholder.claimed = FalseData()
+                    self.menu.print_success("✓ Claimed status set to False")
+                else:
+                    self.menu.print_warning("Invalid claimed status - keeping current value")
 
             self.menu.print_success(f"✓ Updated stakeholder: {current_name}")
 
@@ -3978,8 +4175,9 @@ class CardanoCLI:
         for i, stakeholder in enumerate(stakeholders_list):
             name = stakeholder.stakeholder.decode("utf-8", errors="ignore")
             pkh_display = stakeholder.pkh.hex()[:16] + "..." if stakeholder.pkh else "empty"
+            claimed_display = "True" if str(stakeholder.claimed) == "TrueData()" else "False"
             print(
-                f"│   {i+1}. {name} - PKH: {pkh_display} - Participation: {stakeholder.participation:,}"
+                f"│   {i+1}. {name} - PKH: {pkh_display} - Participation: {stakeholder.participation:,} - Claimed: {claimed_display}"
             )
             total_participation += stakeholder.participation
         print(f"│ Total Participation: {total_participation:,}")

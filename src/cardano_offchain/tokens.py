@@ -5,6 +5,8 @@ Pure token functionality without console dependencies.
 Handles minting, burning, and token management operations.
 """
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pycardano as pc
@@ -38,6 +40,144 @@ from .chain_context import CardanoChainContext
 from .contracts import ContractManager, ReferenceScriptContract
 from .transactions import CardanoTransactions
 from .wallet import CardanoWallet
+
+
+def convert_metadata_keys(obj):
+    """
+    Convert string keys to integers for metadata (CIP-25 format).
+    PyCardano's Metadata class requires integer keys in the first layer.
+
+    Args:
+        obj: Object to convert (dict, list, or primitive)
+
+    Returns:
+        Converted object with integer keys where applicable
+    """
+    if isinstance(obj, dict):
+        new_dict = {}
+        for key, value in obj.items():
+            # Try to convert key to int if it's a numeric string
+            try:
+                new_key = int(key)
+            except (ValueError, TypeError):
+                new_key = key
+            new_dict[new_key] = convert_metadata_keys(value)
+        return new_dict
+    elif isinstance(obj, list):
+        return [convert_metadata_keys(item) for item in obj]
+    else:
+        return obj
+
+
+def prepare_grey_token_metadata(
+    grey_minting_policy_id: pc.ScriptHash,
+    grey_token_name: bytes,
+    metadata_file_path: Path
+) -> Optional[pc.AuxiliaryData]:
+    """
+    Prepare CIP-25 metadata for grey token minting with dynamic policy ID and token name.
+
+    Args:
+        grey_minting_policy_id: Policy ID for the grey token
+        grey_token_name: Token name as bytes
+        metadata_file_path: Path to metadata template JSON file
+
+    Returns:
+        AuxiliaryData with metadata, or None if preparation fails
+    """
+
+    def split_description_strings(description_list, max_bytes=64):
+        """
+        Split description strings into chunks that don't exceed max_bytes.
+        PyCardano requires each metadata string to be ≤ 64 bytes.
+
+        Args:
+            description_list: List of description strings
+            max_bytes: Maximum bytes per string (default 64)
+
+        Returns:
+            List of strings, each ≤ max_bytes
+        """
+        result = []
+        for text in description_list:
+            # Check if text is already within limit
+            if len(text.encode('utf-8')) <= max_bytes:
+                result.append(text)
+            else:
+                # Split text into chunks
+                words = text.split()
+                current_chunk = []
+                current_length = 0
+
+                for word in words:
+                    word_bytes = len(word.encode('utf-8'))
+                    # +1 for space between words
+                    needed_length = current_length + word_bytes + (1 if current_chunk else 0)
+
+                    if needed_length <= max_bytes:
+                        current_chunk.append(word)
+                        current_length = needed_length
+                    else:
+                        # Save current chunk and start new one
+                        if current_chunk:
+                            result.append(' '.join(current_chunk))
+                        current_chunk = [word]
+                        current_length = word_bytes
+
+                # Add remaining chunk
+                if current_chunk:
+                    result.append(' '.join(current_chunk))
+
+        return result
+
+    try:
+        # Load metadata template
+        with open(metadata_file_path, 'r') as f:
+            metadata_template = json.load(f)
+
+        # Get actual policy ID and token name
+        actual_policy_id = grey_minting_policy_id.to_primitive().hex()
+        try:
+            actual_token_name = grey_token_name.decode('utf-8')
+        except:
+            actual_token_name = grey_token_name.hex()
+
+        # Extract template structure
+        template_721 = metadata_template["721"]
+        template_policy_id = [k for k in template_721.keys() if k != "version"][0]
+        template_token_name = list(template_721[template_policy_id].keys())[0]
+        token_metadata_template = template_721[template_policy_id][template_token_name]
+
+        # Update name field to actual token name
+        token_metadata_template["name"] = actual_token_name
+
+        # Split description strings if they exceed 64 bytes
+        if "description" in token_metadata_template and isinstance(token_metadata_template["description"], list):
+            token_metadata_template["description"] = split_description_strings(
+                token_metadata_template["description"]
+            )
+
+        # Build dynamic metadata with actual values
+        dynamic_metadata = {
+            "721": {
+                actual_policy_id: {
+                    actual_token_name: token_metadata_template
+                },
+                "version": template_721.get("version", "1.0")
+            }
+        }
+
+        # Convert string keys to integers for PyCardano
+        converted_metadata = convert_metadata_keys(dynamic_metadata)
+
+        # Create and return auxiliary data
+        metadata = pc.Metadata(converted_metadata)
+        alonzo_metadata = pc.AlonzoMetadata(metadata=metadata)
+        return pc.AuxiliaryData(alonzo_metadata)
+
+    except Exception as e:
+        print(f"Warning: Could not prepare metadata from {metadata_file_path}: {e}")
+        return None
 
 
 class TokenOperations:
@@ -1488,6 +1628,16 @@ class TokenOperations:
                 datum=None,
             )
             builder.add_output(user_output)
+
+            # Load and attach metadata from grey_token_metadata.json
+            metadata_file_path = Path(__file__).parent.parent.parent / "grey_token_metadata.json"
+            auxiliary_data = prepare_grey_token_metadata(
+                grey_minting_policy_id,
+                grey_token_name,
+                metadata_file_path
+            )
+            if auxiliary_data:
+                builder.auxiliary_data = auxiliary_data
 
             # Build and sign transaction
             signing_key = self.wallet.get_signing_key(0)
