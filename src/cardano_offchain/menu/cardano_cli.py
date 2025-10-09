@@ -1618,6 +1618,189 @@ class CardanoCLI:
 
         input("\nPress Enter to continue...")
 
+    def mint_usda_faucet_menu(self):
+        """Mint USDA test tokens (faucet service)"""
+        self.menu.print_header("USDA FAUCET", "Mint USDATEST Tokens for Testing")
+
+        # Get amount to mint
+        try:
+            amount_input = self.menu.get_input("Enter amount of USDATEST to mint (default: 1000)")
+            amount = int(amount_input) if amount_input.strip() else 1000
+
+            if amount <= 0:
+                self.menu.print_error("Amount must be positive")
+                input("Press Enter to continue...")
+                return
+
+        except ValueError:
+            self.menu.print_error("Invalid amount. Please enter a number.")
+            input("Press Enter to continue...")
+            return
+
+        # Ask for wallet to use for transaction (will pay fees and receive tokens)
+        wallet_selection = self.select_wallet_or_address(
+            "transaction (will pay fees and receive USDATEST)",
+            mode="wallet_only",
+            allow_custom_address=False
+        )
+        if not wallet_selection:
+            self.menu.print_info("USDA minting cancelled")
+            input("Press Enter to continue...")
+            return
+
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
+                    input("Press Enter to continue...")
+                    return
+
+        # Show transaction preview
+        self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
+        print(f"│ Amount: {amount:,} USDATEST")
+        print(f"│ Wallet: {current_wallet} (will pay fees and receive tokens)")
+
+        if not self.menu.confirm_action("Proceed with USDATEST minting?"):
+            self.menu.print_info("USDA minting cancelled")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            self.menu.print_info("Creating USDATEST minting transaction...")
+
+            # Create the USDA minting transaction
+            result = self.token_operations.create_usda_mint_transaction(amount=amount)
+
+            if result["success"]:
+                self.menu.print_success("✓ USDATEST minting transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Token Name: {result['token_name']}")
+                print(f"│ Policy ID: {result['policy_id']}")
+                print(f"│ Amount Minted: {result['amount']:,}")
+
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ USDATEST minting transaction submitted!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info(
+                            "USDATEST tokens will appear in wallet after confirmation"
+                        )
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
+                else:
+                    self.menu.print_info("Transaction not submitted")
+            else:
+                self.menu.print_error(
+                    f"Failed to create USDATEST minting transaction: {result['error']}"
+                )
+
+        except Exception as e:
+            self.menu.print_error(f"USDA minting failed: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def burn_usda_tokens_menu(self):
+        """Burn USDA test tokens"""
+        self.menu.print_header("USDA BURNING", "Burn USDATEST Tokens")
+
+        # Get amount to burn
+        try:
+            amount_input = self.menu.get_input("Enter amount of USDATEST to burn")
+            amount = int(amount_input)
+
+            if amount <= 0:
+                self.menu.print_error("Amount must be positive")
+                input("Press Enter to continue...")
+                return
+
+        except ValueError:
+            self.menu.print_error("Invalid amount. Please enter a number.")
+            input("Press Enter to continue...")
+            return
+
+        # Ask for wallet to use for transaction (must have USDA tokens)
+        wallet_selection = self.select_wallet_or_address(
+            "transaction (must have USDATEST tokens to burn)",
+            mode="wallet_only",
+            allow_custom_address=False
+        )
+        if not wallet_selection:
+            self.menu.print_info("USDA burning cancelled")
+            input("Press Enter to continue...")
+            return
+
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
+                    input("Press Enter to continue...")
+                    return
+
+        # Show transaction preview
+        self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
+        print(f"│ Amount to Burn: {amount:,} USDATEST")
+        print(f"│ Wallet: {current_wallet}")
+
+        if not self.menu.confirm_action("Proceed with USDATEST burning?"):
+            self.menu.print_info("USDA burning cancelled")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            self.menu.print_info("Creating USDATEST burning transaction...")
+
+            # Create the USDA burning transaction
+            result = self.token_operations.create_usda_burn_transaction(amount=amount)
+
+            if result["success"]:
+                self.menu.print_success("✓ USDATEST burning transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Token Name: {result['token_name']}")
+                print(f"│ Policy ID: {result['policy_id']}")
+                print(f"│ Amount Burned: {result['burned_amount']:,}")
+                print(f"│ Remaining Tokens: {result['remaining_tokens']:,}")
+
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ USDATEST burning transaction submitted!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info(
+                            "USDATEST tokens have been burned successfully"
+                        )
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
+                else:
+                    self.menu.print_info("Transaction not submitted")
+            else:
+                self.menu.print_error(
+                    f"Failed to create USDATEST burning transaction: {result['error']}"
+                )
+
+        except Exception as e:
+            self.menu.print_error(f"USDA burning failed: {e}")
+
+        input("\nPress Enter to continue...")
+
     def delete_grey_tokens_menu(self):
         """Delete grey token contracts while preserving project contracts"""
         self.menu.print_header("DELETE GREY TOKENS", "Remove Grey Token Contracts Only")
@@ -3371,22 +3554,25 @@ class CardanoCLI:
             self.menu.print_menu_option("2", "Compile Protocol Contracts", "✓")
             self.menu.print_menu_option("3", "Compile Project Contracts", "✓")
             self.menu.print_menu_option("4", "Compile Grey Contract", "⚙️")
-            self.menu.print_menu_option("5", "Mint Protocol Tokens", "✓")
-            self.menu.print_menu_option("6", "Burn Tokens", "✓")
-            self.menu.print_menu_option("7", "Update Protocol Datum", "✓")
-            self.menu.print_menu_option("8", "Create Project", "✓")
-            self.menu.print_menu_option("9", "Burn Project Tokens", "✓")
-            self.menu.print_menu_option("10", "Update Project Datum", "✓")
-            self.menu.print_menu_option("11", "Mint Grey Tokens", "🪙")
-            self.menu.print_menu_option("12", "Burn Grey Tokens", "🔥")
+            self.menu.print_menu_option("5", "Load USDA Faucet Contract", "💰")
+            self.menu.print_menu_option("6", "Mint Protocol Tokens", "✓")
+            self.menu.print_menu_option("7", "Burn Tokens", "✓")
+            self.menu.print_menu_option("8", "Update Protocol Datum", "✓")
+            self.menu.print_menu_option("9", "Create Project", "✓")
+            self.menu.print_menu_option("10", "Burn Project Tokens", "✓")
+            self.menu.print_menu_option("11", "Update Project Datum", "✓")
+            self.menu.print_menu_option("12", "Mint Grey Tokens", "🪙")
+            self.menu.print_menu_option("13", "Burn Grey Tokens", "🔥")
+            self.menu.print_menu_option("14", "Mint USDATEST (Faucet)", "💰")
+            self.menu.print_menu_option("15", "Burn USDATEST", "🔥")
             self.menu.print_separator()
-            self.menu.print_menu_option("13", "Query Contract Datum", "🔍")
-            self.menu.print_menu_option("14", "Delete Empty Contract", "🗑")
-            self.menu.print_menu_option("15", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("16", "Query Contract Datum", "🔍")
+            self.menu.print_menu_option("17", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("18", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-15)")
+            choice = self.menu.get_input("Select an option (0-18)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3439,26 +3625,32 @@ class CardanoCLI:
             elif choice == "4":
                 self.compile_grey_contract_menu()
             elif choice == "5":
-                self.mint_protocol_token()
+                self.load_usda_faucet_contract_menu()
             elif choice == "6":
-                self.burn_tokens_menu()
+                self.mint_protocol_token()
             elif choice == "7":
-                self.update_protocol_menu()
+                self.burn_tokens_menu()
             elif choice == "8":
-                self.create_project_menu()
+                self.update_protocol_menu()
             elif choice == "9":
-                self.burn_project_tokens_menu()
+                self.create_project_menu()
             elif choice == "10":
-                self.update_project_menu()
+                self.burn_project_tokens_menu()
             elif choice == "11":
-                self.mint_grey_tokens_menu()
+                self.update_project_menu()
             elif choice == "12":
-                self.burn_grey_tokens_menu()
+                self.mint_grey_tokens_menu()
             elif choice == "13":
-                self.query_contract_datum_menu()
+                self.burn_grey_tokens_menu()
             elif choice == "14":
-                self.delete_empty_contract_menu()
+                self.mint_usda_faucet_menu()
             elif choice == "15":
+                self.burn_usda_tokens_menu()
+            elif choice == "16":
+                self.query_contract_datum_menu()
+            elif choice == "17":
+                self.delete_empty_contract_menu()
+            elif choice == "18":
                 self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
@@ -3624,6 +3816,44 @@ class CardanoCLI:
             self.menu.print_error("Invalid input. Please enter a number.")
         except Exception as e:
             self.menu.print_error(f"❌ Compilation error: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def load_usda_faucet_contract_menu(self):
+        """Load myUSDFree (USDA faucet) contract from artifacts"""
+        self.menu.print_header("LOAD USDA FAUCET CONTRACT", "Load myUSDFree from Artifacts")
+
+        # Check if already loaded
+        if self.contract_manager.get_contract("myUSDFree"):
+            self.menu.print_info("myUSDFree contract is already loaded!")
+            existing_contract = self.contract_manager.get_contract("myUSDFree")
+            print(f"│ Policy ID: {existing_contract.policy_id}")
+            print(f"│ Testnet Address: {existing_contract.testnet_addr}")
+
+            if not self.menu.confirm_action("Do you want to reload the contract?"):
+                input("\nPress Enter to continue...")
+                return
+
+        try:
+            self.menu.print_info("Loading myUSDFree contract from artifacts...")
+            result = self.contract_manager.load_contract_from_artifacts(
+                contract_name="myUSDFree",
+                artifacts_subdir="minting_policies"
+            )
+
+            if result["success"]:
+                self.menu.print_success("✅ myUSDFree contract loaded successfully!")
+                print(f"│ Contract Name: {result['contract_name']}")
+                print(f"│ Policy ID: {result['policy_id']}")
+                print(f"│ Testnet Address: {result['testnet_addr']}")
+                self.menu.print_info("You can now use the USDA faucet mint/burn options!")
+            else:
+                self.menu.print_error(f"❌ Failed to load contract: {result['error']}")
+                self.menu.print_info("Make sure you have run the build script first:")
+                self.menu.print_info("  poetry run python src/scripts/build_contracts.py")
+
+        except Exception as e:
+            self.menu.print_error(f"❌ Loading error: {e}")
 
         input("\nPress Enter to continue...")
 

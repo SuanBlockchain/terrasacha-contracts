@@ -1837,3 +1837,141 @@ class TokenOperations:
                 "success": False,
                 "error": f"Grey token burning transaction creation failed: {e}",
             }
+
+    def create_usda_mint_transaction(
+        self,
+        amount: int = 1000,
+    ) -> Dict[str, Any]:
+        """
+        Create a minting transaction for USDA test tokens (faucet)
+
+        Args:
+            amount: Amount of USDA tokens to mint (default: 1000)
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+            # Get myUSDFree minting policy contract (compile if not already compiled)
+            usda_contract = self.contract_manager.get_contract("myUSDFree")
+            if not usda_contract:
+                # Compile the contract
+                compile_result = self.contract_manager.compile_usda_contract()
+                if not compile_result["success"]:
+                    return {"success": False, "error": f"Failed to compile myUSDFree: {compile_result.get('error')}"}
+                usda_contract = self.contract_manager.get_contract("myUSDFree")
+
+            usda_policy_id = pc.ScriptHash(bytes.fromhex(usda_contract.policy_id))
+            usda_token_name = b"USDATEST"
+
+            # Get wallet address
+            from_address = self.wallet.get_address(0)
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+            builder.add_input_address(from_address)
+
+            # Add minting with None redeemer (contract accepts any redeemer)
+            mint_asset = pc.MultiAsset.from_primitive({
+                usda_policy_id.payload: {usda_token_name: amount}
+            })
+            builder.mint = mint_asset
+            builder.add_minting_script(script=usda_contract.cbor, redeemer=pc.Redeemer(Mint()))
+
+            # Build and sign transaction
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "token_name": usda_token_name.decode('utf-8'),
+                "policy_id": usda_contract.policy_id,
+                "amount": amount,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"USDA mint transaction creation failed: {e}",
+            }
+
+    def create_usda_burn_transaction(
+        self,
+        amount: int,
+    ) -> Dict[str, Any]:
+        """
+        Create a burning transaction for USDA test tokens
+
+        Args:
+            amount: Amount of USDA tokens to burn
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+            # Get myUSDFree minting policy contract (compile if not already compiled)
+            usda_contract = self.contract_manager.get_contract("myUSDFree")
+            if not usda_contract:
+                # Compile the contract
+                compile_result = self.contract_manager.compile_usda_contract()
+                if not compile_result["success"]:
+                    return {"success": False, "error": f"Failed to compile myUSDFree: {compile_result.get('error')}"}
+                usda_contract = self.contract_manager.get_contract("myUSDFree")
+
+            usda_policy_id = pc.ScriptHash(bytes.fromhex(usda_contract.policy_id))
+            usda_token_name = b"USDATEST"
+
+            # Get wallet address
+            from_address = self.wallet.get_address(0)
+
+            # Get user UTXOs and check for USDA tokens
+            user_utxos = self.context.utxos(from_address)
+            if not user_utxos:
+                return {"success": False, "error": "No UTXOs found in wallet"}
+
+            # Calculate available USDA tokens
+            total_usda = 0
+            for utxo in user_utxos:
+                if usda_policy_id in utxo.output.amount.multi_asset:
+                    token_dict = utxo.output.amount.multi_asset[usda_policy_id]
+                    if pc.AssetName(usda_token_name) in token_dict:
+                        total_usda += token_dict[pc.AssetName(usda_token_name)]
+
+            if total_usda < amount:
+                return {
+                    "success": False,
+                    "error": f"Insufficient USDA tokens. Have {total_usda}, need {amount}",
+                }
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+            builder.add_input_address(from_address)
+
+            # Add burning (negative amount)
+            burn_asset = pc.MultiAsset.from_primitive({
+                usda_policy_id.payload: {usda_token_name: -amount}
+            })
+            builder.mint = burn_asset
+            builder.add_minting_script(script=usda_contract.cbor, redeemer=pc.Redeemer(Burn()))
+
+            # Build and sign transaction
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "token_name": usda_token_name.decode('utf-8'),
+                "policy_id": usda_contract.policy_id,
+                "burned_amount": amount,
+                "remaining_tokens": total_usda - amount,
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"USDA burn transaction creation failed: {e}",
+            }

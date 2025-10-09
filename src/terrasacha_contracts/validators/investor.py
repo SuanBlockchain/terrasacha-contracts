@@ -2,8 +2,8 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
-# USDA stable coin policy ID (hardcoded)
-USDA_POLICY_ID = b"\xc4\x8c\xbb=^W\xedV\xe2v\xbcE\xf9\x9a\xb3\x9a\xbe\x94\xe6\xcdz\xc3\x9f\xb4\x02\xdaG\xad\x00\x14\xdf\x10USDATEST"
+# USDA stable coin policy ID (from myUSDFree minting policy)
+USDA_POLICY_ID = b"V\xa9\xc6\x9f\x1d3\xa7\xd5m\x91=\x82\x01S\xb7\xe2\xe7\xcf\x0f\xa8\xdc(6\xcc\xb1\xd9\xca\xec"
 
 ################################################
 # Investor Data Types

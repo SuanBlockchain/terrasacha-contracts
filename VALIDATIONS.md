@@ -19,7 +19,7 @@ The project contract validates ProjectDatum updates and stakeholder operations. 
 
 2. **NFT Continuation**
    - Project NFT must continue to exactly one output
-   - NFT amount must remain 1 in the output
+   - NFT amount must remain 1 in the output 
 
 3. **Datum Update Business Rules** (`validate_datum_update`):
 

@@ -1089,6 +1089,102 @@ class ContractManager:
         except Exception as e:
             return {"success": False, "error": f"Grey contract compilation failed: {e}"}
 
+    def compile_usda_contract(self) -> Dict[str, Any]:
+        """
+        Compile myUSDFree (USDA faucet) minting policy contract.
+        This is a simple free-minting contract that doesn't require any compilation parameters.
+
+        Returns:
+            Dictionary containing compilation results
+        """
+        try:
+            # Check if already compiled
+            if self.get_contract("myUSDFree"):
+                return {
+                    "success": True,
+                    "message": "myUSDFree contract already compiled",
+                    "skipped": True,
+                }
+
+            # Check if myUSDFree.py exists
+            usda_path = self.minting_contracts_path / "myUSDFree.py"
+            if not usda_path.exists():
+                return {"success": False, "error": "myUSDFree contract file not found"}
+
+            # Compile myUSDFree contract (no parameters needed - free mint)
+            print("Compiling myUSDFree minting policy...")
+            usda_contract = build(usda_path)
+
+            # Store contract
+            self.contracts["myUSDFree"] = PlutusContract(usda_contract)
+
+            # Save to disk
+            saved = self.mark_contract_as_deployed(["myUSDFree"])
+
+            return {
+                "success": True,
+                "message": "Successfully compiled myUSDFree contract",
+                "contract_name": "myUSDFree",
+                "policy_id": self.contracts["myUSDFree"].policy_id,
+                "saved": saved,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"myUSDFree contract compilation failed: {e}"}
+
+    def load_contract_from_artifacts(
+        self, contract_name: str, artifacts_subdir: str = "minting_policies"
+    ) -> Dict[str, Any]:
+        """
+        Load a pre-compiled contract from the artifacts directory.
+        Useful for standalone contracts that don't require dynamic compilation.
+
+        Args:
+            contract_name: Name of the contract (without file extension)
+            artifacts_subdir: Subdirectory in artifacts ("minting_policies" or "validators")
+
+        Returns:
+            Dictionary containing success status and contract info
+        """
+        try:
+            # Construct path to artifacts
+            artifacts_base = pathlib.Path("./src/artifacts")
+            contract_cbor_path = artifacts_base / artifacts_subdir / f"{contract_name}.cbor"
+
+            if not contract_cbor_path.exists():
+                return {
+                    "success": False,
+                    "error": f"Contract artifacts not found at {contract_cbor_path}. Run build script first.",
+                }
+
+            # Read CBOR file
+            with open(contract_cbor_path, "rb") as f:
+                cbor_bytes = f.read()
+
+            # Create PlutusV2Script from CBOR
+            script = pc.PlutusV2Script(cbor_bytes)
+
+            # Create PlutusContract from script
+            contract = PlutusContract(script)
+
+            # Store contract
+            self.contracts[contract_name] = contract
+
+            # Save to disk
+            saved = self.mark_contract_as_deployed([contract_name])
+
+            return {
+                "success": True,
+                "contract_name": contract_name,
+                "policy_id": contract.policy_id,
+                "testnet_addr": str(contract.testnet_addr),
+                "mainnet_addr": str(contract.mainnet_addr),
+                "saved": saved,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Failed to load contract from artifacts: {e}"}
+
     def get_contracts_info(self) -> Dict[str, Any]:
         """
         Get comprehensive contract information

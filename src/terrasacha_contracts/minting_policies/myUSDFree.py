@@ -1,14 +1,19 @@
 from opshin.prelude import *
+from terrasacha_contracts.util import *
+
+@dataclass()
+class Mint(PlutusData):
+    CONSTR_ID = 0
 
 
-def assert_minting_purpose(context: ScriptContext) -> None:
-    purpose = context.purpose
-    if isinstance(purpose, Minting):
-        is_minting = True
-    else:
-        is_minting = False
-    assert is_minting, "not minting purpose"
+@dataclass()
+class Burn(PlutusData):
+    CONSTR_ID = 1
 
 
-def validator(redeemer: None, context: ScriptContext) -> None:
-    assert_minting_purpose(context)
+def validator(redeemer: Union[Mint, Burn], context: ScriptContext) -> None:
+    _ = get_minting_purpose(context)
+    if isinstance(redeemer, Mint):
+        assert True, "Minting myUSDFree token"
+    elif isinstance(redeemer, Burn):
+        assert True, "Burning myUSDFree token"
