@@ -3554,25 +3554,24 @@ class CardanoCLI:
             self.menu.print_menu_option("2", "Compile Protocol Contracts", "✓")
             self.menu.print_menu_option("3", "Compile Project Contracts", "✓")
             self.menu.print_menu_option("4", "Compile Grey Contract", "⚙️")
-            self.menu.print_menu_option("5", "Load USDA Faucet Contract", "💰")
-            self.menu.print_menu_option("6", "Mint Protocol Tokens", "✓")
-            self.menu.print_menu_option("7", "Burn Tokens", "✓")
-            self.menu.print_menu_option("8", "Update Protocol Datum", "✓")
-            self.menu.print_menu_option("9", "Create Project", "✓")
-            self.menu.print_menu_option("10", "Burn Project Tokens", "✓")
-            self.menu.print_menu_option("11", "Update Project Datum", "✓")
-            self.menu.print_menu_option("12", "Mint Grey Tokens", "🪙")
-            self.menu.print_menu_option("13", "Burn Grey Tokens", "🔥")
-            self.menu.print_menu_option("14", "Mint USDATEST (Faucet)", "💰")
-            self.menu.print_menu_option("15", "Burn USDATEST", "🔥")
+            self.menu.print_menu_option("5", "Mint Protocol Tokens", "✓")
+            self.menu.print_menu_option("6", "Burn Tokens", "✓")
+            self.menu.print_menu_option("7", "Update Protocol Datum", "✓")
+            self.menu.print_menu_option("8", "Create Project", "✓")
+            self.menu.print_menu_option("9", "Burn Project Tokens", "✓")
+            self.menu.print_menu_option("10", "Update Project Datum", "✓")
+            self.menu.print_menu_option("11", "Mint Grey Tokens", "🪙")
+            self.menu.print_menu_option("12", "Burn Grey Tokens", "🔥")
+            self.menu.print_menu_option("13", "Mint USDATEST (Faucet)", "💰")
+            self.menu.print_menu_option("14", "Burn USDATEST", "🔥")
             self.menu.print_separator()
-            self.menu.print_menu_option("16", "Query Contract Datum", "🔍")
-            self.menu.print_menu_option("17", "Delete Empty Contract", "🗑")
-            self.menu.print_menu_option("18", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("15", "Query Contract Datum", "🔍")
+            self.menu.print_menu_option("16", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("17", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-18)")
+            choice = self.menu.get_input("Select an option (0-17)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3625,32 +3624,30 @@ class CardanoCLI:
             elif choice == "4":
                 self.compile_grey_contract_menu()
             elif choice == "5":
-                self.load_usda_faucet_contract_menu()
-            elif choice == "6":
                 self.mint_protocol_token()
-            elif choice == "7":
+            elif choice == "6":
                 self.burn_tokens_menu()
-            elif choice == "8":
+            elif choice == "7":
                 self.update_protocol_menu()
-            elif choice == "9":
+            elif choice == "8":
                 self.create_project_menu()
-            elif choice == "10":
+            elif choice == "9":
                 self.burn_project_tokens_menu()
-            elif choice == "11":
+            elif choice == "10":
                 self.update_project_menu()
-            elif choice == "12":
+            elif choice == "11":
                 self.mint_grey_tokens_menu()
-            elif choice == "13":
+            elif choice == "12":
                 self.burn_grey_tokens_menu()
-            elif choice == "14":
+            elif choice == "13":
                 self.mint_usda_faucet_menu()
-            elif choice == "15":
+            elif choice == "14":
                 self.burn_usda_tokens_menu()
-            elif choice == "16":
+            elif choice == "15":
                 self.query_contract_datum_menu()
-            elif choice == "17":
+            elif choice == "16":
                 self.delete_empty_contract_menu()
-            elif choice == "18":
+            elif choice == "17":
                 self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
@@ -3819,44 +3816,6 @@ class CardanoCLI:
 
         input("\nPress Enter to continue...")
 
-    def load_usda_faucet_contract_menu(self):
-        """Load myUSDFree (USDA faucet) contract from artifacts"""
-        self.menu.print_header("LOAD USDA FAUCET CONTRACT", "Load myUSDFree from Artifacts")
-
-        # Check if already loaded
-        if self.contract_manager.get_contract("myUSDFree"):
-            self.menu.print_info("myUSDFree contract is already loaded!")
-            existing_contract = self.contract_manager.get_contract("myUSDFree")
-            print(f"│ Policy ID: {existing_contract.policy_id}")
-            print(f"│ Testnet Address: {existing_contract.testnet_addr}")
-
-            if not self.menu.confirm_action("Do you want to reload the contract?"):
-                input("\nPress Enter to continue...")
-                return
-
-        try:
-            self.menu.print_info("Loading myUSDFree contract from artifacts...")
-            result = self.contract_manager.load_contract_from_artifacts(
-                contract_name="myUSDFree",
-                artifacts_subdir="minting_policies"
-            )
-
-            if result["success"]:
-                self.menu.print_success("✅ myUSDFree contract loaded successfully!")
-                print(f"│ Contract Name: {result['contract_name']}")
-                print(f"│ Policy ID: {result['policy_id']}")
-                print(f"│ Testnet Address: {result['testnet_addr']}")
-                self.menu.print_info("You can now use the USDA faucet mint/burn options!")
-            else:
-                self.menu.print_error(f"❌ Failed to load contract: {result['error']}")
-                self.menu.print_info("Make sure you have run the build script first:")
-                self.menu.print_info("  poetry run python src/scripts/build_contracts.py")
-
-        except Exception as e:
-            self.menu.print_error(f"❌ Loading error: {e}")
-
-        input("\nPress Enter to continue...")
-
     def query_contract_datum_menu(self):
         """Query and display datum data from Protocol or Project contracts on-chain"""
         self.menu.print_header("QUERY CONTRACT DATUM", "View On-Chain Contract State")
@@ -3870,7 +3829,7 @@ class CardanoCLI:
         # Filter for contracts that have datums (spending validators only)
         queryable_contracts = [
             name for name in contracts
-            if not name.endswith(("_nfts", "_grey"))
+            if not name.endswith(("_nfts", "_grey")) and name != "myUSDFree"
         ]
 
         if not queryable_contracts:
@@ -3955,7 +3914,16 @@ class CardanoCLI:
                     # Project Token
                     print(f"│ PROJECT TOKEN:")
                     print(f"│   Policy ID: {datum['project_token']['policy_id']}")
-                    print(f"│   Token Name: {datum['project_token']['token_name']}")
+
+                    # Convert hex token name to string
+                    token_name_hex = datum['project_token']['token_name']
+                    try:
+                        token_name_str = bytes.fromhex(token_name_hex).decode('utf-8')
+                        print(f"│   Token Name: {token_name_str}")
+                    except:
+                        # Fallback to hex if decode fails
+                        print(f"│   Token Name: {token_name_hex}")
+
                     print(f"│   Total Supply: {datum['project_token']['total_supply']}")
                     print()
 

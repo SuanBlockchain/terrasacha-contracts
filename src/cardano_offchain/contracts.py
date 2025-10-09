@@ -1204,7 +1204,7 @@ class ContractManager:
             )
 
             # Check if this is a minting policy (NFT contract) or spending validator
-            is_minting_policy = name.endswith("_nfts")
+            is_minting_policy = name.endswith("_nfts") or name.endswith("_grey") or name == "myUSDFree"
 
             if is_minting_policy:
                 # For minting policies, only policy ID matters (no balance)
@@ -1270,7 +1270,7 @@ class ContractManager:
         contract = self.contracts[contract_name]
 
         # Skip minting policies - they don't have UTXOs with datums
-        if contract_name.endswith("_nfts") or contract_name.endswith("_grey"):
+        if contract_name.endswith("_nfts") or contract_name.endswith("_grey") or contract_name == "myUSDFree":
             return {
                 "success": False,
                 "error": f"'{contract_name}' is a minting policy and doesn't have datum data"
