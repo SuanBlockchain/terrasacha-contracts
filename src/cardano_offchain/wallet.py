@@ -39,8 +39,7 @@ class CardanoWallet:
 
         # Create main addresses
         self.enterprise_address = pc.Address(
-            payment_part=self.payment_skey.to_verification_key().hash(),
-            network=self.cardano_network,
+            payment_part=self.payment_skey.to_verification_key().hash(), network=self.cardano_network
         )
 
         self.staking_address = pc.Address(
@@ -107,10 +106,7 @@ class CardanoWallet:
         """
         return {
             "network": self.network,
-            "main_addresses": {
-                "enterprise": str(self.enterprise_address),
-                "staking": str(self.staking_address),
-            },
+            "main_addresses": {"enterprise": str(self.enterprise_address), "staking": str(self.staking_address)},
             "derived_addresses": [
                 {
                     "index": addr["index"],
@@ -146,9 +142,7 @@ class CardanoWallet:
             # Check main enterprise address
             enterprise_utxos = api.address_utxos(str(self.enterprise_address))
             enterprise_balance = sum(
-                int(utxo.amount[0].quantity)
-                for utxo in enterprise_utxos
-                if utxo.amount[0].unit == "lovelace"
+                int(utxo.amount[0].quantity) for utxo in enterprise_utxos if utxo.amount[0].unit == "lovelace"
             )
             balances["main_addresses"]["enterprise"]["balance"] = enterprise_balance
 
@@ -156,11 +150,7 @@ class CardanoWallet:
             for addr_info in self.addresses[:limit_addresses]:
                 try:
                     utxos = api.address_utxos(str(addr_info["enterprise_address"]))
-                    balance = sum(
-                        int(utxo.amount[0].quantity)
-                        for utxo in utxos
-                        if utxo.amount[0].unit == "lovelace"
-                    )
+                    balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == "lovelace")
                     addr_info["balance"] = balance
 
                     balances["derived_addresses"].append(
@@ -174,11 +164,7 @@ class CardanoWallet:
                 except ApiError:
                     # Address might not exist on chain yet
                     balances["derived_addresses"].append(
-                        {
-                            "index": addr_info["index"],
-                            "address": str(addr_info["enterprise_address"]),
-                            "balance": 0,
-                        }
+                        {"index": addr_info["index"], "address": str(addr_info["enterprise_address"]), "balance": 0}
                     )
 
             # Calculate total
@@ -245,8 +231,7 @@ class CardanoWallet:
 
                 # Create enterprise address (payment only)
                 enterprise_addr = pc.Address(
-                    payment_part=payment_skey.to_verification_key().hash(),
-                    network=self.cardano_network
+                    payment_part=payment_skey.to_verification_key().hash(), network=self.cardano_network
                 )
 
                 # Create staking address (payment + staking)
@@ -256,8 +241,10 @@ class CardanoWallet:
                     network=self.cardano_network,
                 )
 
-                if (enterprise_addr.to_primitive() == target_primitive or
-                    staking_addr.to_primitive() == target_primitive):
+                if (
+                    enterprise_addr.to_primitive() == target_primitive
+                    or staking_addr.to_primitive() == target_primitive
+                ):
                     return i
 
             except Exception as e:

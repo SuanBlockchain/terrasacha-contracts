@@ -9,27 +9,13 @@ from opshin.ledger.api_v2 import *
 from opshin.prelude import *
 from opshin.std.builtins import *
 
-from terrasacha_contracts.minting_policies.protocol_nfts import (
-    Burn,
-    Mint,
-)
-from terrasacha_contracts.minting_policies.protocol_nfts import (
-    validator as protocol_nft_validator,
-)
-from terrasacha_contracts.minting_policies.project_nfts import (
-    BurnProject,
-    MintProject,
-)
-from terrasacha_contracts.minting_policies.project_nfts import (
-    validator as project_nft_validator,
-)
 from src.terrasacha_contracts.util import *
-from src.terrasacha_contracts.validators.protocol import (
-    EndProtocol,
-    UpdateProtocol,
-    validate_datum_update,
-)
+from src.terrasacha_contracts.validators.protocol import EndProtocol, UpdateProtocol, validate_datum_update
 from src.terrasacha_contracts.validators.protocol import validator as protocol_validator
+from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject
+from terrasacha_contracts.minting_policies.project_nfts import validator as project_nft_validator
+from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
+from terrasacha_contracts.minting_policies.protocol_nfts import validator as protocol_nft_validator
 
 
 class MockCommon:
@@ -40,12 +26,8 @@ class MockCommon:
         # self.mock_context = MockChainContext()
         self.sample_tx_id = TxId(bytes.fromhex("a" * 64))
         self.sample_policy_id = bytes.fromhex("b" * 56)
-        self.sample_address = Address(
-            PubKeyCredential(bytes.fromhex("c" * 56)), NoStakingCredential()
-        )
-        self.script_address = Address(
-            ScriptCredential(self.sample_policy_id), NoStakingCredential()
-        )
+        self.sample_address = Address(PubKeyCredential(bytes.fromhex("c" * 56)), NoStakingCredential())
+        self.script_address = Address(ScriptCredential(self.sample_policy_id), NoStakingCredential())
 
     def create_mock_oref(self, tx_id_bytes: bytes = None, idx: int = 0) -> TxOutRef:
         """Create a mock transaction output reference"""
@@ -74,21 +56,13 @@ class MockCommon:
             )
 
     def create_mock_tx_out(
-        self,
-        address: Address,
-        value: Dict[bytes, Dict[bytes, int]] = None,
-        datum: Optional[OutputDatum] = None,
+        self, address: Address, value: Dict[bytes, Dict[bytes, int]] = None, datum: Optional[OutputDatum] = None
     ) -> TxOut:
         """Create a mock transaction output"""
         if value is None:
             value = {b"": 2000000}  # 2 ADA
 
-        return TxOut(
-            address=address,
-            value=value,
-            datum=datum or NoOutputDatum(),
-            reference_script=NoScriptHash(),
-        )
+        return TxOut(address=address, value=value, datum=datum or NoOutputDatum(), reference_script=NoScriptHash())
 
     def create_mock_tx_in_info(self, oref: TxOutRef, resolved: TxOut) -> TxInInfo:
         """Create a mock transaction input info"""
@@ -138,9 +112,7 @@ class MockCommon:
             id=self.sample_tx_id,
         )
 
-    def create_mock_script_context(
-        self, purpose: ScriptPurpose, tx_info: TxInfo = None
-    ) -> ScriptContext:
+    def create_mock_script_context(self, purpose: ScriptPurpose, tx_info: TxInfo = None) -> ScriptContext:
         """Create a mock script context"""
         if tx_info is None:
             tx_info = self.create_mock_tx_info()
@@ -210,22 +182,19 @@ class TestUtilityFunctions(MockCommon):
         assert token3.startswith(PREFIX_REFERENCE_NFT)
 
         expected_token_name1 = append_byte_string(
-            PREFIX_REFERENCE_NFT,
-            sha3_256(append_byte_string(oref1.id.tx_id, cons_byte_string(oref1.idx % 256, b""))),
+            PREFIX_REFERENCE_NFT, sha3_256(append_byte_string(oref1.id.tx_id, cons_byte_string(oref1.idx % 256, b"")))
         )
         if len(expected_token_name1) > 32:
             expected_token_name1 = slice_byte_string(0, 32, expected_token_name1)
 
         expected_token_name2 = append_byte_string(
-            PREFIX_REFERENCE_NFT,
-            sha3_256(append_byte_string(oref2.id.tx_id, cons_byte_string(oref2.idx % 256, b""))),
+            PREFIX_REFERENCE_NFT, sha3_256(append_byte_string(oref2.id.tx_id, cons_byte_string(oref2.idx % 256, b"")))
         )
         if len(expected_token_name2) > 32:
             expected_token_name2 = slice_byte_string(0, 32, expected_token_name2)
 
         expected_token_name3 = append_byte_string(
-            PREFIX_REFERENCE_NFT,
-            sha3_256(append_byte_string(oref3.id.tx_id, cons_byte_string(oref3.idx % 256, b""))),
+            PREFIX_REFERENCE_NFT, sha3_256(append_byte_string(oref3.id.tx_id, cons_byte_string(oref3.idx % 256, b"")))
         )
         if len(expected_token_name3) > 32:
             expected_token_name3 = slice_byte_string(0, 32, expected_token_name3)
@@ -264,12 +233,10 @@ class TestUtilityFunctions(MockCommon):
 
         # Create inputs
         input1 = self.create_mock_tx_in_info(
-            self.create_mock_oref(bytes.fromhex("a" * 64), 0),
-            self.create_mock_tx_out(address1),
+            self.create_mock_oref(bytes.fromhex("a" * 64), 0), self.create_mock_tx_out(address1)
         )
         input2 = self.create_mock_tx_in_info(
-            self.create_mock_oref(bytes.fromhex("b" * 64), 0),
-            self.create_mock_tx_out(address2),
+            self.create_mock_oref(bytes.fromhex("b" * 64), 0), self.create_mock_tx_out(address2)
         )
         input3 = self.create_mock_tx_in_info(
             self.create_mock_oref(bytes.fromhex("c" * 64), 0),
@@ -335,8 +302,7 @@ class TestUtilityFunctions(MockCommon):
 
         # Test output with same policy but different token name
         output_different_token = self.create_mock_tx_out(
-            self.sample_address,
-            value={b"": 2000000, policy_id: {b"different_token": 7}},
+            self.sample_address, value={b"": 2000000, policy_id: {b"different_token": 7}}
         )
         assert amount_of_token_in_output(token, output_different_token) == 0
 
@@ -348,7 +314,8 @@ class TestUtilityFunctions(MockCommon):
         # Test successful case
         contract_address = self.script_address
         correct_input = self.create_mock_tx_in_info(
-            oref, self.create_mock_tx_out(contract_address)  # Same oref as in purpose
+            oref,
+            self.create_mock_tx_out(contract_address),  # Same oref as in purpose
         )
 
         tx_info = self.create_mock_tx_info(inputs=[correct_input])
@@ -359,7 +326,8 @@ class TestUtilityFunctions(MockCommon):
         # Test failure case - wrong oref
         wrong_oref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
         wrong_input = self.create_mock_tx_in_info(
-            wrong_oref, self.create_mock_tx_out(contract_address)  # Different oref
+            wrong_oref,
+            self.create_mock_tx_out(contract_address),  # Different oref
         )
 
         tx_info_wrong = self.create_mock_tx_info(inputs=[wrong_input])
@@ -442,9 +410,7 @@ class TestProtocol(MockCommon):
         protocol_token = Token(policy_id, token_name)
 
         # Create protocol output with the NFT
-        protocol_output = self.create_mock_tx_out(
-            self.script_address, value={b"": 2000000, policy_id: {token_name: 1}}
-        )
+        protocol_output = self.create_mock_tx_out(self.script_address, value={b"": 2000000, policy_id: {token_name: 1}})
 
         # Should not raise any exception
         validate_nft_continues(protocol_output, protocol_token)
@@ -457,7 +423,8 @@ class TestProtocol(MockCommon):
 
         # Create protocol output without the NFT
         protocol_output = self.create_mock_tx_out(
-            self.script_address, value={b"": 2000000}  # No tokens
+            self.script_address,
+            value={b"": 2000000},  # No tokens
         )
 
         with pytest.raises(AssertionError, match="NFT .* must continue to output"):
@@ -484,9 +451,7 @@ class TestProtocol(MockCommon):
         token_name = b"PROTO_test_token"
 
         # Create protocol input with token
-        protocol_input = self.create_mock_tx_out(
-            self.script_address, value={b"": 2000000, policy_id: {token_name: 1}}
-        )
+        protocol_input = self.create_mock_tx_out(self.script_address, value={b"": 2000000, policy_id: {token_name: 1}})
 
         extracted_token = extract_token_from_input(protocol_input)
 
@@ -520,7 +485,8 @@ class TestProtocol(MockCommon):
         """Test protocol token extraction fails with no tokens"""
         # Create protocol input with only ADA
         protocol_input = self.create_mock_tx_out(
-            self.script_address, value={b"": 2000000}  # Only ADA
+            self.script_address,
+            value={b"": 2000000},  # Only ADA
         )
 
         with pytest.raises(AssertionError, match="Token not found in transaction input"):
@@ -541,10 +507,7 @@ class TestProtocol(MockCommon):
     def test_validate_datum_update_admin_change_success(self):
         """Test successful admin update validation"""
         new_datum = DatumProtocol(
-            project_admins=[
-                bytes.fromhex("b" * 56),
-                bytes.fromhex("c" * 56),
-            ],  # Changed admin list
+            project_admins=[bytes.fromhex("b" * 56), bytes.fromhex("c" * 56)],  # Changed admin list
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
             projects=[],
@@ -592,9 +555,7 @@ class TestProtocol(MockCommon):
     def test_validate_datum_update_too_many_admins_fails(self):
         """Test datum update fails with too many admins"""
         new_datum = DatumProtocol(
-            project_admins=[
-                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)
-            ],  # 11 admins (too many)
+            project_admins=[bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)],  # 11 admins (too many)
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
             projects=[],
@@ -606,9 +567,7 @@ class TestProtocol(MockCommon):
     def test_validate_datum_update_max_admins_success(self):
         """Test datum update succeeds with maximum allowed admins (10)"""
         new_datum = DatumProtocol(
-            project_admins=[
-                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(10)
-            ],  # 10 admins (maximum allowed)
+            project_admins=[bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(10)],  # 10 admins (maximum allowed)
             protocol_fee=1000,
             oracle_id=bytes.fromhex("a" * 56),
             projects=[],
@@ -616,9 +575,6 @@ class TestProtocol(MockCommon):
 
         # Should not raise any exception
         validate_datum_update(new_datum)
-
-
-
 
     def test_validator_update_protocol_success(self):
         """Test successful UpdateProtocol validation"""
@@ -632,18 +588,12 @@ class TestProtocol(MockCommon):
 
         # Create old datum
         old_datum = DatumProtocol(
-            project_admins=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[],
+            project_admins=[bytes.fromhex("a" * 56)], protocol_fee=1000, oracle_id=bytes.fromhex("a" * 56), projects=[]
         )
 
         # Create new datum (only fee changed)
         new_datum = DatumProtocol(
-            project_admins=[bytes.fromhex("a" * 56)],
-            protocol_fee=2000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[],
+            project_admins=[bytes.fromhex("a" * 56)], protocol_fee=2000, oracle_id=bytes.fromhex("a" * 56), projects=[]
         )
 
         # Create UTxOs
@@ -678,9 +628,7 @@ class TestProtocol(MockCommon):
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
         # Create redeemer
-        redeemer = UpdateProtocol(
-            protocol_input_index=1, user_input_index=0, protocol_output_index=0
-        )
+        redeemer = UpdateProtocol(protocol_input_index=1, user_input_index=0, protocol_output_index=0)
 
         # Should not raise any exception
         protocol_validator(policy_id, old_datum, redeemer, context)
@@ -727,16 +675,12 @@ class TestProtocol(MockCommon):
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, protocol_input], outputs=[protocol_output_utxo]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, protocol_input], outputs=[protocol_output_utxo])
 
         spending_purpose = Spending(oref_protocol)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProtocol(
-            protocol_input_index=1, user_input_index=0, protocol_output_index=0
-        )
+        redeemer = UpdateProtocol(protocol_input_index=1, user_input_index=0, protocol_output_index=0)
         with pytest.raises(AssertionError, match="User does not have required token"):
             protocol_validator(policy_id, old_datum, redeemer, context)
 
@@ -779,26 +723,19 @@ class TestProtocol(MockCommon):
         # User has token with correct name but under different policy
         user_input_utxo = self.create_mock_tx_out(
             self.sample_address,
-            value={
-                b"": 2000000,
-                different_policy_id: {user_token_name: 1},
-            },  # Wrong policy!
+            value={b"": 2000000, different_policy_id: {user_token_name: 1}},  # Wrong policy!
         )
 
         # Create transaction
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, protocol_input], outputs=[protocol_output_utxo]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, protocol_input], outputs=[protocol_output_utxo])
 
         spending_purpose = Spending(oref_protocol)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProtocol(
-            protocol_input_index=1, user_input_index=0, protocol_output_index=0
-        )
+        redeemer = UpdateProtocol(protocol_input_index=1, user_input_index=0, protocol_output_index=0)
 
         with pytest.raises(AssertionError, match="User does not have required token"):
             protocol_validator(policy_id, old_datum, redeemer, context)
@@ -816,9 +753,7 @@ class TestProtocol(MockCommon):
         # Create datums with invalid change (too many admins)
         old_datum = self.create_mock_datum_protocol()
         new_datum = DatumProtocol(
-            project_admins=[
-                bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)
-            ],  # 11 admins (too many)
+            project_admins=[bytes.fromhex(f"{i:02x}" + "0" * 54) for i in range(11)],  # 11 admins (too many)
             protocol_fee=old_datum.protocol_fee,
             oracle_id=old_datum.oracle_id,
             projects=old_datum.projects,
@@ -845,16 +780,12 @@ class TestProtocol(MockCommon):
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, protocol_input], outputs=[protocol_output_utxo]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, protocol_input], outputs=[protocol_output_utxo])
 
         spending_purpose = Spending(oref_protocol)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProtocol(
-            protocol_input_index=1, user_input_index=0, protocol_output_index=0
-        )
+        redeemer = UpdateProtocol(protocol_input_index=1, user_input_index=0, protocol_output_index=0)
 
         # Should fail due to too many admins
         with pytest.raises(AssertionError, match="Protocol cannot have more than 10 admins"):
@@ -894,16 +825,12 @@ class TestProtocol(MockCommon):
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, protocol_input], outputs=[protocol_output_utxo]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, protocol_input], outputs=[protocol_output_utxo])
 
         spending_purpose = Spending(oref_protocol)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProtocol(
-            protocol_input_index=1, user_input_index=0, protocol_output_index=0
-        )
+        redeemer = UpdateProtocol(protocol_input_index=1, user_input_index=0, protocol_output_index=0)
 
         # Should fail because output has no datum
         with pytest.raises(AssertionError):
@@ -920,17 +847,14 @@ class TestProtocol(MockCommon):
 
         # Create protocol datum
         protocol_datum = DatumProtocol(
-            project_admins=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[],
+            project_admins=[bytes.fromhex("a" * 56)], protocol_fee=1000, oracle_id=bytes.fromhex("a" * 56), projects=[]
         )
 
         # Create protocol input with datum
         protocol_input_utxo = self.create_mock_tx_out(
             self.script_address,
             value={b"": 10000000, policy_id: {protocol_token_name: 1}},
-            datum=SomeOutputDatum(protocol_datum)
+            datum=SomeOutputDatum(protocol_datum),
         )
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
 
@@ -960,23 +884,21 @@ class TestProtocol(MockCommon):
 
         # Create protocol datum
         protocol_datum = DatumProtocol(
-            project_admins=[bytes.fromhex("a" * 56)],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("a" * 56),
-            projects=[],
+            project_admins=[bytes.fromhex("a" * 56)], protocol_fee=1000, oracle_id=bytes.fromhex("a" * 56), projects=[]
         )
 
         # Create protocol input with datum
         protocol_input_utxo = self.create_mock_tx_out(
             self.script_address,
             value={b"": 10000000, policy_id: {protocol_token_name: 1}},
-            datum=SomeOutputDatum(protocol_datum)
+            datum=SomeOutputDatum(protocol_datum),
         )
         protocol_input = self.create_mock_tx_in_info(oref_protocol, protocol_input_utxo)
 
         # Create user input WITHOUT required token
         user_input_utxo = self.create_mock_tx_out(
-            self.sample_address, value={b"": 2000000}  # No tokens
+            self.sample_address,
+            value={b"": 2000000},  # No tokens
         )
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
@@ -1133,12 +1055,11 @@ class TestProtocolNFTMinting(MockCommon):
 
         # Create outputs with no tokens of this policy
         output_no_tokens = self.create_mock_tx_out(
-            self.sample_address, value={b"": 2000000}  # Only ADA
+            self.sample_address,
+            value={b"": 2000000},  # Only ADA
         )
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[consumed_input], outputs=[output_no_tokens], mint=mint_value
-        )
+        tx_info = self.create_mock_tx_info(inputs=[consumed_input], outputs=[output_no_tokens], mint=mint_value)
 
         minting_purpose = Minting(self.sample_policy_id)
         context = self.create_mock_script_context(minting_purpose, tx_info)
@@ -1170,19 +1091,14 @@ class TestProtocolNFTMinting(MockCommon):
             },
         )
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[consumed_input], outputs=[output_with_tokens], mint=mint_value
-        )
+        tx_info = self.create_mock_tx_info(inputs=[consumed_input], outputs=[output_with_tokens], mint=mint_value)
 
         minting_purpose = Minting(self.sample_policy_id)
         context = self.create_mock_script_context(minting_purpose, tx_info)
 
         redeemer = Burn()
 
-        with pytest.raises(
-            AssertionError,
-            match="Must mint exactly 2 tokens",
-        ):
+        with pytest.raises(AssertionError, match="Must mint exactly 2 tokens"):
             protocol_nft_validator(consumed_utxo_ref, redeemer, context)
 
     def test_burn_positive_amount_fails(self):
@@ -1205,10 +1121,7 @@ class TestProtocolNFTMinting(MockCommon):
 
         redeemer = Burn()
 
-        with pytest.raises(
-            AssertionError,
-            match="Must mint exactly 2 tokens",
-        ):
+        with pytest.raises(AssertionError, match="Must mint exactly 2 tokens"):
             protocol_nft_validator(consumed_utxo_ref, redeemer, context)
 
     def test_burn_tokens_in_outputs_fails(self):
@@ -1232,9 +1145,7 @@ class TestProtocolNFTMinting(MockCommon):
             },
         )
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[consumed_input], outputs=[output_with_tokens], mint=mint_value
-        )
+        tx_info = self.create_mock_tx_info(inputs=[consumed_input], outputs=[output_with_tokens], mint=mint_value)
 
         minting_purpose = Minting(self.sample_policy_id)
         context = self.create_mock_script_context(minting_purpose, tx_info)
@@ -1277,7 +1188,8 @@ class TestProtocolNFTMinting(MockCommon):
         mint_value = {self.sample_policy_id: {protocol_token_name: 1, user_token_name: 1}}
 
         tx_info = self.create_mock_tx_info(
-            inputs=[other_input], mint=mint_value  # consumed_input is at index 1
+            inputs=[other_input],
+            mint=mint_value,  # consumed_input is at index 1
         )
 
         minting_purpose = Minting(self.sample_policy_id)
@@ -1332,10 +1244,7 @@ class TestProjectNFTMinting(MockCommon):
 
         # Create protocol datum with admin
         protocol_datum = DatumProtocol(
-            project_admins=[admin_pkh],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("e" * 56),
-            projects=[],
+            project_admins=[admin_pkh], protocol_fee=1000, oracle_id=bytes.fromhex("e" * 56), projects=[]
         )
 
         # Create the consumed UTXO
@@ -1346,7 +1255,7 @@ class TestProjectNFTMinting(MockCommon):
         protocol_ref_utxo = self.create_mock_tx_out(
             self.script_address,
             value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
-            datum=SomeOutputDatum(protocol_datum)
+            datum=SomeOutputDatum(protocol_datum),
         )
         protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
 
@@ -1361,7 +1270,7 @@ class TestProjectNFTMinting(MockCommon):
         tx_info = self.create_mock_tx_info(
             inputs=[consumed_input],
             mint=mint_value,
-            signatories=[admin_pkh]  # Admin signs the transaction
+            signatories=[admin_pkh],  # Admin signs the transaction
         )
         tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
 
@@ -1380,17 +1289,14 @@ class TestProjectNFTMinting(MockCommon):
         # Create unique UTXO reference
         consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         protocol_policy_id = bytes.fromhex("b" * 56)
-        
+
         # Create admin and non-admin signatures
         admin_pkh = bytes.fromhex("abc123" + "0" * 50)
         non_admin_pkh = bytes.fromhex("def456" + "0" * 50)
-        
+
         # Create protocol datum with admin
         protocol_datum = DatumProtocol(
-            project_admins=[admin_pkh],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("e" * 56),
-            projects=[],
+            project_admins=[admin_pkh], protocol_fee=1000, oracle_id=bytes.fromhex("e" * 56), projects=[]
         )
 
         # Create the consumed UTXO
@@ -1401,7 +1307,7 @@ class TestProjectNFTMinting(MockCommon):
         protocol_ref_utxo = self.create_mock_tx_out(
             self.script_address,
             value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
-            datum=SomeOutputDatum(protocol_datum)
+            datum=SomeOutputDatum(protocol_datum),
         )
         protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
 
@@ -1416,7 +1322,7 @@ class TestProjectNFTMinting(MockCommon):
         tx_info = self.create_mock_tx_info(
             inputs=[consumed_input],
             mint=mint_value,
-            signatories=[non_admin_pkh]  # Non-admin signs the transaction
+            signatories=[non_admin_pkh],  # Non-admin signs the transaction
         )
         tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
 
@@ -1436,7 +1342,7 @@ class TestProjectNFTMinting(MockCommon):
         # Create unique UTXO reference
         consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         protocol_policy_id = bytes.fromhex("b" * 56)
-        
+
         # Create admin signature
         admin_pkh = bytes.fromhex("abc123" + "0" * 50)
 
@@ -1452,11 +1358,7 @@ class TestProjectNFTMinting(MockCommon):
         mint_value = {self.sample_policy_id: {project_token_name: 1, user_token_name: 1}}
 
         # Create transaction info with admin signature but NO reference input
-        tx_info = self.create_mock_tx_info(
-            inputs=[consumed_input],
-            mint=mint_value,
-            signatories=[admin_pkh]
-        )
+        tx_info = self.create_mock_tx_info(inputs=[consumed_input], mint=mint_value, signatories=[admin_pkh])
         # Don't add reference_inputs - this should cause failure
 
         # Create minting context
@@ -1473,23 +1375,20 @@ class TestProjectNFTMinting(MockCommon):
     def test_burn_project_success_with_admin_signature(self):
         """Test successful project NFT burning with admin signature"""
         protocol_policy_id = bytes.fromhex("b" * 56)
-        
+
         # Create admin signature
         admin_pkh = bytes.fromhex("abc123" + "0" * 50)
-        
+
         # Create protocol datum with admin
         protocol_datum = DatumProtocol(
-            project_admins=[admin_pkh],
-            protocol_fee=1000,
-            oracle_id=bytes.fromhex("e" * 56),
-            projects=[],
+            project_admins=[admin_pkh], protocol_fee=1000, oracle_id=bytes.fromhex("e" * 56), projects=[]
         )
 
         # Create protocol reference input
         protocol_ref_utxo = self.create_mock_tx_out(
             self.script_address,
             value={b"": 5000000, protocol_policy_id: {b"PROTO_NFT": 1}},
-            datum=SomeOutputDatum(protocol_datum)
+            datum=SomeOutputDatum(protocol_datum),
         )
         protocol_ref_input = TxInInfo(self.create_mock_oref(bytes.fromhex("c" * 64), 0), protocol_ref_utxo)
 
@@ -1503,15 +1402,12 @@ class TestProjectNFTMinting(MockCommon):
 
         # Create outputs with no tokens of this policy
         output_no_tokens = self.create_mock_tx_out(
-            self.sample_address, value={b"": 2000000}  # Only ADA
+            self.sample_address,
+            value={b"": 2000000},  # Only ADA
         )
 
         # Create transaction info with admin signature
-        tx_info = self.create_mock_tx_info(
-            outputs=[output_no_tokens],
-            mint=mint_value,
-            signatories=[admin_pkh]
-        )
+        tx_info = self.create_mock_tx_info(outputs=[output_no_tokens], mint=mint_value, signatories=[admin_pkh])
         tx_info.reference_inputs = [protocol_ref_input]  # Add reference input
 
         # Create minting context

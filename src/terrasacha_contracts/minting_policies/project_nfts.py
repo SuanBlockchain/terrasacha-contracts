@@ -9,10 +9,12 @@ class MintProject(PlutusData):
     CONSTR_ID = 0
     protocol_input_index: int  # Index of the input UTXO to be consumed
 
+
 @dataclass()
 class BurnProject(PlutusData):
     CONSTR_ID = 1
     protocol_input_index: int  # Index of the reference input UTXO
+
 
 def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
     """
@@ -25,11 +27,9 @@ def validate_signatories(input_datum: DatumProtocol, tx_info: TxInfo) -> None:
     for signer in signatories:
         assert any([admin == signer for admin in admins]), "Minting requires signature from one of the admins"
 
+
 def validator(
-    oref: TxOutRef,
-    protocol_policy_id: PolicyId,
-    redeemer: Union[MintProject, BurnProject],
-    context: ScriptContext,
+    oref: TxOutRef, protocol_policy_id: PolicyId, redeemer: Union[MintProject, BurnProject], context: ScriptContext
 ) -> None:
     """
     Protocol contract validator for minting and burning protocol NFTs.
@@ -52,10 +52,9 @@ def validator(
 
     assert protocol_token.policy_id == protocol_policy_id, "Wrong protocol token policy ID"
 
-    assert check_token_present(
-        protocol_token.policy_id,
-        protocol_reference_input,
-    ), "Protocol reference input must have the protocol token"
+    assert check_token_present(protocol_token.policy_id, protocol_reference_input), (
+        "Protocol reference input must have the protocol token"
+    )
 
     protocol_datum = protocol_reference_input.datum
     assert isinstance(protocol_datum, SomeOutputDatum)
@@ -64,7 +63,6 @@ def validator(
     validate_signatories(protocol_datum_value, tx_info)
 
     if isinstance(redeemer, MintProject):
-
         # 1. Validate that the specified UTXO is consumed
         assert has_utxo(context, oref), "UTxO not consumed"
 
@@ -76,7 +74,6 @@ def validator(
         assert our_minted.get(user_token_name, 0) == 1, "Must mint exactly 1 user token"
 
     elif isinstance(redeemer, BurnProject):
-
         # Ensure no tokens are sent to any output with this policy
         for output in tx_info.outputs:
             token_amount = sum(output.value.get(own_policy_id, {b"": 0}).values())

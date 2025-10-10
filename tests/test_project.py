@@ -13,11 +13,11 @@ from opshin.std.builtins import *
 from terrasacha_contracts.util import *
 from terrasacha_contracts.validators.project import (
     validate_datum_update,
-    validate_stakeholder_authorization,
     validate_immutable_fields_update_token,
+    validate_stakeholder_authorization,
     validate_stakeholder_claim,
-    validator as project_validator,
 )
+from terrasacha_contracts.validators.project import validator as project_validator
 
 
 class MockCommonProject:
@@ -29,12 +29,8 @@ class MockCommonProject:
         self.sample_policy_id = bytes.fromhex("b" * 56)
         self.project_token_policy_id = bytes.fromhex("d" * 56)
 
-        self.sample_address = Address(
-            PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential()
-        )
-        self.project_script_address = Address(
-            ScriptCredential(self.sample_policy_id), NoStakingCredential()
-        )
+        self.sample_address = Address(PubKeyCredential(bytes.fromhex("e" * 56)), NoStakingCredential())
+        self.project_script_address = Address(ScriptCredential(self.sample_policy_id), NoStakingCredential())
 
     def create_mock_oref(self, tx_id_bytes: bytes = None, idx: int = 0) -> TxOutRef:
         """Create a mock transaction output reference"""
@@ -45,8 +41,11 @@ class MockCommonProject:
         return TxOutRef(tx_id, idx)
 
     def create_mock_stakeholder_participation(
-        self, stakeholder_name: str = "stakeholder1", participation: int = 1000000,
-        pkh: bytes = None, claimed: BoolData = None
+        self,
+        stakeholder_name: str = "stakeholder1",
+        participation: int = 1000000,
+        pkh: bytes = None,
+        claimed: BoolData = None,
     ) -> StakeHolderParticipation:
         """Create a mock stakeholder participation"""
         if pkh is None:
@@ -55,18 +54,11 @@ class MockCommonProject:
             claimed = FalseData()
 
         return StakeHolderParticipation(
-            stakeholder=stakeholder_name.encode(),
-            pkh=pkh,
-            participation=participation,
-            claimed=claimed
+            stakeholder=stakeholder_name.encode(), pkh=pkh, participation=participation, claimed=claimed
         )
 
     def create_mock_certification(
-        self,
-        cert_date: int = 1640995200,
-        quantity: int = 1000,
-        real_cert_date: int = 0,
-        real_quantity: int = 0,
+        self, cert_date: int = 1640995200, quantity: int = 1000, real_cert_date: int = 0, real_quantity: int = 0
     ) -> Certification:
         """Create a mock certification"""
         return Certification(
@@ -77,20 +69,13 @@ class MockCommonProject:
         )
 
     def create_mock_token_project(
-        self,
-        policy_id: bytes = None,
-        token_name: bytes = b"PROJECT_TOKEN",
-        total_supply: int = 5000000,
+        self, policy_id: bytes = None, token_name: bytes = b"PROJECT_TOKEN", total_supply: int = 5000000
     ) -> TokenProject:
         """Create a mock token project"""
         if policy_id is None:
             policy_id = self.project_token_policy_id
 
-        return TokenProject(
-            policy_id=policy_id,
-            token_name=token_name,
-            total_supply=total_supply,
-        )
+        return TokenProject(policy_id=policy_id, token_name=token_name, total_supply=total_supply)
 
     def create_mock_datum_project_params(
         self,
@@ -102,11 +87,7 @@ class MockCommonProject:
         if project_id is None:
             project_id = bytes.fromhex("1234567890abcdef" * 4)
 
-        return DatumProjectParams(
-            project_id=project_id,
-            project_metadata=project_metadata,
-            project_state=project_state,
-        )
+        return DatumProjectParams(project_id=project_id, project_metadata=project_metadata, project_state=project_state)
 
     def create_mock_datum_project(
         self,
@@ -136,38 +117,24 @@ class MockCommonProject:
             certifications = [self.create_mock_certification(quantity=project_token.total_supply)]
 
         return DatumProject(
-            params=params,
-            project_token=project_token,
-            stakeholders=stakeholders,
-            certifications=certifications,
+            params=params, project_token=project_token, stakeholders=stakeholders, certifications=certifications
         )
 
     def create_mock_tx_out(
-        self,
-        address: Address,
-        value: Dict[bytes, Dict[bytes, int]] = None,
-        datum: Optional[OutputDatum] = None,
+        self, address: Address, value: Dict[bytes, Dict[bytes, int]] = None, datum: Optional[OutputDatum] = None
     ) -> TxOut:
         """Create a mock transaction output"""
         if value is None:
             value = {b"": 2000000}
 
-        return TxOut(
-            address=address,
-            value=value,
-            datum=datum or NoOutputDatum(),
-            reference_script=NoScriptHash(),
-        )
+        return TxOut(address=address, value=value, datum=datum or NoOutputDatum(), reference_script=NoScriptHash())
 
     def create_mock_tx_in_info(self, oref: TxOutRef, resolved: TxOut) -> TxInInfo:
         """Create a mock transaction input info"""
         return TxInInfo(out_ref=oref, resolved=resolved)
 
     def create_mock_tx_info(
-        self,
-        inputs: List[TxInInfo] = None,
-        outputs: List[TxOut] = None,
-        signatories: List[bytes] = None,
+        self, inputs: List[TxInInfo] = None, outputs: List[TxOut] = None, signatories: List[bytes] = None
     ) -> TxInfo:
         """Create a mock transaction info"""
         if inputs is None:
@@ -195,9 +162,7 @@ class MockCommonProject:
             id=self.sample_tx_id,
         )
 
-    def create_mock_script_context(
-        self, purpose: ScriptPurpose, tx_info: TxInfo = None
-    ) -> ScriptContext:
+    def create_mock_script_context(self, purpose: ScriptPurpose, tx_info: TxInfo = None) -> ScriptContext:
         """Create a mock script context"""
         if tx_info is None:
             tx_info = self.create_mock_tx_info()
@@ -216,7 +181,7 @@ class TestValidateDatumUpdate(MockCommonProject):
         new_params = DatumProjectParams(
             project_id=old_datum.params.project_id,
             project_metadata=b"https://example.com/updated.json",
-            project_state=0
+            project_state=0,
         )
 
         new_datum = DatumProject(
@@ -236,7 +201,7 @@ class TestValidateDatumUpdate(MockCommonProject):
         new_params = DatumProjectParams(
             project_id=old_datum.params.project_id,
             project_metadata=old_datum.params.project_metadata,
-            project_state=1  # Progress to state 1
+            project_state=1,  # Progress to state 1
         )
 
         new_datum = DatumProject(
@@ -256,7 +221,7 @@ class TestValidateDatumUpdate(MockCommonProject):
         old_datum = self.create_mock_datum_project()
 
         bad_stakeholders = [
-            self.create_mock_stakeholder_participation("bad", -1000),  # Negative!
+            self.create_mock_stakeholder_participation("bad", -1000)  # Negative!
         ]
 
         new_datum = DatumProject(
@@ -294,9 +259,7 @@ class TestValidateDatumUpdate(MockCommonProject):
         old_datum = self.create_mock_datum_project()
 
         # Certification quantity doesn't match total supply
-        bad_certs = [
-            self.create_mock_certification(quantity=old_datum.project_token.total_supply - 1000)
-        ]
+        bad_certs = [self.create_mock_certification(quantity=old_datum.project_token.total_supply - 1000)]
 
         new_datum = DatumProject(
             params=old_datum.params,
@@ -318,7 +281,7 @@ class TestValidateDatumUpdate(MockCommonProject):
         new_params = DatumProjectParams(
             project_id=bytes.fromhex("ffffffff" * 8),  # Different ID
             project_metadata=old_datum.params.project_metadata,
-            project_state=1
+            project_state=1,
         )
 
         new_datum = DatumProject(
@@ -348,9 +311,7 @@ class TestProjectValidator(MockCommonProject):
 
         # Create new datum with state progression
         new_params = DatumProjectParams(
-            project_id=old_datum.params.project_id,
-            project_metadata=old_datum.params.project_metadata,
-            project_state=1
+            project_id=old_datum.params.project_id, project_metadata=old_datum.params.project_metadata, project_state=1
         )
         new_datum = DatumProject(
             params=new_params,
@@ -373,26 +334,18 @@ class TestProjectValidator(MockCommonProject):
         )
 
         user_input_utxo = self.create_mock_tx_out(
-            self.sample_address,
-            value={b"": 2000000, policy_id: {user_token_name: 1}}
+            self.sample_address, value={b"": 2000000, policy_id: {user_token_name: 1}}
         )
 
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input],
-            outputs=[project_output_utxo],
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, project_input], outputs=[project_output_utxo])
 
         spending_purpose = Spending(oref_project)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProject(
-            project_input_index=1,
-            user_input_index=0,
-            project_output_index=0
-        )
+        redeemer = UpdateProject(project_input_index=1, user_input_index=0, project_output_index=0)
 
         # Should not raise
         project_validator(policy_id, old_datum, redeemer, context)
@@ -421,27 +374,17 @@ class TestProjectValidator(MockCommonProject):
         )
 
         # User has NO token
-        user_input_utxo = self.create_mock_tx_out(
-            self.sample_address,
-            value={b"": 2000000}
-        )
+        user_input_utxo = self.create_mock_tx_out(self.sample_address, value={b"": 2000000})
 
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[user_input, project_input],
-            outputs=[project_output_utxo],
-        )
+        tx_info = self.create_mock_tx_info(inputs=[user_input, project_input], outputs=[project_output_utxo])
 
         spending_purpose = Spending(oref_project)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = UpdateProject(
-            project_input_index=1,
-            user_input_index=0,
-            project_output_index=0
-        )
+        redeemer = UpdateProject(project_input_index=1, user_input_index=0, project_output_index=0)
 
         with pytest.raises(AssertionError, match="User does not have required token"):
             project_validator(policy_id, old_datum, redeemer, context)
@@ -460,28 +403,22 @@ class TestProjectValidator(MockCommonProject):
         project_input_utxo = self.create_mock_tx_out(
             self.project_script_address,
             value={b"": 10000000, policy_id: {project_token_name: 1}},
-            datum=SomeOutputDatum(project_datum)
+            datum=SomeOutputDatum(project_datum),
         )
 
         user_input_utxo = self.create_mock_tx_out(
-            self.sample_address,
-            value={b"": 2000000, policy_id: {user_token_name: 1}}
+            self.sample_address, value={b"": 2000000, policy_id: {user_token_name: 1}}
         )
 
         project_input = self.create_mock_tx_in_info(oref_project, project_input_utxo)
         user_input = self.create_mock_tx_in_info(oref_user, user_input_utxo)
 
-        tx_info = self.create_mock_tx_info(
-            inputs=[project_input, user_input],
-        )
+        tx_info = self.create_mock_tx_info(inputs=[project_input, user_input])
 
         spending_purpose = Spending(oref_project)
         context = self.create_mock_script_context(spending_purpose, tx_info)
 
-        redeemer = EndProject(
-            project_input_index=0,
-            user_input_index=1
-        )
+        redeemer = EndProject(project_input_index=0, user_input_index=1)
 
         # Should not raise
         project_validator(policy_id, project_datum, redeemer, context)
@@ -494,9 +431,7 @@ class TestUpdateTokenValidation(MockCommonProject):
         """Test successful stakeholder authorization"""
         stakeholder_pkh = bytes.fromhex("abc123" + "0" * 50)
 
-        stakeholders = [
-            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh),
-        ]
+        stakeholders = [self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh)]
 
         datum = self.create_mock_datum_project(stakeholders=stakeholders)
         tx_info = self.create_mock_tx_info(signatories=[stakeholder_pkh])
@@ -510,9 +445,7 @@ class TestUpdateTokenValidation(MockCommonProject):
         stakeholder_pkh = bytes.fromhex("abc123" + "0" * 50)
         other_pkh = bytes.fromhex("def456" + "0" * 50)
 
-        stakeholders = [
-            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh),
-        ]
+        stakeholders = [self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh)]
 
         datum = self.create_mock_datum_project(stakeholders=stakeholders)
         tx_info = self.create_mock_tx_info(signatories=[other_pkh])  # Wrong signer
@@ -540,18 +473,14 @@ class TestUpdateTokenValidation(MockCommonProject):
         stakeholder_pkh = bytes.fromhex("abc123" + "0" * 50)
 
         old_stakeholders = [
-            self.create_mock_stakeholder_participation(
-                "landowner", 1000000, stakeholder_pkh, claimed=FalseData()
-            ),
+            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh, claimed=FalseData())
         ]
 
         old_datum = self.create_mock_datum_project(stakeholders=old_stakeholders)
 
         # Mark as claimed
         new_stakeholders = [
-            self.create_mock_stakeholder_participation(
-                "landowner", 1000000, stakeholder_pkh, claimed=TrueData()
-            ),
+            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh, claimed=TrueData())
         ]
 
         new_datum = DatumProject(
@@ -570,17 +499,13 @@ class TestUpdateTokenValidation(MockCommonProject):
 
         # Already claimed
         old_stakeholders = [
-            self.create_mock_stakeholder_participation(
-                "landowner", 1000000, stakeholder_pkh, claimed=TrueData()
-            ),
+            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh, claimed=TrueData())
         ]
 
         old_datum = self.create_mock_datum_project(stakeholders=old_stakeholders)
 
         new_stakeholders = [
-            self.create_mock_stakeholder_participation(
-                "landowner", 1000000, stakeholder_pkh, claimed=TrueData()
-            ),
+            self.create_mock_stakeholder_participation("landowner", 1000000, stakeholder_pkh, claimed=TrueData())
         ]
 
         new_datum = DatumProject(

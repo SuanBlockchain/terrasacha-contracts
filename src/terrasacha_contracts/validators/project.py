@@ -20,39 +20,22 @@ def validate_stakeholder_authorization(datum: DatumProject, tx_info: TxInfo) -> 
                 authorized_stakeholder_pkh = stakeholder.pkh
 
     # At least one stakeholder must sign for token operations
-    assert (
-        authorized_stakeholder_pkh != b""
-    ), "Transaction must be signed by at least one stakeholder"
+    assert authorized_stakeholder_pkh != b"", "Transaction must be signed by at least one stakeholder"
 
     return authorized_stakeholder_pkh
 
-def validate_immutable_fields_update_token(
-    old_datum: DatumProject, new_datum: DatumProject
-) -> None:
+
+def validate_immutable_fields_update_token(old_datum: DatumProject, new_datum: DatumProject) -> None:
     """Validate that immutable fields remain unchanged during UpdateToken operations"""
     # Immutable datum fields
     assert old_datum.params.project_id == new_datum.params.project_id, "Project ID cannot change"
-    assert (
-        old_datum.params.project_metadata == new_datum.params.project_metadata
-    ), "Project metadata cannot change"
-    assert (
-        old_datum.params.project_state == new_datum.params.project_state
-    ), "Project state cannot change"
-    assert (
-        old_datum.project_token.policy_id == new_datum.project_token.policy_id
-    ), "Token policy ID cannot change"
-    assert (
-        old_datum.project_token.token_name == new_datum.project_token.token_name
-    ), "Token name cannot change"
-    assert (
-        old_datum.project_token.total_supply == new_datum.project_token.total_supply
-    ), "Total supply cannot change"
-    assert len(old_datum.stakeholders) == len(
-        new_datum.stakeholders
-    ), "Stakeholders count cannot change"
-    assert len(old_datum.certifications) == len(
-        new_datum.certifications
-    ), "Certifications count cannot change"
+    assert old_datum.params.project_metadata == new_datum.params.project_metadata, "Project metadata cannot change"
+    assert old_datum.params.project_state == new_datum.params.project_state, "Project state cannot change"
+    assert old_datum.project_token.policy_id == new_datum.project_token.policy_id, "Token policy ID cannot change"
+    assert old_datum.project_token.token_name == new_datum.project_token.token_name, "Token name cannot change"
+    assert old_datum.project_token.total_supply == new_datum.project_token.total_supply, "Total supply cannot change"
+    assert len(old_datum.stakeholders) == len(new_datum.stakeholders), "Stakeholders count cannot change"
+    assert len(old_datum.certifications) == len(new_datum.certifications), "Certifications count cannot change"
 
     # Stakeholder immutable fields
     for i in range(len(old_datum.stakeholders)):
@@ -60,34 +43,25 @@ def validate_immutable_fields_update_token(
         new_stakeholder = new_datum.stakeholders[i]
 
         # Immutable stakeholder fields
-        assert (
-            old_stakeholder.stakeholder == new_stakeholder.stakeholder
-        ), "Stakeholder identity cannot change"
+        assert old_stakeholder.stakeholder == new_stakeholder.stakeholder, "Stakeholder identity cannot change"
         assert old_stakeholder.pkh == new_stakeholder.pkh, "Stakeholder PKH cannot change"
-        assert (
-            old_stakeholder.participation == new_stakeholder.participation
-        ), "Stakeholder participation cannot change"
+        assert old_stakeholder.participation == new_stakeholder.participation, "Stakeholder participation cannot change"
 
     # Certification immutable fields
     for i in range(len(old_datum.certifications)):
         old_cert = old_datum.certifications[i]
         new_cert = new_datum.certifications[i]
 
-        assert (
-            old_cert.certification_date == new_cert.certification_date
-        ), "Certification date cannot change"
+        assert old_cert.certification_date == new_cert.certification_date, "Certification date cannot change"
         assert old_cert.quantity == new_cert.quantity, "Certification quantity cannot change"
-        assert (
-            old_cert.real_certification_date == new_cert.real_certification_date
-        ), "Real certification date cannot change"
-        assert (
-            old_cert.real_quantity == new_cert.real_quantity
-        ), "Real certification quantity cannot change"
+        assert old_cert.real_certification_date == new_cert.real_certification_date, (
+            "Real certification date cannot change"
+        )
+        assert old_cert.real_quantity == new_cert.real_quantity, "Real certification quantity cannot change"
+
 
 def validate_stakeholder_claim(
-    old_datum: DatumProject,
-    new_datum: DatumProject,
-    authorized_stakeholder_pkh: bytes,
+    old_datum: DatumProject, new_datum: DatumProject, authorized_stakeholder_pkh: bytes
 ) -> None:
     """
     Validate stakeholder claim during UpdateToken operations.
@@ -100,13 +74,12 @@ def validate_stakeholder_claim(
 
         if old_stakeholder.pkh == authorized_stakeholder_pkh:
             # This is the authorized stakeholder - validate their claim
-            assert (
-                old_stakeholder.claimed == FalseData()
-            ), "Authorized stakeholder has already claimed their tokens"
+            assert old_stakeholder.claimed == FalseData(), "Authorized stakeholder has already claimed their tokens"
             assert new_stakeholder.claimed == TrueData(), "Authorized stakeholder must be marked as claimed"
         else:
             # Non-authorized stakeholders cannot change ANY field
             assert False, "Non-authorized stakeholders cannot change their claim status"
+
 
 def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> None:
     """
@@ -132,71 +105,67 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
         ##################################################################################################
 
         # Project parameters must be identical
-        assert (
-            old_datum.params.project_id == new_datum.params.project_id
-        ), "Project ID cannot be changed after project lock (state >= 1)"
-        assert (
-            old_datum.params.project_metadata == new_datum.params.project_metadata
-        ), "Project metadata cannot be changed after project lock (state >= 1)"
+        assert old_datum.params.project_id == new_datum.params.project_id, (
+            "Project ID cannot be changed after project lock (state >= 1)"
+        )
+        assert old_datum.params.project_metadata == new_datum.params.project_metadata, (
+            "Project metadata cannot be changed after project lock (state >= 1)"
+        )
 
         # All token fields must be identical
-        assert (
-            old_datum.project_token.policy_id == new_datum.project_token.policy_id
-        ), "Token policy ID cannot be changed after project lock (state >= 1)"
-        assert (
-            old_datum.project_token.token_name == new_datum.project_token.token_name
-        ), "Token name cannot be changed after project lock (state >= 1)"
-        assert (
-            old_datum.project_token.total_supply == new_datum.project_token.total_supply
-        ), "Total supply cannot be changed after project lock (state >= 1)"
+        assert old_datum.project_token.policy_id == new_datum.project_token.policy_id, (
+            "Token policy ID cannot be changed after project lock (state >= 1)"
+        )
+        assert old_datum.project_token.token_name == new_datum.project_token.token_name, (
+            "Token name cannot be changed after project lock (state >= 1)"
+        )
+        assert old_datum.project_token.total_supply == new_datum.project_token.total_supply, (
+            "Total supply cannot be changed after project lock (state >= 1)"
+        )
 
-        assert len(old_datum.stakeholders) == len(
-            new_datum.stakeholders
-        ), "Stakeholders count cannot change after project lock (state >= 1)"
+        assert len(old_datum.stakeholders) == len(new_datum.stakeholders), (
+            "Stakeholders count cannot change after project lock (state >= 1)"
+        )
         for i in range(len(old_datum.stakeholders)):
             old_stakeholder = old_datum.stakeholders[i]
             new_stakeholder = new_datum.stakeholders[i]
-            assert (
-                old_stakeholder.stakeholder == new_stakeholder.stakeholder
-            ), "Stakeholder identity cannot change after project lock (state >= 1)"
-            assert (
-                old_stakeholder.participation == new_stakeholder.participation
-            ), "Stakeholder participation cannot change after project lock (state >= 1)"
+            assert old_stakeholder.stakeholder == new_stakeholder.stakeholder, (
+                "Stakeholder identity cannot change after project lock (state >= 1)"
+            )
+            assert old_stakeholder.participation == new_stakeholder.participation, (
+                "Stakeholder participation cannot change after project lock (state >= 1)"
+            )
             # Between states 1 and 2, it is possible to update pkh in state 1
             # Claim status must remain always constant under this action
-            assert (
-                old_stakeholder.claimed == new_stakeholder.claimed
-            ), "Stakeholder claimed status cannot change after project lock (state >= 1)"
+            assert old_stakeholder.claimed == new_stakeholder.claimed, (
+                "Stakeholder claimed status cannot change after project lock (state >= 1)"
+            )
 
         # All certification data must be identical
-        assert len(old_datum.certifications) == len(
-            new_datum.certifications
-        ), "Certifications count cannot change after project lock (state >= 1)"
+        assert len(old_datum.certifications) == len(new_datum.certifications), (
+            "Certifications count cannot change after project lock (state >= 1)"
+        )
         for i in range(len(old_datum.certifications)):
             old_cert = old_datum.certifications[i]
             new_cert = new_datum.certifications[i]
-            assert (
-                old_cert.certification_date == new_cert.certification_date
-            ), "Certification date cannot change after project lock (state >= 1)"
-            assert (
-                old_cert.quantity == new_cert.quantity
-            ), "Certification quantity cannot change after project lock (state >= 1)"
+            assert old_cert.certification_date == new_cert.certification_date, (
+                "Certification date cannot change after project lock (state >= 1)"
+            )
+            assert old_cert.quantity == new_cert.quantity, (
+                "Certification quantity cannot change after project lock (state >= 1)"
+            )
             if old_datum.params.project_state == 1:
                 # In state 1, real values must remain empty
-                assert (
-                    new_cert.real_certification_date == 0
-                ), "Real certification date must be empty in project state 1"
-                assert (
-                    new_cert.real_quantity == 0
-                ), "Real certification quantity must be empty in project state 1"
+                assert new_cert.real_certification_date == 0, "Real certification date must be empty in project state 1"
+                assert new_cert.real_quantity == 0, "Real certification quantity must be empty in project state 1"
             elif old_datum.params.project_state == 2:
                 # In state 2, real values can be updated (after verification)
-                assert (
-                    old_cert.real_certification_date <= new_cert.real_certification_date
-                ), "Real certification date can only move forward in project state 2"
-                assert (
-                    old_cert.real_quantity <= new_cert.real_quantity
-                ), "Real certification quantity can only move forward in project state 2"
+                assert old_cert.real_certification_date <= new_cert.real_certification_date, (
+                    "Real certification date can only move forward in project state 2"
+                )
+                assert old_cert.real_quantity <= new_cert.real_quantity, (
+                    "Real certification quantity can only move forward in project state 2"
+                )
 
     else:
         ##################################################################################################
@@ -211,12 +180,12 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             # Participation must be non-negative
             assert stakeholder.participation >= 0, "Stakeholder participation must be non-negative"
             total_participation += stakeholder.participation
-            assert (
-                stakeholder.claimed == FalseData()
-            ), "Stakeholder claimed status cannot change after project lock (state >= 1)"
-        assert (
-            total_participation <= new_datum.project_token.total_supply
-        ), "Sum of stakeholder participation cannot exceed total supply"
+            assert stakeholder.claimed == FalseData(), (
+                "Stakeholder claimed status cannot change after project lock (state >= 1)"
+            )
+        assert total_participation <= new_datum.project_token.total_supply, (
+            "Sum of stakeholder participation cannot exceed total supply"
+        )
 
         # Certification validation rules
         total_certification_quantity = 0
@@ -227,24 +196,17 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             assert cert.certification_date >= 0, "Certification date must be non-negative"
 
             # For states below 2, real values should still be empty (only state 2 can have real values when certification is verified)
-            assert (
-                cert.real_certification_date == 0
-            ), "Real certification date can only be set when project_state is 2"
-            assert (
-                cert.real_quantity == 0
-            ), "Real certification quantity can only be set when project_state is 2"
+            assert cert.real_certification_date == 0, "Real certification date can only be set when project_state is 2"
+            assert cert.real_quantity == 0, "Real certification quantity can only be set when project_state is 2"
 
-        
-        assert (total_certification_quantity == new_datum.project_token.total_supply
-                    ), "Sum of certification quantities must equal total supply"
+        assert total_certification_quantity == new_datum.project_token.total_supply, (
+            "Sum of certification quantities must equal total supply"
+        )
+
 
 def validator(
-    token_policy_id: PolicyId,
-    datum_project: DatumProject,
-    redeemer: RedeemerProject,
-    context: ScriptContext,
+    token_policy_id: PolicyId, datum_project: DatumProject, redeemer: RedeemerProject, context: ScriptContext
 ) -> None:
-
     tx_info = context.tx_info
     purpose = get_spending_purpose(context)
     project_input = resolve_linear_input(tx_info, redeemer.project_input_index, purpose)
@@ -257,20 +219,16 @@ def validator(
             own_txout = txi.resolved
             own_address = own_txout.address
 
-    assert (
-        only_one_input_from_address(own_address, tx_info.inputs) == 1
-    ), "More than one input from the contract address"
+    assert only_one_input_from_address(own_address, tx_info.inputs) == 1, (
+        "More than one input from the contract address"
+    )
 
     if isinstance(redeemer, UpdateProject):
-        project_output = resolve_linear_output(
-            project_input, tx_info, redeemer.project_output_index
-        )
+        project_output = resolve_linear_output(project_input, tx_info, redeemer.project_output_index)
 
         user_input = tx_info.inputs[redeemer.user_input_index].resolved
 
-        assert check_token_present(
-            project_token.policy_id, user_input
-        ), "User does not have required token"
+        assert check_token_present(project_token.policy_id, user_input), "User does not have required token"
 
         validate_nft_continues(project_output, project_token)
 
@@ -284,9 +242,7 @@ def validator(
         # State validation is handled by the grey minting policy
 
         # Resolve input/output UTXOs
-        project_output = resolve_linear_output(
-            project_input, tx_info, redeemer.project_output_index
-        )
+        project_output = resolve_linear_output(project_input, tx_info, redeemer.project_output_index)
         # Validate NFT continues
         validate_nft_continues(project_output, project_token)
 
@@ -303,8 +259,6 @@ def validator(
     elif isinstance(redeemer, EndProject):
         user_input = tx_info.inputs[redeemer.user_input_index].resolved
 
-        assert check_token_present(
-            project_token.policy_id, user_input
-        ), "User does not have required token"
+        assert check_token_present(project_token.policy_id, user_input), "User does not have required token"
     else:
         assert False, "Invalid redeemer type"

@@ -3,77 +3,100 @@ name = "terrasacha-contracts"
 version = "0.1.0"
 description = "Terrasacha Smart Contracts with OpShin"
 authors = [
-    {name = "larestrepo",email = "larestrepomu@gmail.com"}
+    {name = "larestrepo", email = "larestrepomu@gmail.com"}
 ]
-license = "MIT"
-repository = "https://github.com/SuanBlockchain/terrasacha-contracts"
-keywords = ["cardano", "blockchain", "smart-contracts", "opshin", "carbon-credits"]
+license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
+keywords = ["cardano", "blockchain", "smart-contracts", "opshin", "carbon-credits"]
 dependencies = [
-    "opshin (>=0.24.3,<0.25.0)",
-    "pycardano (>=0.15.0,<0.16.0)",
-    "python-dotenv (>=1.1.1,<2.0.0)",
-    "requests (>=2.32.5,<3.0.0)"
+    "opshin>=0.26.0",
+    "python-dotenv>=1.1.1,<2.0.0",
+    "requests>=2.32.5,<3.0.0",
 ]
 
-[tool.poetry]
-packages = [{include = "terrasacha_contracts", from = "src"}]
+[project.urls]
+repository = "https://github.com/SuanBlockchain/terrasacha-contracts"
 
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.4.1"
-black = "^25.1.0"
-isort = "^6.0.1"
-mypy = "^1.17.1"
-pytest-cov = "^6.2.1"
-pytest-xdist = "^3.8.0"
-pytest-mock = "^3.14.1"
-pytest-html = "^4.1.1"
-pytest-benchmark = "^5.1.0"
-pytest-watch = "^4.2.0"
-hypothesis = "^6.138.3"
-
-
-[tool.poetry.group.test.dependencies]
-pytest = "^8.4.1"
-pytest-cov = "^6.2.1"
-pytest-xdist = "^3.8.0"
-pytest-mock = "^3.14.1"
-hypothesis = "^6.138.3"
-parameterized = "^0.9.0"
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.4.1",
+    "ruff>=0.8.0",
+    "mypy>=1.17.1",
+    "pytest-cov>=6.2.1",
+    "pytest-xdist>=3.8.0",
+    "pytest-mock>=3.14.1",
+    "pytest-html>=4.1.1",
+    "pytest-benchmark>=5.1.0",
+    "pytest-watch>=4.2.0",
+    "hypothesis>=6.138.3",
+]
+test = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "pytest-xdist>=3.8.0",
+    "pytest-mock>=3.14.1",
+    "hypothesis>=6.138.3",
+    "parameterized>=0.9.0",
+]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.black]
-line-length = 100
-target-version = ['py38']
-include = '\.pyi?$'
-extend-exclude = '''
-/(
-    \.eggs
-  | \.git
-  | \.hg
-  | \.mypy_cache
-  | \.tox
-  | \.venv
-  | _build
-  | buck-out
-  | build
-  | dist
-  | artifacts
-)/
-'''
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["terrasacha_contracts*"]
 
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 100
-known_first_party = ["terrasacha"]
-known_third_party = ["opshin", "pycardano", "pytest"]
-sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = [
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".tox",
+    ".venv",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "artifacts",
+]
+
+[tool.ruff.lint]
+# Enable pycodestyle (E/W), pyflakes (F), isort (I), and more
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+]
+
+# Per-file ignores
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # imported but unused
+"tests/*" = ["S101"]      # use of assert
+
+[tool.ruff.lint.isort]
+known-first-party = ["terrasacha_contracts"]
+known-third-party = ["opshin", "pycardano", "pytest"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+force-single-line = false
+lines-after-imports = 2
+split-on-trailing-comma = false  # Keep formatting compact, match skip-magic-trailing-comma
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = true  # Ignore trailing commas for more compact formatting
+line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.9"
@@ -90,9 +113,16 @@ warn_no_return = true
 warn_unreachable = true
 strict_equality = true
 show_error_codes = true
-mypy_path = "src"
-packages = ["terrasacha_contracts", "utils"]
 explicit_package_bases = true
+files = ["src"]
+exclude = [
+    "^build/",
+    "^dist/",
+    "^artifacts/",
+    "^\\.venv/",
+    "^src/terrasacha_contracts/",  # Skip all OpShin contract files
+    "^src/scripts/",               # Skip build scripts
+]
 
 [[tool.mypy.overrides]]
 module = [
@@ -168,7 +198,7 @@ precision = 2
 directory = "htmlcov"
 
 [tool.flake8]
-max-line-length = 100
+max-line-length = 120
 select = ["E", "W", "F"]
 ignore = [
     "E203",  # whitespace before ':'

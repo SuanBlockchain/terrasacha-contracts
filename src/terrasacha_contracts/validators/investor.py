@@ -2,6 +2,7 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
+
 # USDA stable coin policy ID (from myUSDFree minting policy)
 USDA_POLICY_ID = b"V\xa9\xc6\x9f\x1d3\xa7\xd5m\x91=\x82\x01S\xb7\xe2\xe7\xcf\x0f\xa8\xdc(6\xcc\xb1\xd9\xca\xec"
 
@@ -9,11 +10,8 @@ USDA_POLICY_ID = b"V\xa9\xc6\x9f\x1d3\xa7\xd5m\x91=\x82\x01S\xb7\xe2\xe7\xcf\x0f
 # Helper Functions
 ################################################
 
-def get_protocol_fee_from_reference(
-    tx_info: TxInfo,
-    protocol_ref_index: int,
-    protocol_nft_policy_id: PolicyId
-) -> int:
+
+def get_protocol_fee_from_reference(tx_info: TxInfo, protocol_ref_index: int, protocol_nft_policy_id: PolicyId) -> int:
     """
     Extract protocol fee from protocol NFT reference input.
 
@@ -28,9 +26,9 @@ def get_protocol_fee_from_reference(
     protocol_input = tx_info.reference_inputs[protocol_ref_index].resolved
 
     # Validate protocol NFT is present
-    assert check_token_present(
-        protocol_nft_policy_id, protocol_input
-    ), "Protocol reference input must contain protocol NFT"
+    assert check_token_present(protocol_nft_policy_id, protocol_input), (
+        "Protocol reference input must contain protocol NFT"
+    )
 
     # Extract datum
     protocol_datum = protocol_input.datum
@@ -39,11 +37,8 @@ def get_protocol_fee_from_reference(
 
     return protocol_datum_value.protocol_fee
 
-def validate_usda_payment(
-    outputs: List[TxOut],
-    recipient_pkh: bytes,
-    expected_amount: int
-) -> None:
+
+def validate_usda_payment(outputs: List[TxOut], recipient_pkh: bytes, expected_amount: int) -> None:
     """
     Validate that USDA payment is sent to recipient.
 
@@ -61,12 +56,9 @@ def validate_usda_payment(
 
     assert total_received >= expected_amount, "Insufficient USDA payment"
 
+
 def validate_grey_token_transfer(
-    outputs: List[TxOut],
-    buyer_pkh: bytes,
-    grey_policy_id: PolicyId,
-    grey_token_name: TokenName,
-    expected_amount: int
+    outputs: List[TxOut], buyer_pkh: bytes, grey_policy_id: PolicyId, grey_token_name: TokenName, expected_amount: int
 ) -> None:
     """
     Validate that grey tokens are transferred to buyer.
@@ -119,26 +111,18 @@ def validator(
         # Validate purchase amount
         assert redeemer.amount >= datum.min_purchase_amount, "Purchase amount below minimum"
         assert redeemer.amount <= datum.grey_token_amount, "Purchase amount exceeds available tokens"
-        
+
         # Get protocol fee from reference input
-        protocol_fee = get_protocol_fee_from_reference(
-            tx_info,
-            redeemer.protocol_ref_index,
-            protocol_policy_id
-        )
+        protocol_fee = get_protocol_fee_from_reference(tx_info, redeemer.protocol_ref_index, protocol_policy_id)
         # Validate grey token transfer to buyer
         validate_grey_token_transfer(
-            tx_info.outputs,
-            redeemer.buyer_pkh,
-            grey_token_policy_id,
-            grey_token_name,
-            redeemer.amount
+            tx_info.outputs, redeemer.buyer_pkh, grey_token_policy_id, grey_token_name, redeemer.amount
         )
 
         # Calculate payment with precision
         # Formula: (amount * price) / (10 ^ precision)
         total_payment_raw = redeemer.amount * datum.price_per_token.price
-        divisor = 10 ** datum.price_per_token.precision
+        divisor = 10**datum.price_per_token.precision
         total_payment = total_payment_raw // divisor
 
         # Calculate seller payment (total - protocol fee)
@@ -150,7 +134,6 @@ def validator(
         # If there are remaining tokens, validate contract continuation
         remaining_tokens = datum.grey_token_amount - redeemer.amount
         if remaining_tokens > 0:
-            
             investor_output = resolve_linear_output(investor_input, tx_info, redeemer.investor_output_index)
 
             # Validate output goes back to same contract address
@@ -168,7 +151,9 @@ def validator(
             # Validate immutable fields
             assert new_datum.seller_pkh == datum.seller_pkh, "Seller PKH cannot change"
             assert new_datum.price_per_token.price == datum.price_per_token.price, "Price cannot change during buy"
-            assert new_datum.price_per_token.precision == datum.price_per_token.precision, "Price precision cannot change during buy"
+            assert new_datum.price_per_token.precision == datum.price_per_token.precision, (
+                "Price precision cannot change during buy"
+            )
             assert new_datum.min_purchase_amount == datum.min_purchase_amount, "Min purchase cannot change"
 
             # Validate token amount decreased correctly
@@ -205,8 +190,12 @@ def validator(
         assert new_datum.min_purchase_amount == datum.min_purchase_amount, "Min purchase cannot change"
 
         # Validate price was updated
-        assert new_datum.price_per_token.price == redeemer.new_price_per_token.price, "Price must be updated to new value"
-        assert new_datum.price_per_token.precision == redeemer.new_price_per_token.precision, "Precision must be updated to new value"
+        assert new_datum.price_per_token.price == redeemer.new_price_per_token.price, (
+            "Price must be updated to new value"
+        )
+        assert new_datum.price_per_token.precision == redeemer.new_price_per_token.precision, (
+            "Precision must be updated to new value"
+        )
 
         # Validate tokens remain in contract
         output_tokens = investor_output.value.get(grey_token_policy_id, {b"": 0}).get(grey_token_name, 0)

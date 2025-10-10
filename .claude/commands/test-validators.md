@@ -19,7 +19,7 @@ This will:
 4. Generate coverage reports in `htmlcov/`
 
 ```bash
-poetry run pytest tests/ --cov=src --cov-report=term-missing --cov-report=html ${ARGUMENTS:+-k "$ARGUMENTS"}
+uv run pytest tests/ --cov=src --cov-report=term-missing --cov-report=html ${ARGUMENTS:+-k "$ARGUMENTS"}
 ```
 
 Common test categories:

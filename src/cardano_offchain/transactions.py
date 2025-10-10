@@ -16,27 +16,29 @@ from .wallet import CardanoWallet, WalletManager
 
 class TransactionBuilderHelper:
     """Helper class for building transactions with both local and reference scripts"""
-    
+
     def __init__(self, context: pc.ChainContext, contract_manager):
         self.context = context
         self.contract_manager = contract_manager
-    
-    def add_script_to_transaction(self, builder: pc.TransactionBuilder, contract_name: str, redeemer: pc.Redeemer = None) -> bool:
+
+    def add_script_to_transaction(
+        self, builder: pc.TransactionBuilder, contract_name: str, redeemer: pc.Redeemer = None
+    ) -> bool:
         """
         Add a script to a transaction, handling both local and reference scripts
-        
+
         Args:
             builder: Transaction builder
             contract_name: Name of the contract to add
             redeemer: Optional redeemer for spending scripts
-            
+
         Returns:
             True if script was added successfully, False otherwise
         """
         script_info = self.contract_manager.get_contract_script_info(contract_name)
         if not script_info:
             return False
-            
+
         if script_info["type"] == "reference_script":
             # For reference scripts, add as reference input
             ref_utxo_info = script_info["reference_utxo"]
@@ -47,14 +49,14 @@ class TransactionBuilderHelper:
         else:
             # For local scripts, the script will be included directly when needed
             return True
-    
+
     def get_script_for_minting(self, contract_name: str) -> Optional[pc.NativeScript]:
         """
         Get script for minting operations
-        
+
         Args:
             contract_name: Name of the minting policy contract
-            
+
         Returns:
             Script object or None if not available or is reference script
         """
@@ -62,14 +64,14 @@ class TransactionBuilderHelper:
         if not script_info or script_info["type"] == "reference_script":
             return None
         return script_info["cbor"]
-    
+
     def get_script_for_spending(self, contract_name: str) -> Optional[pc.NativeScript]:
         """
         Get script for spending operations
-        
+
         Args:
             contract_name: Name of the spending validator contract
-            
+
         Returns:
             Script object or None if not available or is reference script
         """
@@ -83,7 +85,10 @@ class CardanoTransactions:
     """Manages Cardano transaction operations with multi-wallet support"""
 
     def __init__(
-        self, wallet_source: Union[CardanoWallet, WalletManager], chain_context: CardanoChainContext, contract_manager=None
+        self,
+        wallet_source: Union[CardanoWallet, WalletManager],
+        chain_context: CardanoChainContext,
+        contract_manager=None,
     ):
         """
         Initialize transaction manager
@@ -108,7 +113,7 @@ class CardanoTransactions:
         self.chain_context = chain_context
         self.context = chain_context.get_context()
         self.api = chain_context.get_api()
-        
+
         # Initialize transaction builder helper for reference script support
         self.contract_manager = contract_manager
         if contract_manager:
@@ -166,11 +171,7 @@ class CardanoTransactions:
         return self.wallet_manager.check_all_balances(self.api, limit_addresses)
 
     def create_simple_transaction(
-        self,
-        to_address: str,
-        amount_ada: float,
-        from_address_index: int = 0,
-        wallet_name: Optional[str] = None,
+        self, to_address: str, amount_ada: float, from_address_index: int = 0, wallet_name: Optional[str] = None
     ) -> Optional[pc.Transaction]:
         """
         Create a simple ADA transfer transaction
@@ -261,12 +262,9 @@ class CardanoTransactions:
             "explorer_url": self.chain_context.get_explorer_url(tx_id),
             "network": self.chain_context.network,
         }
-    
+
     def sorted_utxos(self, txs: List[pc.UTxO]):
-        return sorted(
-            txs,
-            key=lambda u: (u.input.transaction_id.payload, u.input.index),
-        )
+        return sorted(txs, key=lambda u: (u.input.transaction_id.payload, u.input.index))
 
     def find_utxo_by_policy_id(self, utxos: List[pc.UTxO], policy_id: pc.ScriptHash) -> pc.UTxO:
         """Find UTXOs that contain tokens from a specific policy ID.
@@ -343,9 +341,7 @@ class CardanoTransactions:
                     builder.add_input(input_config["utxo"])
                 elif input_config["type"] == "script_input":
                     builder.add_script_input(
-                        input_config["utxo"],
-                        script=input_config["script"],
-                        redeemer=input_config["redeemer"],
+                        input_config["utxo"], script=input_config["script"], redeemer=input_config["redeemer"]
                     )
 
         if "outputs" in builder_config:
@@ -357,9 +353,7 @@ class CardanoTransactions:
 
         if "minting_scripts" in builder_config:
             for script_config in builder_config["minting_scripts"]:
-                builder.add_minting_script(
-                    script=script_config["script"], redeemer=script_config["redeemer"]
-                )
+                builder.add_minting_script(script=script_config["script"], redeemer=script_config["redeemer"])
 
         if "required_signers" in builder_config:
             builder.required_signers = builder_config["required_signers"]
@@ -367,10 +361,7 @@ class CardanoTransactions:
         return builder
 
     def sign_and_submit_transaction(
-        self,
-        builder: pc.TransactionBuilder,
-        signing_keys: List[pc.ExtendedSigningKey],
-        change_address: pc.Address,
+        self, builder: pc.TransactionBuilder, signing_keys: List[pc.ExtendedSigningKey], change_address: pc.Address
     ) -> dict:
         """
         Sign and submit a transaction from builder
@@ -400,11 +391,13 @@ class CardanoTransactions:
         except Exception as e:
             return {"success": False, "error": str(e), "transaction": None}
 
-
-    def create_reference_script(self, project_name: Optional[str] = None,
-                              destination_address: Optional[pc.Address] = None,
-                              source_wallet: Optional[CardanoWallet] = None,
-                              available_utxos: Optional[List[pc.UTxO]] = None) -> Dict[str, Any]:
+    def create_reference_script(
+        self,
+        project_name: Optional[str] = None,
+        destination_address: Optional[pc.Address] = None,
+        source_wallet: Optional[CardanoWallet] = None,
+        available_utxos: Optional[List[pc.UTxO]] = None,
+    ) -> Dict[str, Any]:
         """
         Create a reference script for the specified project
 
@@ -422,9 +415,9 @@ class CardanoTransactions:
             project_contract = self.contract_manager.get_project_contract(project_name)
             if not project_contract:
                 return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
-            
+
             # Handle reference script contracts
-            if hasattr(project_contract, 'storage_type') and project_contract.storage_type == 'reference_script':
+            if hasattr(project_contract, "storage_type") and project_contract.storage_type == "reference_script":
                 return {"success": False, "error": "Contract is already stored as a reference script"}
 
             # Use provided wallet or default wallet for signing
@@ -434,7 +427,7 @@ class CardanoTransactions:
 
             if destination_address is None:
                 destination_address = source_address
-            
+
             print(f"Using source address: {str(source_address)}")
             print(f"Using signing wallet: {signing_wallet.get_payment_verification_key_hash().hex()}")
 
@@ -442,7 +435,9 @@ class CardanoTransactions:
             if available_utxos and len(available_utxos) > 0:
                 # available_utxos is already a list of suitable UTxO objects (>5 ADA and non-reserved)
                 suitable_utxo = available_utxos[0]  # Use first suitable UTxO
-                print(f"Using pre-filtered UTXO for reference script: {suitable_utxo.input.transaction_id}:{suitable_utxo.input.index}")
+                print(
+                    f"Using pre-filtered UTXO for reference script: {suitable_utxo.input.transaction_id}:{suitable_utxo.input.index}"
+                )
             else:
                 # Fallback to original behavior (should not happen if UTXO isolation is working)
                 print("Warning: Using fallback UTXO selection - UTXO isolation may not be working properly")
@@ -459,45 +454,38 @@ class CardanoTransactions:
                     "success": False,
                     "error": "No suitable UTXO found for reference script creation (need >5 ADA, excluding reserved UTXOs)",
                 }
-                
+
             # Calculate minimum lovelace for reference script output
             min_val_ref_script = pc.min_lovelace(
                 self.context,
-                output=pc.TransactionOutput(
-                    destination_address,
-                    pc.Value(0),
-                    datum=None,
-                    script=project_contract.cbor,
-                ),
+                output=pc.TransactionOutput(destination_address, pc.Value(0), datum=None, script=project_contract.cbor),
             )
-            
+
             # Build transaction
             builder = pc.TransactionBuilder(self.context)
             # builder.add_input_address(source_address)
             builder.add_input(suitable_utxo)
-            
+
             # Add reference script output
             ref_script_output = pc.TransactionOutput(
-                destination_address, 
-                min_val_ref_script, 
-                script=project_contract.cbor
+                destination_address, min_val_ref_script, script=project_contract.cbor
             )
             builder.add_output(ref_script_output)
 
             # Build and sign transaction
             signed_tx = builder.build_and_sign([signing_key], change_address=source_address)
             tx_id = signed_tx.id.payload.hex()
-            
+
             # Find the output index of the reference script
             ref_output_index = None
             for i, output in enumerate(signed_tx.transaction_body.outputs):
                 if output.script is not None:
                     ref_output_index = i
                     break
-                    
+
             if ref_output_index is None:
                 return {"success": False, "error": "Reference script output not found in transaction"}
-            
+
             return {
                 "success": True,
                 "transaction": signed_tx,
@@ -505,23 +493,26 @@ class CardanoTransactions:
                 "reference_utxo": {
                     "tx_id": tx_id,
                     "output_index": ref_output_index,
-                    "address": str(destination_address)
+                    "address": str(destination_address),
                 },
                 "spent_utxo": {
                     "tx_id": suitable_utxo.input.transaction_id.payload.hex(),
-                    "index": suitable_utxo.input.index
+                    "index": suitable_utxo.input.index,
                 },
                 "explorer_url": self.chain_context.get_explorer_url(tx_id),
             }
 
         except Exception as e:
             return {"success": False, "error": f"Reference script creation failed: {e}"}
-        
-    def create_project_nfts_reference_script(self, project_name: Optional[str] = None,
-                                           source_address: Optional[pc.Address] = None,
-                                           destination_address: Optional[pc.Address] = None,
-                                           source_wallet: Optional[CardanoWallet] = None,
-                                           available_utxos: Optional[List[pc.UTxO]] = None) -> Dict[str, Any]:
+
+    def create_project_nfts_reference_script(
+        self,
+        project_name: Optional[str] = None,
+        source_address: Optional[pc.Address] = None,
+        destination_address: Optional[pc.Address] = None,
+        source_wallet: Optional[CardanoWallet] = None,
+        available_utxos: Optional[List[pc.UTxO]] = None,
+    ) -> Dict[str, Any]:
         """
         Create a reference script for the project NFTs minting policy
 
@@ -540,17 +531,20 @@ class CardanoTransactions:
             project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
             if not project_nfts_contract:
                 return {"success": False, "error": f"Project NFTs contract for '{project_name}' not compiled"}
-                
+
             # Handle reference script contracts
-            if hasattr(project_nfts_contract, 'storage_type') and project_nfts_contract.storage_type == 'reference_script':
+            if (
+                hasattr(project_nfts_contract, "storage_type")
+                and project_nfts_contract.storage_type == "reference_script"
+            ):
                 return {"success": False, "error": "Project NFTs contract is already stored as a reference script"}
-            
+
             # Use provided addresses or defaults
             if source_address is None:
                 source_address = self.wallet.get_address(0)
             if destination_address is None:
                 destination_address = source_address
-                
+
             # Use provided wallet or default wallet for signing
             signing_wallet = source_wallet if source_wallet else self.wallet
             signing_key = signing_wallet.get_signing_key(0)
@@ -559,7 +553,9 @@ class CardanoTransactions:
             if available_utxos and len(available_utxos) > 0:
                 # available_utxos is already a list of suitable UTxO objects (>5 ADA and non-reserved)
                 suitable_utxo = available_utxos[0]  # Use first suitable UTxO
-                print(f"Using pre-filtered UTXO for reference script: {suitable_utxo.input.transaction_id}:{suitable_utxo.input.index}")
+                print(
+                    f"Using pre-filtered UTXO for reference script: {suitable_utxo.input.transaction_id}:{suitable_utxo.input.index}"
+                )
             else:
                 # Fallback to original behavior (should not happen if UTXO isolation is working)
                 print("Warning: Using fallback UTXO selection - UTXO isolation may not be working properly")
@@ -576,44 +572,39 @@ class CardanoTransactions:
                     "success": False,
                     "error": "No suitable UTXO found for reference script creation (need >5 ADA, excluding reserved UTXOs)",
                 }
-                
+
             # Calculate minimum lovelace for reference script output
             min_val_ref_script = pc.min_lovelace(
                 self.context,
                 output=pc.TransactionOutput(
-                    destination_address,
-                    pc.Value(0),
-                    datum=None,
-                    script=project_nfts_contract.cbor,
+                    destination_address, pc.Value(0), datum=None, script=project_nfts_contract.cbor
                 ),
             )
-            
+
             # Build transaction
             builder = pc.TransactionBuilder(self.context)
             builder.add_input_address(source_address)
-            
+
             # Add reference script output
             ref_script_output = pc.TransactionOutput(
-                destination_address, 
-                min_val_ref_script, 
-                script=project_nfts_contract.cbor
+                destination_address, min_val_ref_script, script=project_nfts_contract.cbor
             )
             builder.add_output(ref_script_output)
 
             # Build and sign transaction
             signed_tx = builder.build_and_sign([signing_key], change_address=source_address)
             tx_id = signed_tx.id.payload.hex()
-            
+
             # Find the output index of the reference script
             ref_output_index = None
             for i, output in enumerate(signed_tx.transaction_body.outputs):
                 if output.script is not None:
                     ref_output_index = i
                     break
-                    
+
             if ref_output_index is None:
                 return {"success": False, "error": "Reference script output not found in transaction"}
-            
+
             return {
                 "success": True,
                 "transaction": signed_tx,
@@ -621,11 +612,11 @@ class CardanoTransactions:
                 "reference_utxo": {
                     "tx_id": tx_id,
                     "output_index": ref_output_index,
-                    "address": str(destination_address)
+                    "address": str(destination_address),
                 },
                 "spent_utxo": {
                     "tx_id": suitable_utxo.input.transaction_id.payload.hex(),
-                    "index": suitable_utxo.input.index
+                    "index": suitable_utxo.input.index,
                 },
                 "explorer_url": self.chain_context.get_explorer_url(tx_id),
             }

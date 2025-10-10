@@ -29,7 +29,7 @@ class MenuFormatter:
             Colors.HEADER
             + "║"
             + Colors.BOLD
-            + f"{title:^{self.width-2}}"
+            + f"{title:^{self.width - 2}}"
             + Colors.ENDC
             + Colors.HEADER
             + "║"
@@ -40,7 +40,7 @@ class MenuFormatter:
                 Colors.HEADER
                 + "║"
                 + Colors.OKBLUE
-                + f"{subtitle:^{self.width-2}}"
+                + f"{subtitle:^{self.width - 2}}"
                 + Colors.ENDC
                 + Colors.HEADER
                 + "║"
@@ -48,9 +48,7 @@ class MenuFormatter:
             )
         print(Colors.HEADER + "╚" + "═" * (self.width - 2) + "╝" + Colors.ENDC)
 
-    def print_status_bar(
-        self, network: str, balance: float, contracts_status: str = None, wallet_name: str = None
-    ):
+    def print_status_bar(self, network: str, balance: float, contracts_status: str = None, wallet_name: str = None):
         """Print a status information bar"""
         status_line = f"Network: {network}"
         if wallet_name:
@@ -59,19 +57,9 @@ class MenuFormatter:
         if contracts_status:
             status_line += f" | Contracts: {contracts_status}"
 
-        print(
-            f"{Colors.OKBLUE}┌{Colors.ENDC}"
-            + "─" * (self.width - 2)
-            + f"{Colors.OKBLUE}┐{Colors.ENDC}"
-        )
-        print(
-            f"{Colors.OKBLUE}│{Colors.ENDC} {status_line:<{self.width-4}} {Colors.OKBLUE}│{Colors.ENDC}"
-        )
-        print(
-            f"{Colors.OKBLUE}└{Colors.ENDC}"
-            + "─" * (self.width - 2)
-            + f"{Colors.OKBLUE}┘{Colors.ENDC}"
-        )
+        print(f"{Colors.OKBLUE}┌{Colors.ENDC}" + "─" * (self.width - 2) + f"{Colors.OKBLUE}┐{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}│{Colors.ENDC} {status_line:<{self.width - 4}} {Colors.OKBLUE}│{Colors.ENDC}")
+        print(f"{Colors.OKBLUE}└{Colors.ENDC}" + "─" * (self.width - 2) + f"{Colors.OKBLUE}┘{Colors.ENDC}")
 
     def print_section(self, title: str):
         """Print a section separator"""
@@ -85,19 +73,13 @@ class MenuFormatter:
             status_color = (
                 Colors.OKGREEN
                 if status == "✓"
-                else (
-                    Colors.WARNING
-                    if status == "⚠"
-                    else Colors.FAIL if status == "✗" else Colors.ENDC
-                )
+                else (Colors.WARNING if status == "⚠" else Colors.FAIL if status == "✗" else Colors.ENDC)
             )
             print(
                 f"{Colors.OKBLUE}│{Colors.ENDC} {Colors.BOLD}{number:>2}{Colors.ENDC}. {description:<50} {status_color}[{status}]{Colors.ENDC}"
             )
         else:
-            print(
-                f"{Colors.OKBLUE}│{Colors.ENDC} {Colors.BOLD}{number:>2}{Colors.ENDC}. {description}"
-            )
+            print(f"{Colors.OKBLUE}│{Colors.ENDC} {Colors.BOLD}{number:>2}{Colors.ENDC}. {description}")
 
     def print_separator(self):
         """Print a menu separator"""
@@ -132,19 +114,13 @@ class MenuFormatter:
         response = input(f"{Colors.WARNING}? {message} (y/N): {Colors.ENDC}").strip().lower()
         return response in ["y", "yes"]
 
-    def print_contract_info(
-        self, name: str, policy_id: str, address: str, balance: float, status: str = "✓"
-    ):
+    def print_contract_info(self, name: str, policy_id: str, address: str, balance: float, status: str = "✓"):
         """Print formatted contract information"""
-        status_color = (
-            Colors.OKGREEN if status == "✓" else Colors.WARNING if status == "⚠" else Colors.FAIL
-        )
+        status_color = Colors.OKGREEN if status == "✓" else Colors.WARNING if status == "⚠" else Colors.FAIL
         print(f"{Colors.OKBLUE}│{Colors.ENDC} {Colors.BOLD}{name:<15}{Colors.ENDC}")
         print(f"{Colors.OKBLUE}│{Colors.ENDC}   Policy ID: {policy_id}")
         print(f"{Colors.OKBLUE}│{Colors.ENDC}   Address:   {address}")
-        print(
-            f"{Colors.OKBLUE}│{Colors.ENDC}   Balance:   {balance:.6f} ADA {status_color}[{status}]{Colors.ENDC}"
-        )
+        print(f"{Colors.OKBLUE}│{Colors.ENDC}   Balance:   {balance:.6f} ADA {status_color}[{status}]{Colors.ENDC}")
         print(f"{Colors.OKBLUE}│{Colors.ENDC}")
 
     def print_minting_policy_info(self, name: str, policy_id: str):

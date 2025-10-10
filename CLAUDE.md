@@ -6,39 +6,55 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Install dependencies
-poetry install
+uv sync
+
+# Install with dev dependencies
+uv sync --extra dev
 
 # Activate virtual environment
-poetry shell
+source .venv/bin/activate
 
 # Build all contracts
-poetry run python src/scripts/build_contracts.py
+uv run python src/scripts/build_contracts.py
 
 # Alternative: Use the CLI menu for interactive contract compilation
 # - Option 2: Compile/Recompile All Contracts (full compilation)
 # - Option 3: Compile New Project Contract Only (fast, protocol must exist)
 
 # Run tests
-poetry run pytest
+uv run pytest
 
 # Run specific test file
-poetry run pytest tests/test_protocols.py
+uv run pytest tests/test_protocols.py
 
 # Run tests with coverage
-poetry run pytest --cov=src
+uv run pytest --cov=src
 
 # Format code
-poetry run black .
+uv run ruff format .
 
 # Sort imports
-poetry run isort .
+uv run ruff check --select I --fix .
+
+# Lint and fix issues
+uv run ruff check --fix .
 
 # Type checking
-poetry run mypy .
+uv run mypy .
 
 # Compile individual contract
-poetry run opshin compile src/terrasacha_contracts/validators/protocol.py
-poetry run opshin compile src/terrasacha_contracts/minting_policies/protocol_nfts.py
+uv run opshin compile src/terrasacha_contracts/validators/protocol.py
+uv run opshin compile src/terrasacha_contracts/minting_policies/protocol_nfts.py
+
+# Update dependencies
+uv lock --upgrade
+uv sync
+
+# Add new dependency
+uv add <package-name>
+
+# Add dev dependency
+uv add --dev <package-name>
 ```
 
 ## Project Architecture

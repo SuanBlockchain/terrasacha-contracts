@@ -3,15 +3,18 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
+
 @dataclass()
 class MintGrey(PlutusData):
     CONSTR_ID = 0
     project_input_index: int
     project_output_index: int
 
+
 @dataclass()
 class BurnGrey(PlutusData):
     CONSTR_ID = 1
+
 
 def validate_mint_operation(
     project_datum_value: DatumProject, own_policy_id: PolicyId, our_minted: Dict[TokenName, int]
@@ -30,7 +33,13 @@ def validate_mint_operation(
     datum_token_name = project_datum_value.project_token.token_name
     assert our_minted.get(datum_token_name, 0) > 0, "Must mint the correct token"
 
-def validate_project_state_for_mint(project_input_datum_value: DatumProject, project_output_datum_value: DatumProject, our_minted: Dict[TokenName, int], signatories: List[PubKeyHash]) -> None:
+
+def validate_project_state_for_mint(
+    project_input_datum_value: DatumProject,
+    project_output_datum_value: DatumProject,
+    our_minted: Dict[TokenName, int],
+    signatories: List[PubKeyHash],
+) -> None:
     # Check if this is the "free minting" period (state 0→1 transition)
     project_input_state = project_input_datum_value.params.project_state
     project_output_state = project_output_datum_value.params.project_state
@@ -38,17 +47,19 @@ def validate_project_state_for_mint(project_input_datum_value: DatumProject, pro
     is_free_minting_period = project_input_state == 0 and project_output_state == 1
     minted_quantity = our_minted.get(project_input_datum_value.project_token.token_name, 0)
     if is_free_minting_period:
-#         # During free minting period (state 0→1), any amount can be minted
-#         # No additional validations required - this is the initial token distribution
+        #         # During free minting period (state 0→1), any amount can be minted
+        #         # No additional validations required - this is the initial token distribution
         total_supply = project_input_datum_value.project_token.total_supply
         total_participation = get_total_participation(project_input_datum_value.stakeholders)
-        assert minted_quantity + total_participation == total_supply, "Minted quantity plus stakeholder participation cannot exceed total supply"
+        assert minted_quantity + total_participation == total_supply, (
+            "Minted quantity plus stakeholder participation cannot exceed total supply"
+        )
     else:
-        assert project_input_datum_value.params.project_state == 1, "Can only mint during free minting period (input state must be 0)"
+        assert project_input_datum_value.params.project_state == 1, (
+            "Can only mint during free minting period (input state must be 0)"
+        )
         assert len(signatories) > 0, "Transaction must be signed by a stakeholder"
-        assert (
-            len(project_input_datum_value.stakeholders) > 0
-        ), "Project must have stakeholders for token operations"
+        assert len(project_input_datum_value.stakeholders) > 0, "Project must have stakeholders for token operations"
 
         # Find the authorized stakeholder
         found_authorized_stakeholder = False
@@ -59,23 +70,18 @@ def validate_project_state_for_mint(project_input_datum_value: DatumProject, pro
                 if stakeholder.pkh == signer_pkh:
                     # authorized_stakeholder = stakeholder
                     assert stakeholder.claimed == FalseData(), "Stakeholder has already claimed their tokens"
-                    assert (
-                        minted_quantity == stakeholder.participation
-                    ), "Must mint exactly the stakeholder's full participation amount"
+                    assert minted_quantity == stakeholder.participation, (
+                        "Must mint exactly the stakeholder's full participation amount"
+                    )
                     found_authorized_stakeholder = True
                 else:
                     assert False, "Non-authorized stakeholders cannot change their claim status"
 
-        assert (
-            found_authorized_stakeholder
-        ), "Transaction must be signed by a registered stakeholder"     
+        assert found_authorized_stakeholder, "Transaction must be signed by a registered stakeholder"
 
 
 def validate_burn_operation(
-    our_minted: Dict[bytes, int],
-    project_datum: DatumProject,
-    tx_info: TxInfo,
-    own_policy_id: PolicyId,
+    our_minted: Dict[bytes, int], project_datum: DatumProject, tx_info: TxInfo, own_policy_id: PolicyId
 ) -> None:
     """
     Validate token burning operation.
@@ -94,11 +100,8 @@ def validate_burn_operation(
         token_amount = sum(output.value.get(own_policy_id, {b"": 0}).values())
         assert token_amount == 0, "Cannot send tokens to outputs when burning"
 
-def validator(
-    project_id: PolicyId,
-    redeemer: Union[MintGrey, BurnGrey],
-    context: ScriptContext,
-) -> None:
+
+def validator(project_id: PolicyId, redeemer: Union[MintGrey, BurnGrey], context: ScriptContext) -> None:
     """
     Grey token minting policy validator.
 
@@ -122,15 +125,12 @@ def validator(
     our_minted = mint_value.get(own_policy_id, {b"": 0})
     assert len(our_minted) == 1, "Must mint or burn exactly 1 token type"
 
-
     if isinstance(redeemer, MintGrey):
         # assert True, "Minting always succeeds for now"
         # Validate project reference and get datum
         project_reference_input = tx_info.inputs[redeemer.project_input_index].resolved
-        
-        assert check_token_present(
-            project_id, project_reference_input
-        ), "Project input must have the project token"
+
+        assert check_token_present(project_id, project_reference_input), "Project input must have the project token"
 
         project_datum = project_reference_input.datum
         assert isinstance(project_datum, SomeOutputDatum), "Project input must have a datum"
@@ -138,9 +138,7 @@ def validator(
 
         validate_mint_operation(project_input_datum_value, own_policy_id, our_minted)
 
-        project_output = resolve_linear_output(
-            project_reference_input, tx_info, redeemer.project_output_index
-        )
+        project_output = resolve_linear_output(project_reference_input, tx_info, redeemer.project_output_index)
 
         project_output_datum = project_output.datum
         assert isinstance(project_output_datum, SomeOutputDatum), "Project output must have a datum"

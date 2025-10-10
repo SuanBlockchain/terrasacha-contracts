@@ -14,7 +14,7 @@ This will:
 4. Output compiled contracts to the `artifacts/` directory
 
 ```bash
-poetry run python src/scripts/build_contracts.py
+uv run python src/scripts/build_contracts.py
 ```
 
 After building, check the `artifacts/` directory for the compiled contracts.

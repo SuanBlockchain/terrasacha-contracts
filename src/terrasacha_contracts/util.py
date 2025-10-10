@@ -1,11 +1,13 @@
 from opshin.prelude import *
 from opshin.std.builtins import *
 
+
 ################################################
 # Constants
 ################################################
 PREFIX_REFERENCE_NFT = b"REF_"
 PREFIX_USER_NFT = b"USER_"
+
 
 ################################################
 # Protocol Data Types
@@ -17,6 +19,7 @@ class DatumProtocol(PlutusData):
     protocol_fee: int  # Protocol fee in lovelace
     oracle_id: PolicyId  # Oracle identifier
     projects: List[bytes]  # List of project IDs (hashes) created under this protocol
+
 
 @dataclass()
 class UpdateProtocol(PlutusData):
@@ -32,11 +35,13 @@ class EndProtocol(PlutusData):
     protocol_input_index: int
     user_input_index: int
 
+
 RedeemerProtocol = Union[UpdateProtocol, EndProtocol]
 
 ################################################
 # Project Data Types
 ################################################
+
 
 @dataclass()
 class DatumProjectParams(PlutusData):
@@ -45,12 +50,14 @@ class DatumProjectParams(PlutusData):
     project_metadata: bytes  # Metadata URI or hash
     project_state: int  # 0=initialized, 1=distributed, 2=certified 3=closed
 
+
 @dataclass()
 class TokenProject(PlutusData):
     CONSTR_ID = 2
     policy_id: bytes  # Minting policy ID for the project tokens
     token_name: bytes  # Token name for the project tokens
     total_supply: int  # Total supply of tokens for the project (Grey tokens representing carbon credits promises)
+
 
 @dataclass()
 class StakeHolderParticipation(PlutusData):
@@ -69,6 +76,7 @@ class Certification(PlutusData):
     real_certification_date: int  # Real certification date as POSIX timestamp (after verification)
     real_quantity: int  # Real quantity of carbon credits certified (after verification)
 
+
 @dataclass()
 class DatumProject(PlutusData):
     CONSTR_ID = 0
@@ -77,6 +85,7 @@ class DatumProject(PlutusData):
     stakeholders: List[StakeHolderParticipation]  # List of stakeholders and their participation
     certifications: List[Certification]  # List of certification info for the project
 
+
 @dataclass()
 class UpdateProject(PlutusData):
     CONSTR_ID = 1
@@ -84,11 +93,13 @@ class UpdateProject(PlutusData):
     user_input_index: int
     project_output_index: int
 
+
 @dataclass()
 class UpdateToken(PlutusData):
     CONSTR_ID = 3
     project_input_index: int
     project_output_index: int
+
 
 @dataclass()
 class EndProject(PlutusData):
@@ -96,11 +107,13 @@ class EndProject(PlutusData):
     project_input_index: int
     user_input_index: int
 
+
 RedeemerProject = Union[UpdateProject, UpdateToken, EndProject]
 
 ################################################
 # Investor Data Types
 ################################################
+
 
 @dataclass()
 class PriceWithPrecision(PlutusData):
@@ -115,6 +128,7 @@ class PriceWithPrecision(PlutusData):
         price: Price as integer (e.g., 1250000 for $1.25 with 6 decimals)
         precision: Number of decimal places (e.g., 6 means divide by 10^6)
     """
+
     CONSTR_ID = 4
     price: int
     precision: int
@@ -131,15 +145,18 @@ class DatumInvestor(PlutusData):
         price_per_token: Price per token with precision (USDA)
         min_purchase_amount: Minimum amount of tokens that can be purchased
     """
+
     CONSTR_ID = 0
     seller_pkh: bytes
     grey_token_amount: int
     price_per_token: PriceWithPrecision
     min_purchase_amount: int
 
+
 @dataclass()
 class BuyGrey(PlutusData):
     """Buy grey tokens redeemer"""
+
     CONSTR_ID = 0
     buyer_pkh: bytes  # Public key hash of the buyer
     amount: int  # Amount of tokens to buy
@@ -151,6 +168,7 @@ class BuyGrey(PlutusData):
 @dataclass()
 class CancelSale(PlutusData):
     """Cancel sale redeemer - seller retrieves all tokens"""
+
     CONSTR_ID = 1
     investor_input_index: int
 
@@ -158,6 +176,7 @@ class CancelSale(PlutusData):
 @dataclass()
 class UpdatePrice(PlutusData):
     """Update price redeemer"""
+
     CONSTR_ID = 2
     new_price_per_token: PriceWithPrecision
     investor_input_index: int
@@ -165,6 +184,7 @@ class UpdatePrice(PlutusData):
 
 
 RedeemerInvestor = Union[BuyGrey, CancelSale, UpdatePrice]
+
 
 ################################################
 # Generic functions
@@ -231,26 +251,22 @@ def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -
     previous_state_input_unresolved = tx_info.inputs[input_index]
     assert previous_state_input_unresolved.out_ref == purpose.tx_out_ref, f"Referenced wrong input"
     previous_state_input = previous_state_input_unresolved.resolved
-    assert only_one_input_from_address(
-        previous_state_input.address, tx_info.inputs
-    ), "More than one input from the contract address"
+    assert only_one_input_from_address(previous_state_input.address, tx_info.inputs), (
+        "More than one input from the contract address"
+    )
     return previous_state_input
 
 
-def resolve_linear_output(
-    previous_state_input: TxOut, tx_info: TxInfo, output_index: int
-) -> TxOut:  # In Use
+def resolve_linear_output(previous_state_input: TxOut, tx_info: TxInfo, output_index: int) -> TxOut:  # In Use
     """
     Resolve the continuing output that is referenced by the redeemer. Checks that the output does not move funds to a different address.
     """
     outputs = tx_info.outputs
     next_state_output = outputs[output_index]
-    assert (
-        next_state_output.address == previous_state_input.address
-    ), "Moved funds to different address"
-    assert only_one_output_to_address(
-        next_state_output.address, outputs
-    ), "More than one output to the contract address"
+    assert next_state_output.address == previous_state_input.address, "Moved funds to different address"
+    assert only_one_output_to_address(next_state_output.address, outputs), (
+        "More than one output to the contract address"
+    )
     return next_state_output
 
 
@@ -306,6 +322,7 @@ def validate_nft_continues(tx_output: TxOut, expected_token: Token) -> None:
     token_amount = tx_output_tokens.get(expected_token_name, 0)
 
     assert token_amount == 1, f"NFT {expected_token_name.hex()} must continue to output"
+
 
 def get_total_participation(stakeholders: List[StakeHolderParticipation]) -> int:
     total = 0

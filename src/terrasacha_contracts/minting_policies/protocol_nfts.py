@@ -14,11 +14,7 @@ class Burn(PlutusData):
     CONSTR_ID = 1
 
 
-def validator(
-    oref: TxOutRef,
-    redeemer: Union[Mint, Burn],
-    context: ScriptContext,
-) -> None:
+def validator(oref: TxOutRef, redeemer: Union[Mint, Burn], context: ScriptContext) -> None:
     """
     Protocol contract validator for minting and burning protocol NFTs.
 
@@ -50,7 +46,6 @@ def validator(
         assert our_minted.get(user_token_name, 0) == 1, "Must mint exactly 1 user token"
 
     elif isinstance(redeemer, Burn):
-
         # Ensure no tokens are sent to any output with this policy
         for output in tx_info.outputs:
             token_amount = sum(output.value.get(own_policy_id, {b"": 0}).values())

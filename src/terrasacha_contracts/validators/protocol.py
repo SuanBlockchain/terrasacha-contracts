@@ -2,6 +2,7 @@ from opshin.prelude import *
 
 from terrasacha_contracts.util import *
 
+
 def derive_user_token_from_protocol_token(protocol_token: TokenName) -> TokenName:
     """
     Derive the corresponding user NFT token name from a protocol NFT token name.
@@ -38,13 +39,7 @@ def validate_datum_update(new_datum: DatumProtocol) -> None:
     assert len(new_datum.project_admins) <= 10, "Protocol cannot have more than 10 admins"
 
 
-def validator(
-    token_policy_id: PolicyId,
-    _: DatumProtocol,
-    redeemer: RedeemerProtocol,
-    context: ScriptContext,
-) -> None:
-
+def validator(token_policy_id: PolicyId, _: DatumProtocol, redeemer: RedeemerProtocol, context: ScriptContext) -> None:
     tx_info = context.tx_info
     purpose = get_spending_purpose(context)
     protocol_input = resolve_linear_input(tx_info, redeemer.protocol_input_index, purpose)
@@ -54,21 +49,19 @@ def validator(
     # Primarly to validate that the user is giving the right input index to interact with the contract
     assert protocol_token.policy_id == token_policy_id, "Wrong token policy ID"
 
-    assert check_token_present(
-        protocol_token.policy_id, user_input
-    ), "User does not have required token"
+    assert check_token_present(protocol_token.policy_id, user_input), "User does not have required token"
 
     for txi in tx_info.inputs:
         if txi.out_ref == purpose.tx_out_ref:
             own_txout = txi.resolved
             own_address = own_txout.address
 
-    assert only_one_input_from_address(own_address, tx_info.inputs) == 1, "More than one input from the contract address"
+    assert only_one_input_from_address(own_address, tx_info.inputs) == 1, (
+        "More than one input from the contract address"
+    )
 
     if isinstance(redeemer, UpdateProtocol):
-        protocol_output = resolve_linear_output(
-            protocol_input, tx_info, redeemer.protocol_output_index
-        )
+        protocol_output = resolve_linear_output(protocol_input, tx_info, redeemer.protocol_output_index)
 
         validate_nft_continues(protocol_output, protocol_token)
 
@@ -78,7 +71,6 @@ def validator(
         validate_datum_update(new_datum)
 
     elif isinstance(redeemer, EndProtocol):
-
         # Ensure no tokens are sent to any output with the token policy
         for output in tx_info.outputs:
             token_amount = sum(output.value.get(protocol_token.policy_id, {b"": 0}).values())

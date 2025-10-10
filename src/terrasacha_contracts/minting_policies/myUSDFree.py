@@ -1,5 +1,7 @@
 from opshin.prelude import *
+
 from terrasacha_contracts.util import *
+
 
 @dataclass()
 class Mint(PlutusData):

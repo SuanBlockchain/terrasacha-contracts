@@ -15,9 +15,9 @@ import pycardano as pc
 from opshin.builder import PlutusContract, build
 from opshin.prelude import TxId, TxOutRef
 
+from cardano_offchain.chain_context import CardanoChainContext
 from cardano_offchain.wallet import CardanoWallet
 
-from cardano_offchain.chain_context import CardanoChainContext
 
 class ReferenceScriptContract:
     """
@@ -48,9 +48,7 @@ class ReferenceScriptContract:
         For reference scripts, CBOR is retrieved from the UTXO when needed.
         This property should not be accessed directly - use get_reference_script() instead.
         """
-        raise NotImplementedError(
-            "Reference script CBOR must be retrieved from UTXO using get_reference_script()"
-        )
+        raise NotImplementedError("Reference script CBOR must be retrieved from UTXO using get_reference_script()")
 
     def get_reference_utxo(self) -> Dict[str, Any]:
         """Get the reference UTXO information"""
@@ -64,9 +62,7 @@ class ReferenceScriptContract:
 class ContractManager:
     """Manages smart contract compilation and state"""
 
-    def __init__(
-        self, chain_context: CardanoChainContext, contracts_dir: str = "./src/terrasacha_contracts"
-    ):
+    def __init__(self, chain_context: CardanoChainContext, contracts_dir: str = "./src/terrasacha_contracts"):
         """
         Initialize contract manager
 
@@ -118,10 +114,7 @@ class ContractManager:
 
         # Check if this is a reference script contract
         if not hasattr(contract, "storage_type") or contract.storage_type != "reference_script":
-            return {
-                "success": False,
-                "error": f"Contract '{contract_name}' is not a reference script",
-            }
+            return {"success": False, "error": f"Contract '{contract_name}' is not a reference script"}
 
         try:
             # Get the reference UTXO information
@@ -157,9 +150,7 @@ class ContractManager:
 
                 # Build and sign transaction
                 signing_key = wallet.get_signing_key(0)
-                signed_tx = builder.build_and_sign(
-                    [signing_key], change_address=destination_address
-                )
+                signed_tx = builder.build_and_sign([signing_key], change_address=destination_address)
 
                 # Submit transaction
                 tx_id = self.context.submit_tx(signed_tx)
@@ -173,10 +164,7 @@ class ContractManager:
                 }
 
             except Exception as api_error:
-                return {
-                    "success": False,
-                    "error": f"Failed to spend reference script UTXO: {str(api_error)}",
-                }
+                return {"success": False, "error": f"Failed to spend reference script UTXO: {str(api_error)}"}
 
         except Exception as e:
             return {"success": False, "error": f"Reference script deletion failed: {str(e)}"}
@@ -384,7 +372,9 @@ class ContractManager:
         """
         return self.project_compilation_utxos.get(project_name)
 
-    def get_project_compilation_utxo_as_txoutref(self, compilation_utxo: Optional[Dict[str, Any]]) -> Optional[TxOutRef]:
+    def get_project_compilation_utxo_as_txoutref(
+        self, compilation_utxo: Optional[Dict[str, Any]]
+    ) -> Optional[TxOutRef]:
         """
         Get the compilation UTXO for a project as a TxOutRef object
 
@@ -399,10 +389,7 @@ class ContractManager:
             return None
 
         try:
-            return TxOutRef(
-                id=TxId(bytes.fromhex(compilation_utxo["tx_id"])),
-                idx=compilation_utxo["index"]
-            )
+            return TxOutRef(id=TxId(bytes.fromhex(compilation_utxo["tx_id"])), idx=compilation_utxo["index"])
         except Exception:
             return None
 
@@ -431,7 +418,9 @@ class ContractManager:
 
         return reserved_utxos
 
-    def get_available_utxos(self, address: pc.Address, min_ada: int = 3000000, auto_cleanup: bool = True) -> List[pc.UTxO]:
+    def get_available_utxos(
+        self, address: pc.Address, min_ada: int = 3000000, auto_cleanup: bool = True
+    ) -> List[pc.UTxO]:
         """
         Get UTXOs from address that are NOT reserved for compilation.
 
@@ -492,7 +481,7 @@ class ContractManager:
             "removed_compilation_utxos": [],
             "removed_project_compilation_utxos": [],
             "total_removed": 0,
-            "errors": []
+            "errors": [],
         }
 
         try:
@@ -500,8 +489,7 @@ class ContractManager:
             if address:
                 available_utxos = self.context.utxos(address)
                 available_utxo_refs = {
-                    f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
-                    for utxo in available_utxos
+                    f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}" for utxo in available_utxos
                 }
             else:
                 available_utxo_refs = None
@@ -541,9 +529,9 @@ class ContractManager:
                 del self.project_compilation_utxos[project_name]
 
             cleanup_results["total_removed"] = (
-                len(cleanup_results["removed_used_utxos"]) +
-                len(cleanup_results["removed_compilation_utxos"]) +
-                len(cleanup_results["removed_project_compilation_utxos"])
+                len(cleanup_results["removed_used_utxos"])
+                + len(cleanup_results["removed_compilation_utxos"])
+                + len(cleanup_results["removed_project_compilation_utxos"])
             )
 
             # Save changes if any UTXOs were removed
@@ -615,7 +603,6 @@ class ContractManager:
         return removed
 
     def _set_recursion_limit(self, limit: int = 2000):
-
         # Check if the new limit is greater than the current one
         if limit > sys.getrecursionlimit():
             # Set the new recursion limit
@@ -643,9 +630,7 @@ class ContractManager:
         else:
             return "⚠ UTXO consumed"
 
-    def compile_contracts(
-        self, protocol_address: pc.Address, force: bool = False
-    ) -> Dict[str, Any]:
+    def compile_contracts(self, protocol_address: pc.Address, force: bool = False) -> Dict[str, Any]:
         """
         Compile OpShin protocol smart contracts (protocol_nfts and protocol)
 
@@ -663,11 +648,7 @@ class ContractManager:
             and self.compilation_utxo
             and self._is_compilation_utxo_available(protocol_address)
         ):
-            return {
-                "success": True,
-                "message": "Contracts already compiled and UTXO available",
-                "skipped": True,
-            }
+            return {"success": True, "message": "Contracts already compiled and UTXO available", "skipped": True}
 
         try:
             # Find suitable UTXO for protocol contract compilation
@@ -681,11 +662,7 @@ class ContractManager:
                         break
 
             if not protocol_utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No suitable UTXO found for protocol compilation (need >3 ADA)",
-                }
-
+                return {"success": False, "error": "No suitable UTXO found for protocol compilation (need >3 ADA)"}
 
             # Store compilation UTXO metadata for protocol (primary)
             self.compilation_utxo = {
@@ -695,13 +672,14 @@ class ContractManager:
             }
 
             # Track used UTXOs to ensure contract uniqueness
-            protocol_utxo_ref = f"{protocol_utxo_to_spend.input.transaction_id.payload.hex()}:{protocol_utxo_to_spend.input.index}"
+            protocol_utxo_ref = (
+                f"{protocol_utxo_to_spend.input.transaction_id.payload.hex()}:{protocol_utxo_to_spend.input.index}"
+            )
             self.used_utxos.add(protocol_utxo_ref)
 
             # Create oref for protocol contracts
             protocol_oref = TxOutRef(
-                id=TxId(protocol_utxo_to_spend.input.transaction_id.payload),
-                idx=protocol_utxo_to_spend.input.index,
+                id=TxId(protocol_utxo_to_spend.input.transaction_id.payload), idx=protocol_utxo_to_spend.input.index
             )
 
             # Compile contracts (excluding authentication_nfts which needs dynamic compilation)
@@ -820,16 +798,13 @@ class ContractManager:
                         break
 
             if not utxo_to_spend:
-                return {
-                    "success": False,
-                    "error": "No suitable UTXO found for compilation (need >3 ADA)",
-                }
+                return {"success": False, "error": "No suitable UTXO found for compilation (need >3 ADA)"}
 
-            oref = TxOutRef(
-                id=TxId(utxo_to_spend.input.transaction_id.payload), idx=utxo_to_spend.input.index
+            oref = TxOutRef(id=TxId(utxo_to_spend.input.transaction_id.payload), idx=utxo_to_spend.input.index)
+
+            print(
+                f"Compiling project_nfts minting policy using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}"
             )
-
-            print(f"Compiling project_nfts minting policy using UTXO: {utxo_to_spend.input.transaction_id}:{utxo_to_spend.input.index}")
             print(f"Using Protocol Policy ID: {protocol_nfts_contract.policy_id}")
 
             # Determine project contract name (support multiple projects)
@@ -852,9 +827,7 @@ class ContractManager:
             self.project_compilation_utxos[project_name] = compilation_utxo_info
 
             # Mark this UTXO as used to ensure uniqueness for future compilations
-            utxo_ref = (
-                f"{utxo_to_spend.input.transaction_id.payload.hex()}:{utxo_to_spend.input.index}"
-            )
+            utxo_ref = f"{utxo_to_spend.input.transaction_id.payload.hex()}:{utxo_to_spend.input.index}"
             self.used_utxos.add(utxo_ref)
 
             # Compile project_nfts minting policy first
@@ -982,7 +955,7 @@ class ContractManager:
                 "success": True,
                 "message": message,
                 "saved": save_success,
-                "deleted_contracts": [grey_contract_name]
+                "deleted_contracts": [grey_contract_name],
             }
 
         except Exception as e:
@@ -1099,11 +1072,7 @@ class ContractManager:
         try:
             # Check if already compiled
             if self.get_contract("myUSDFree"):
-                return {
-                    "success": True,
-                    "message": "myUSDFree contract already compiled",
-                    "skipped": True,
-                }
+                return {"success": True, "message": "myUSDFree contract already compiled", "skipped": True}
 
             # Check if myUSDFree.py exists
             usda_path = self.minting_contracts_path / "myUSDFree.py"
@@ -1200,7 +1169,9 @@ class ContractManager:
             self._set_recursion_limit(2000)
 
             # Compile investor contract with protocol_policy_id, grey_token_policy_id, and grey_token_name
-            investor_contract = build(investor_path, protocol_policy_id_bytes, grey_policy_id_bytes, grey_token_name_bytes)
+            investor_contract = build(
+                investor_path, protocol_policy_id_bytes, grey_policy_id_bytes, grey_token_name_bytes
+            )
 
             # Store investor contract with naming convention: {project_name}_investor
             investor_contract_name = f"{project_name}_investor"
@@ -1304,11 +1275,7 @@ class ContractManager:
                 # For spending validators, check balance
                 try:
                     utxos = self.api.address_utxos(str(contract_address))
-                    balance = sum(
-                        int(utxo.amount[0].quantity)
-                        for utxo in utxos
-                        if utxo.amount[0].unit == "lovelace"
-                    )
+                    balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == "lovelace")
                 except Exception as api_error:
                     # Handle 404 errors (address never used) as zero balance
                     if (hasattr(api_error, "status_code") and api_error.status_code == 404) or (
@@ -1353,19 +1320,13 @@ class ContractManager:
             Dictionary containing decoded datum data or None if not found/invalid
         """
         if contract_name not in self.contracts:
-            return {
-                "success": False,
-                "error": f"Contract '{contract_name}' not found in compiled contracts"
-            }
+            return {"success": False, "error": f"Contract '{contract_name}' not found in compiled contracts"}
 
         contract = self.contracts[contract_name]
 
         # Skip minting policies - they don't have UTXOs with datums
         if contract_name.endswith("_nfts") or contract_name.endswith("_grey") or contract_name == "myUSDFree":
-            return {
-                "success": False,
-                "error": f"'{contract_name}' is a minting policy and doesn't have datum data"
-            }
+            return {"success": False, "error": f"'{contract_name}' is a minting policy and doesn't have datum data"}
 
         try:
             # Get contract address
@@ -1380,31 +1341,22 @@ class ContractManager:
                 utxos = self.context.utxos(contract_address)
             except Exception as api_error:
                 if hasattr(api_error, "status_code") and api_error.status_code == 404:
-                    return {
-                        "success": False,
-                        "error": f"No UTXOs found at contract address (contract never used)"
-                    }
+                    return {"success": False, "error": f"No UTXOs found at contract address (contract never used)"}
                 raise
 
             if not utxos:
-                return {
-                    "success": False,
-                    "error": f"No UTXOs found at contract address"
-                }
+                return {"success": False, "error": f"No UTXOs found at contract address"}
 
             # Get the first UTXO (contracts should typically have one UTXO with the state)
             utxo = utxos[0]
 
             # Extract datum
             if not utxo.output.datum:
-                return {
-                    "success": False,
-                    "error": "UTXO does not contain a datum"
-                }
+                return {"success": False, "error": "UTXO does not contain a datum"}
 
             # Decode datum based on contract type
-            from terrasacha_contracts.validators.protocol import DatumProtocol
             from terrasacha_contracts.validators.project import DatumProject
+            from terrasacha_contracts.validators.protocol import DatumProtocol
 
             try:
                 # Determine contract type and decode accordingly
@@ -1418,11 +1370,11 @@ class ContractManager:
                             "project_admins": [admin.hex() for admin in datum.project_admins],
                             "protocol_fee": datum.protocol_fee,
                             "oracle_id": datum.oracle_id.hex(),
-                            "projects": [proj.hex() for proj in datum.projects]
+                            "projects": [proj.hex() for proj in datum.projects],
                         },
                         "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
                         "balance": utxo.output.amount.coin,
-                        "balance_ada": utxo.output.amount.coin / 1_000_000
+                        "balance_ada": utxo.output.amount.coin / 1_000_000,
                     }
                 elif contract_name.startswith("project") and not contract_name.endswith("_nfts"):
                     datum = DatumProject.from_cbor(utxo.output.datum.cbor)
@@ -1434,19 +1386,19 @@ class ContractManager:
                             "params": {
                                 "project_id": datum.params.project_id.hex(),
                                 "project_metadata": datum.params.project_metadata.hex(),
-                                "project_state": datum.params.project_state
+                                "project_state": datum.params.project_state,
                             },
                             "project_token": {
                                 "policy_id": datum.project_token.policy_id.hex(),
                                 "token_name": datum.project_token.token_name.hex(),
-                                "total_supply": datum.project_token.total_supply
+                                "total_supply": datum.project_token.total_supply,
                             },
                             "stakeholders": [
                                 {
                                     "stakeholder": sh.stakeholder.hex(),
                                     "pkh": sh.pkh.hex(),
                                     "participation": sh.participation,
-                                    "claimed": str(sh.claimed)
+                                    "claimed": str(sh.claimed),
                                 }
                                 for sh in datum.stakeholders
                             ],
@@ -1455,36 +1407,25 @@ class ContractManager:
                                     "certification_date": cert.certification_date,
                                     "quantity": cert.quantity,
                                     "real_certification_date": cert.real_certification_date,
-                                    "real_quantity": cert.real_quantity
+                                    "real_quantity": cert.real_quantity,
                                 }
                                 for cert in datum.certifications
-                            ]
+                            ],
                         },
                         "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
                         "balance": utxo.output.amount.coin,
-                        "balance_ada": utxo.output.amount.coin / 1_000_000
+                        "balance_ada": utxo.output.amount.coin / 1_000_000,
                     }
                 else:
-                    return {
-                        "success": False,
-                        "error": f"Unknown contract type for datum decoding: {contract_name}"
-                    }
+                    return {"success": False, "error": f"Unknown contract type for datum decoding: {contract_name}"}
 
             except Exception as decode_error:
-                return {
-                    "success": False,
-                    "error": f"Failed to decode datum: {str(decode_error)}"
-                }
+                return {"success": False, "error": f"Failed to decode datum: {str(decode_error)}"}
 
         except Exception as e:
-            return {
-                "success": False,
-                "error": f"Failed to query contract datum: {str(e)}"
-            }
+            return {"success": False, "error": f"Failed to query contract datum: {str(e)}"}
 
-    def create_minting_contract(
-        self, contract_name: str, utxo_ref: TxOutRef
-    ) -> Optional[PlutusContract]:
+    def create_minting_contract(self, contract_name: str, utxo_ref: TxOutRef) -> Optional[PlutusContract]:
         """
         Dynamically compile a minting policy with a specific UTXO reference.
         Supports both NFT contracts (ending with _nfts.py) and regular minting contracts.
@@ -1567,10 +1508,7 @@ class ContractManager:
             utxos = self.context.utxos(pc.Address.from_primitive(contract.reference_address))
 
             for utxo in utxos:
-                if (
-                    utxo.input.transaction_id.payload.hex() == tx_id
-                    and utxo.input.index == output_index
-                ):
+                if utxo.input.transaction_id.payload.hex() == tx_id and utxo.input.index == output_index:
                     # Extract script from UTXO
                     if utxo.output.script:
                         return utxo.output.script.data
@@ -1581,11 +1519,7 @@ class ContractManager:
             return None
 
     def convert_to_reference_script(
-        self,
-        contract_name: str,
-        reference_tx_id: str,
-        reference_output_index: int,
-        reference_address: str,
+        self, contract_name: str, reference_tx_id: str, reference_output_index: int, reference_address: str
     ) -> bool:
         """
         Convert a local contract to a reference script contract
@@ -1667,9 +1601,7 @@ class ContractManager:
                     del self.contracts[contract_name]
 
                     # Also delete associated project NFTs and grey token minting policies if they exist
-                    if delete_associated_nfts and (
-                        contract_name == "project" or contract_name.startswith("project_")
-                    ):
+                    if delete_associated_nfts and (contract_name == "project" or contract_name.startswith("project_")):
                         project_nfts_name = f"{contract_name}_nfts"
                         if project_nfts_name in self.contracts:
                             del self.contracts[project_nfts_name]
@@ -1745,9 +1677,7 @@ class ContractManager:
                     raise api_error
 
             # Address exists and has UTXOs - check balances
-            balance = sum(
-                int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == "lovelace"
-            )
+            balance = sum(int(utxo.amount[0].quantity) for utxo in utxos if utxo.amount[0].unit == "lovelace")
 
             # Check for any tokens (not just ADA)
             has_tokens = False
@@ -1759,7 +1689,7 @@ class ContractManager:
             if balance > 0 or has_tokens:
                 return {
                     "success": False,
-                    "error": f"Contract '{contract_name}' still has balance ({balance/1_000_000:.6f} ADA) or tokens. Cannot delete.",
+                    "error": f"Contract '{contract_name}' still has balance ({balance / 1_000_000:.6f} ADA) or tokens. Cannot delete.",
                     "balance": balance,
                     "has_tokens": has_tokens,
                 }
@@ -1802,12 +1732,7 @@ class ContractManager:
             save_success = self._save_contracts()
 
             message = f"Contract{'s' if len(deleted_contracts) > 1 else ''} {', '.join(deleted_contracts)} deleted successfully (zero balance confirmed)"
-            return {
-                "success": True,
-                "message": message,
-                "saved": save_success,
-                "deleted_contracts": deleted_contracts,
-            }
+            return {"success": True, "message": message, "saved": save_success, "deleted_contracts": deleted_contracts}
 
         except Exception as e:
             return {"success": False, "error": f"Error checking contract balance: {e}"}
