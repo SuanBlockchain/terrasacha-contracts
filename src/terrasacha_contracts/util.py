@@ -99,6 +99,74 @@ class EndProject(PlutusData):
 RedeemerProject = Union[UpdateProject, UpdateToken, EndProject]
 
 ################################################
+# Investor Data Types
+################################################
+
+@dataclass()
+class PriceWithPrecision(PlutusData):
+    """
+    Price with precision following Orcfax pattern.
+
+    Price is stored as an integer with a precision value indicating decimal places.
+    Example: $1.25 with 6 decimals = PriceWithPrecision(1250000, 6)
+    Calculation: actual_price = price / (10 ^ precision) = 1250000 / 1000000 = 1.25
+
+    Fields:
+        price: Price as integer (e.g., 1250000 for $1.25 with 6 decimals)
+        precision: Number of decimal places (e.g., 6 means divide by 10^6)
+    """
+    CONSTR_ID = 4
+    price: int
+    precision: int
+
+
+@dataclass()
+class DatumInvestor(PlutusData):
+    """
+    Investor contract datum for grey token sales.
+
+    Fields:
+        seller_pkh: Public key hash of the seller
+        grey_token_amount: Total amount of grey tokens available for sale
+        price_per_token: Price per token with precision (USDA)
+        min_purchase_amount: Minimum amount of tokens that can be purchased
+    """
+    CONSTR_ID = 0
+    seller_pkh: bytes
+    grey_token_amount: int
+    price_per_token: PriceWithPrecision
+    min_purchase_amount: int
+
+@dataclass()
+class BuyGrey(PlutusData):
+    """Buy grey tokens redeemer"""
+    CONSTR_ID = 0
+    buyer_pkh: bytes  # Public key hash of the buyer
+    amount: int  # Amount of tokens to buy
+    investor_input_index: int  # Index of investor contract input
+    protocol_ref_index: int  # Index of protocol reference input for fee
+    investor_output_index: int  # Index of investor contract output (if tokens remain)
+
+
+@dataclass()
+class CancelSale(PlutusData):
+    """Cancel sale redeemer - seller retrieves all tokens"""
+    CONSTR_ID = 1
+    investor_input_index: int
+
+
+@dataclass()
+class UpdatePrice(PlutusData):
+    """Update price redeemer"""
+    CONSTR_ID = 2
+    new_price_per_token: PriceWithPrecision
+    investor_input_index: int
+    investor_output_index: int
+
+
+RedeemerInvestor = Union[BuyGrey, CancelSale, UpdatePrice]
+
+################################################
 # Generic functions
 ################################################
 def get_minting_purpose(context: ScriptContext) -> Minting:

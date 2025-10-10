@@ -19,7 +19,6 @@ from cardano_offchain.wallet import CardanoWallet
 
 from cardano_offchain.chain_context import CardanoChainContext
 
-
 class ReferenceScriptContract:
     """
     Placeholder contract for reference scripts stored on-chain.
@@ -938,11 +937,11 @@ class ContractManager:
         return None
 
     def list_project_contracts(self) -> list:
-        """List all available project contract names (excluding NFT minting policies and grey token contracts)"""
+        """List all available project contract names (excluding NFT minting policies, grey token contracts, and investor contracts)"""
         project_contracts = []
         for name in sorted(self.contracts.keys()):
             if (name == "project" or name.startswith("project_")) and not name.endswith(
-                ("_nfts", "_grey")
+                ("_nfts", "_grey", "_investor")
             ):
                 project_contracts.append(name)
         return project_contracts
@@ -1131,6 +1130,98 @@ class ContractManager:
 
         except Exception as e:
             return {"success": False, "error": f"myUSDFree contract compilation failed: {e}"}
+
+    def compile_investor_contract(self, project_name: str) -> Dict[str, Any]:
+        """
+        Compile investor spending contract for a specific project.
+        Investor contract requires three compilation parameters: protocol policy ID, grey token policy ID, and grey token name.
+
+        Args:
+            project_name: Name of the project to compile investor contract for
+
+        Returns:
+            Dictionary containing compilation results
+        """
+        try:
+            # Get the protocol NFTs contract for protocol policy ID
+            protocol_nfts_contract = self.get_contract("protocol_nfts")
+            if not protocol_nfts_contract:
+                return {
+                    "success": False,
+                    "error": "Protocol NFTs contract not found. Compile protocol contracts first.",
+                }
+
+            # Get the project contract
+            project_contract = self.get_project_contract(project_name)
+            if not project_contract:
+                return {
+                    "success": False,
+                    "error": f"Project contract '{project_name}' not found. Compile the project first.",
+                }
+
+            # Get the grey token contract for this project
+            grey_contract = self.get_grey_token_contract(project_name)
+            if not grey_contract:
+                return {
+                    "success": False,
+                    "error": f"Grey token contract for '{project_name}' not found. Compile grey contract first (Option 4).",
+                }
+
+            # Check if investor.py exists
+            investor_path = self.spending_contracts_path / "investor.py"
+            if not investor_path.exists():
+                return {"success": False, "error": "Investor contract file (investor.py) not found"}
+
+            # Get grey token info from project datum
+            datum_result = self.get_contract_datum(project_name)
+            if not datum_result["success"]:
+                return {
+                    "success": False,
+                    "error": f"Failed to get project datum: {datum_result.get('error', 'Unknown error')}",
+                }
+
+            # Extract grey token policy ID from datum
+            grey_policy_id_hex = datum_result["datum"]["project_token"]["policy_id"]
+            grey_token_name_hex = datum_result["datum"]["project_token"]["token_name"]
+
+            # Convert to bytes
+            grey_policy_id_bytes = bytes.fromhex(grey_policy_id_hex)
+            grey_token_name_bytes = bytes.fromhex(grey_token_name_hex)
+
+            # Get protocol policy ID
+            protocol_policy_id_bytes = bytes.fromhex(protocol_nfts_contract.policy_id)
+
+            print(f"Compiling investor contract with:")
+            print(f"  Protocol Policy ID: {protocol_nfts_contract.policy_id}")
+            print(f"  Grey Token Policy ID: {grey_policy_id_hex}")
+            print(f"  Grey Token Name: {grey_token_name_hex}")
+
+            # Set recursion limit before compilation
+            self._set_recursion_limit(2000)
+
+            # Compile investor contract with protocol_policy_id, grey_token_policy_id, and grey_token_name
+            investor_contract = build(investor_path, protocol_policy_id_bytes, grey_policy_id_bytes, grey_token_name_bytes)
+
+            # Store investor contract with naming convention: {project_name}_investor
+            investor_contract_name = f"{project_name}_investor"
+            self.contracts[investor_contract_name] = PlutusContract(investor_contract)
+
+            # Save to disk
+            saved = self.mark_contract_as_deployed([investor_contract_name])
+
+            return {
+                "success": True,
+                "investor_contract_name": investor_contract_name,
+                "investor_address": str(PlutusContract(investor_contract).testnet_addr),
+                "project_name": project_name,
+                "protocol_policy_id": protocol_nfts_contract.policy_id,
+                "grey_policy_id": grey_policy_id_hex,
+                "grey_token_name": grey_token_name_hex,
+                "saved": saved,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Investor contract compilation failed: {e}"}
 
     def load_contract_from_artifacts(
         self, contract_name: str, artifacts_subdir: str = "minting_policies"

@@ -224,6 +224,7 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
             # Quantity must be non-negative
             assert cert.quantity >= 0, "Certification quantity must be non-negative"
             total_certification_quantity += cert.quantity
+            assert cert.certification_date >= 0, "Certification date must be non-negative"
 
             # For states below 2, real values should still be empty (only state 2 can have real values when certification is verified)
             assert (
@@ -233,8 +234,6 @@ def validate_datum_update(old_datum: DatumProject, new_datum: DatumProject) -> N
                 cert.real_quantity == 0
             ), "Real certification quantity can only be set when project_state is 2"
 
-            assert cert.certification_date >= 0, "Certification date must be non-negative"
-            assert cert.quantity >= 0, "Certification quantity must be non-negative"
         
         assert (total_certification_quantity == new_datum.project_token.total_supply
                     ), "Sum of certification quantities must equal total supply"

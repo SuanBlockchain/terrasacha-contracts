@@ -6,75 +6,6 @@ from terrasacha_contracts.util import *
 USDA_POLICY_ID = b"V\xa9\xc6\x9f\x1d3\xa7\xd5m\x91=\x82\x01S\xb7\xe2\xe7\xcf\x0f\xa8\xdc(6\xcc\xb1\xd9\xca\xec"
 
 ################################################
-# Investor Data Types
-################################################
-
-@dataclass()
-class PriceWithPrecision(PlutusData):
-    """
-    Price with precision following Orcfax pattern.
-
-    Price is stored as an integer with a precision value indicating decimal places.
-    Example: $1.25 with 6 decimals = PriceWithPrecision(1250000, 6)
-    Calculation: actual_price = price / (10 ^ precision) = 1250000 / 1000000 = 1.25
-
-    Fields:
-        price: Price as integer (e.g., 1250000 for $1.25 with 6 decimals)
-        precision: Number of decimal places (e.g., 6 means divide by 10^6)
-    """
-    CONSTR_ID = 4
-    price: int
-    precision: int
-
-
-@dataclass()
-class DatumInvestor(PlutusData):
-    """
-    Investor contract datum for grey token sales.
-
-    Fields:
-        seller_pkh: Public key hash of the seller
-        grey_token_amount: Total amount of grey tokens available for sale
-        price_per_token: Price per token with precision (USDA)
-        min_purchase_amount: Minimum amount of tokens that can be purchased
-    """
-    CONSTR_ID = 0
-    seller_pkh: bytes
-    grey_token_amount: int
-    price_per_token: PriceWithPrecision
-    min_purchase_amount: int
-
-@dataclass()
-class BuyGrey(PlutusData):
-    """Buy grey tokens redeemer"""
-    CONSTR_ID = 0
-    buyer_pkh: bytes  # Public key hash of the buyer
-    amount: int  # Amount of tokens to buy
-    investor_input_index: int  # Index of investor contract input
-    protocol_ref_index: int  # Index of protocol reference input for fee
-    investor_output_index: int  # Index of investor contract output (if tokens remain)
-
-
-@dataclass()
-class CancelSale(PlutusData):
-    """Cancel sale redeemer - seller retrieves all tokens"""
-    CONSTR_ID = 1
-    investor_input_index: int
-
-
-@dataclass()
-class UpdatePrice(PlutusData):
-    """Update price redeemer"""
-    CONSTR_ID = 2
-    new_price_per_token: PriceWithPrecision
-    investor_input_index: int
-    investor_output_index: int
-
-
-RedeemerInvestor = Union[BuyGrey, CancelSale, UpdatePrice]
-
-
-################################################
 # Helper Functions
 ################################################
 
@@ -159,7 +90,8 @@ def validate_grey_token_transfer(
 
 def validator(
     protocol_policy_id: PolicyId,
-    grey_token: Token,
+    grey_token_policy_id: PolicyId,
+    grey_token_name: TokenName,
     datum: DatumInvestor,
     redeemer: RedeemerInvestor,
     context: ScriptContext,
@@ -181,7 +113,7 @@ def validator(
     purpose = get_spending_purpose(context)
 
     investor_input = resolve_linear_input(tx_info, redeemer.investor_input_index, purpose)
-    assert check_token_present(grey_token.policy_id, investor_input), "Investor input must contain grey token"
+    assert check_token_present(grey_token_policy_id, investor_input), "Investor input must contain grey token"
 
     if isinstance(redeemer, BuyGrey):
         # Validate purchase amount
@@ -198,8 +130,8 @@ def validator(
         validate_grey_token_transfer(
             tx_info.outputs,
             redeemer.buyer_pkh,
-            grey_token.policy_id,
-            grey_token.token_name,
+            grey_token_policy_id,
+            grey_token_name,
             redeemer.amount
         )
 
@@ -225,7 +157,7 @@ def validator(
             assert investor_output.address == investor_input.address, "Remaining tokens must return to contract"
 
             # Validate remaining tokens are in output
-            output_tokens = investor_output.value.get(grey_token.policy_id, {b"": 0}).get(grey_token.token_name, 0)
+            output_tokens = investor_output.value.get(grey_token_policy_id, {b"": 0}).get(grey_token_name, 0)
             assert output_tokens >= remaining_tokens, "Insufficient tokens returned to contract"
 
             # Validate datum update
@@ -277,7 +209,7 @@ def validator(
         assert new_datum.price_per_token.precision == redeemer.new_price_per_token.precision, "Precision must be updated to new value"
 
         # Validate tokens remain in contract
-        output_tokens = investor_output.value.get(grey_token.policy_id, {b"": 0}).get(grey_token.token_name, 0)
+        output_tokens = investor_output.value.get(grey_token_policy_id, {b"": 0}).get(grey_token_name, 0)
         assert output_tokens >= datum.grey_token_amount, "All tokens must remain in contract"
 
     else:

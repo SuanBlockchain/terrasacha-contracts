@@ -534,10 +534,10 @@ class CardanoCLI:
             if not self.menu.confirm_action("Continue with testing?"):
                 return
 
-        self.menu.print_info("This will mint two NFTs: one protocol token and one user token")
+        self.menu.print_info("This will mint two NFTs: one protocol token and one user auth token")
 
-        # Select destination for the user token
-        destination_selection = self.select_wallet_or_address("user token delivery", mode="destination")
+        # Select destination for the user auth token
+        destination_selection = self.select_wallet_or_address("user auth token delivery", mode="destination")
         if not destination_selection:
             self.menu.print_info("Protocol token minting cancelled")
             return
@@ -709,18 +709,124 @@ class CardanoCLI:
                 self.menu.print_warning("Maximum 10 stakeholders reached")
                 break
 
+        # Ask for grey tokens available for investment
+        self.menu.print_section("INVESTMENT TOKENS")
+        investment_tokens_str = self.menu.get_input(
+            "Enter grey tokens available for investment (or 0 for none)"
+        )
+        try:
+            investment_tokens = int(investment_tokens_str)
+            if investment_tokens < 0:
+                raise ValueError("Investment tokens cannot be negative")
+        except ValueError as e:
+            self.menu.print_error(f"Invalid investment tokens amount: {e}")
+            return
+
+        # Certification periods setup
+        self.menu.print_section("CERTIFICATION PERIODS SETUP")
+        self.menu.print_warning(
+            f"⚠️  IMPORTANT: The sum of certification quantities must equal the total supply ({total_supply:,})"
+        )
+        self.menu.print_info("Enter certification periods for the project (minimum 1 certification required)")
+
+        certifications = []
+        total_certification_quantity = 0
+        current_posix_time = int(time.time() * 1000)
+
+        while True:
+            cert_number = len(certifications) + 1
+            self.menu.print_info(
+                f"\nCertification {cert_number} - Remaining quantity needed: {total_supply - total_certification_quantity:,}"
+            )
+
+            cert_date_input = self.menu.get_input(
+                f"Certification date (POSIX timestamp in ms, default: {current_posix_time}, or 'done' to finish)"
+            )
+
+            if cert_date_input.lower() == "done":
+                if len(certifications) == 0:
+                    self.menu.print_error("At least one certification is required")
+                    continue
+                if total_certification_quantity != total_supply:
+                    self.menu.print_error(
+                        f"Total certification quantity ({total_certification_quantity:,}) must equal total supply ({total_supply:,})"
+                    )
+                    continue
+                break
+
+            # Parse certification date
+            if not cert_date_input.strip():
+                certification_date = current_posix_time
+                self.menu.print_info(f"Using current time: {certification_date}")
+            else:
+                try:
+                    certification_date = int(cert_date_input)
+                    if certification_date < 0:
+                        self.menu.print_error("Certification date must be non-negative")
+                        continue
+                except ValueError:
+                    self.menu.print_error("Invalid certification date format")
+                    continue
+
+            # Get certification quantity
+            quantity_input = self.menu.get_input(
+                f"Quantity of carbon credits for this certification period"
+            )
+            try:
+                cert_quantity = int(quantity_input)
+                if cert_quantity <= 0:
+                    self.menu.print_error("Quantity must be positive")
+                    continue
+                if total_certification_quantity + cert_quantity > total_supply:
+                    self.menu.print_error(
+                        f"Quantity ({cert_quantity:,}) would exceed total supply. Maximum allowed: {total_supply - total_certification_quantity:,}"
+                    )
+                    continue
+            except ValueError:
+                self.menu.print_error("Invalid quantity format")
+                continue
+
+            # Add certification
+            certifications.append({
+                "certification_date": certification_date,
+                "quantity": cert_quantity,
+                "real_certification_date": 0,  # Must be 0 in state 0
+                "real_quantity": 0  # Must be 0 in state 0
+            })
+            total_certification_quantity += cert_quantity
+
+            self.menu.print_success(
+                f"✓ Added certification: {cert_quantity:,} credits (Total: {total_certification_quantity:,} / {total_supply:,})"
+            )
+
+            # Auto-complete if we've reached the total supply
+            if total_certification_quantity == total_supply:
+                self.menu.print_success("✓ All certifications added (total matches supply)")
+                break
+
+            if len(certifications) >= 20:
+                self.menu.print_warning("Maximum 20 certifications reached")
+                break
+
         # Display summary
         self.menu.print_section("PROJECT SUMMARY")
         print(f"Project ID: {project_id.hex()}")
         print(f"Metadata: {metadata_uri}")
-        print(f"Total Supply: {total_participation:,} lovelace")
+        print(f"Stakeholder Participation: {total_participation:,} lovelace")
+        print(f"Investment Grey Tokens: {investment_tokens:,}")
+        total_supply = total_participation + investment_tokens
+        print(f"Total Grey Token Supply: {total_supply:,}")
         print(f"Stakeholders ({len(stakeholders)}):")
         for i, (name, participation, stakeholder_pkh) in enumerate(stakeholders, 1):
             percentage = (participation / total_participation) * 100
             print(f"  {i}. {name.decode('utf-8')}: {participation:,} ({percentage:.2f}%)")
+        print(f"Certifications ({len(certifications)}):")
+        for i, cert in enumerate(certifications, 1):
+            print(f"  {i}. Date: {cert['certification_date']} - Quantity: {cert['quantity']:,}")
+        print(f"Total Certification Quantity: {total_certification_quantity:,}")
 
         # Destination address selection
-        destination_selection = self.select_wallet_or_address("user token delivery", mode="destination")
+        destination_selection = self.select_wallet_or_address("user auth token delivery", mode="destination")
         if not destination_selection:
             self.menu.print_info("Project creation cancelled")
             return
@@ -765,6 +871,8 @@ class CardanoCLI:
                 project_id=project_id,
                 project_metadata=project_metadata,
                 stakeholders=stakeholders,
+                investment_tokens=investment_tokens,
+                certifications=certifications,
                 destination_address=destination_selection.address,
                 project_name=selected_project_name,
                 wallet_override=wallet_override,
@@ -1384,24 +1492,166 @@ class CardanoCLI:
             input("Press Enter to continue...")
             return
 
-        # Get grey token quantity
-        try:
-            quantity_input = self.menu.get_input("Enter number of grey tokens to mint (default: 1)")
-            grey_token_quantity = int(quantity_input) if quantity_input.strip() else 1
+        # For free-minting mode, ensure investor contract is compiled
+        if minting_mode == "free":
+            investor_contract_name = f"{selected_project}_investor"
+            if not self.contract_manager.get_contract(investor_contract_name):
+                self.menu.print_warning(
+                    f"Free-minting requires investor contract ({investor_contract_name}) to be compiled."
+                )
+                if self.menu.confirm_action("Would you like to compile the investor contract now?"):
+                    try:
+                        self.menu.print_info(f"Compiling investor contract for {selected_project}...")
+                        result = self.contract_manager.compile_investor_contract(selected_project)
+                        if result["success"]:
+                            self.menu.print_success(f"✓ Investor contract compiled successfully!")
+                            print(f"│ Contract Address: {result['investor_address']}")
+                        else:
+                            self.menu.print_error(f"Failed to compile investor contract: {result.get('error', 'Unknown error')}")
+                            input("Press Enter to continue...")
+                            return
+                    except Exception as e:
+                        self.menu.print_error(f"Error compiling investor contract: {e}")
+                        input("Press Enter to continue...")
+                        return
+                else:
+                    self.menu.print_info("Cannot proceed with free-minting without investor contract")
+                    input("Press Enter to continue...")
+                    return
+            else:
+                self.menu.print_info(f"✓ Investor contract ({investor_contract_name}) is compiled and ready")
 
-            if grey_token_quantity <= 0:
-                self.menu.print_error("Quantity must be positive")
+        # Get grey token quantity - automatic for free-minting, manual for authorized
+        if minting_mode == "free":
+            # Free-minting: Calculate quantity automatically from project datum
+            self.menu.print_info("Querying project datum to calculate available grey tokens...")
+
+            datum_result = self.contract_manager.get_contract_datum(selected_project)
+            if not datum_result["success"]:
+                self.menu.print_error(f"Failed to get project datum: {datum_result.get('error', 'Unknown error')}")
                 input("Press Enter to continue...")
                 return
 
-        except ValueError:
-            self.menu.print_error("Invalid quantity. Please enter a number.")
-            input("Press Enter to continue...")
-            return
+            datum = datum_result["datum"]
+            total_supply = datum['project_token']['total_supply']
 
-        # Ask for wallet to use for transaction (will pay fees and receive tokens)
+            # Calculate total participation from all stakeholders
+            total_participation = sum(sh['participation'] for sh in datum['stakeholders'])
+
+            # Grey tokens = total_supply - stakeholder participation (tokens for investment)
+            grey_token_quantity = total_supply - total_participation
+
+            if grey_token_quantity <= 0:
+                self.menu.print_error(f"No grey tokens available for minting. Total supply ({total_supply}) already allocated to stakeholders ({total_participation})")
+                input("Press Enter to continue...")
+                return
+
+            self.menu.print_success(f"✓ Grey token quantity calculated: {grey_token_quantity:,}")
+            print(f"│ Total Supply: {total_supply:,}")
+            print(f"│ Stakeholder Participation: {total_participation:,}")
+            print(f"│ Available for Investment: {grey_token_quantity:,}")
+            print()
+
+            # Get investor datum information for free-minting
+            self.menu.print_section("INVESTOR CONTRACT SETUP")
+            self.menu.print_info("Configure sale parameters for grey tokens:")
+            print()
+
+            # Select seller wallet
+            seller_selection = self.select_wallet_or_address(
+                "seller (will receive USDA payments from grey token sales)",
+                mode="wallet_only",
+                allow_custom_address=False
+            )
+            if not seller_selection:
+                self.menu.print_info("Grey token minting cancelled")
+                input("Press Enter to continue...")
+                return
+
+            # Get seller PKH from selected wallet
+            if seller_selection.wallet_name:
+                # Get PKH from wallet
+                seller_wallet = self.wallet_manager.load_wallet(seller_selection.wallet_name)
+                seller_pkh_bytes = seller_wallet.get_payment_verification_key_hash()
+            else:
+                self.menu.print_error("Could not get PKH from selected wallet")
+                input("Press Enter to continue...")
+                return
+
+            # Get price per token
+            try:
+                self.menu.print_info("Price per token (USDA with precision):")
+                print("│ Example: $1.25 per token with 6 decimals = price: 1250000, precision: 6")
+                price_input = self.menu.get_input("Enter price (integer, e.g., 1250000 for $1.25)")
+                price = int(price_input)
+
+                if price <= 0:
+                    self.menu.print_error("Price must be positive")
+                    input("Press Enter to continue...")
+                    return
+
+                precision_input = self.menu.get_input("Enter precision (decimals, e.g., 6)")
+                precision = int(precision_input)
+
+                if precision < 0:
+                    self.menu.print_error("Precision must be non-negative")
+                    input("Press Enter to continue...")
+                    return
+
+                # Calculate and show actual price
+                actual_price = price / (10 ** precision)
+                print(f"│ Actual price per token: ${actual_price:.{precision}f} USDA")
+                print()
+
+            except ValueError:
+                self.menu.print_error("Invalid input. Please enter numbers only.")
+                input("Press Enter to continue...")
+                return
+
+            # Get minimum purchase amount
+            try:
+                min_purchase_input = self.menu.get_input(f"Enter minimum purchase amount (tokens, default: 1)")
+                min_purchase_amount = int(min_purchase_input) if min_purchase_input.strip() else 1
+
+                if min_purchase_amount <= 0:
+                    self.menu.print_error("Minimum purchase must be positive")
+                    input("Press Enter to continue...")
+                    return
+
+                if min_purchase_amount > grey_token_quantity:
+                    self.menu.print_error(f"Minimum purchase ({min_purchase_amount}) cannot exceed total tokens ({grey_token_quantity})")
+                    input("Press Enter to continue...")
+                    return
+
+            except ValueError:
+                self.menu.print_error("Invalid quantity. Please enter a number.")
+                input("Press Enter to continue...")
+                return
+
+        else:
+            # Authorized-minting: Ask user for quantity
+            try:
+                quantity_input = self.menu.get_input("Enter number of grey tokens to mint (default: 1)")
+                grey_token_quantity = int(quantity_input) if quantity_input.strip() else 1
+
+                if grey_token_quantity <= 0:
+                    self.menu.print_error("Quantity must be positive")
+                    input("Press Enter to continue...")
+                    return
+
+            except ValueError:
+                self.menu.print_error("Invalid quantity. Please enter a number.")
+                input("Press Enter to continue...")
+                return
+
+        # Ask for wallet to use for transaction - message varies by mode
+        if minting_mode == "free":
+            wallet_prompt = "transaction (will pay fees only - grey tokens go to investor contract)"
+        else:
+            wallet_prompt = "transaction (will pay fees and receive grey tokens)"
+
         wallet_selection = self.select_wallet_or_address(
-            "transaction (will pay fees and receive grey tokens)",
+            wallet_prompt,
             mode="wallet_only",
             allow_custom_address=False
         )
@@ -1425,10 +1675,19 @@ class CardanoCLI:
         self.menu.print_section("TRANSACTION PREVIEW")
         current_wallet = self.wallet_manager.get_default_wallet_name()
         mode_display = "Free Minting" if minting_mode == "free" else "Authorized Minting"
+
+        # Determine destination message based on mode
+        if minting_mode == "free":
+            destination_msg = f"│ Wallet: {current_wallet} (will pay fees)"
+            investor_contract_name = f"{selected_project}_investor"
+            destination_msg += f"\n│ Grey Token Destination: {investor_contract_name} contract (for sale)"
+        else:
+            destination_msg = f"│ Wallet: {current_wallet} (will pay fees and receive tokens)"
+
         print(f"│ Project Contract: {selected_project}")
         print(f"│ Minting Mode: {mode_display}")
         print(f"│ Grey Tokens to Mint: {grey_token_quantity:,}")
-        print(f"│ Wallet: {current_wallet} (will pay fees and receive tokens)")
+        print(destination_msg)
 
         if not self.menu.confirm_action("Proceed with grey token minting?"):
             self.menu.print_info("Grey token minting cancelled")
@@ -1439,11 +1698,22 @@ class CardanoCLI:
             self.menu.print_info("Creating grey token minting transaction...")
 
             # Create the grey token minting transaction
-            result = self.token_operations.create_grey_minting_transaction(
-                project_name=selected_project,
-                grey_token_quantity=grey_token_quantity,
-                minting_mode=minting_mode,
-            )
+            if minting_mode == "free":
+                result = self.token_operations.create_grey_minting_transaction(
+                    project_name=selected_project,
+                    grey_token_quantity=grey_token_quantity,
+                    minting_mode=minting_mode,
+                    seller_pkh=seller_pkh_bytes,
+                    price=price,
+                    precision=precision,
+                    min_purchase=min_purchase_amount,
+                )
+            else:
+                result = self.token_operations.create_grey_minting_transaction(
+                    project_name=selected_project,
+                    grey_token_quantity=grey_token_quantity,
+                    minting_mode=minting_mode,
+                )
 
             if result["success"]:
                 self.menu.print_success("✓ Grey token minting transaction created successfully!")
@@ -1461,9 +1731,17 @@ class CardanoCLI:
                         self.menu.print_success("✓ Grey token minting transaction submitted!")
                         tx_info = self.transactions.get_transaction_info(tx_id)
                         print(f"Explorer: {tx_info['explorer_url']}")
-                        self.menu.print_info(
-                            "Grey tokens will appear in destination wallet after confirmation"
-                        )
+
+                        # Display destination-specific message
+                        if minting_mode == "free":
+                            investor_contract_name = f"{selected_project}_investor"
+                            self.menu.print_info(
+                                f"Grey tokens sent to {investor_contract_name} contract (ready for sale)"
+                            )
+                        else:
+                            self.menu.print_info(
+                                "Grey tokens will appear in wallet after confirmation"
+                            )
                     else:
                         self.menu.print_error("Failed to submit transaction")
                 else:
@@ -3554,24 +3832,25 @@ class CardanoCLI:
             self.menu.print_menu_option("2", "Compile Protocol Contracts", "✓")
             self.menu.print_menu_option("3", "Compile Project Contracts", "✓")
             self.menu.print_menu_option("4", "Compile Grey Contract", "⚙️")
-            self.menu.print_menu_option("5", "Mint Protocol Tokens", "✓")
-            self.menu.print_menu_option("6", "Burn Tokens", "✓")
-            self.menu.print_menu_option("7", "Update Protocol Datum", "✓")
-            self.menu.print_menu_option("8", "Create Project", "✓")
-            self.menu.print_menu_option("9", "Burn Project Tokens", "✓")
-            self.menu.print_menu_option("10", "Update Project Datum", "✓")
-            self.menu.print_menu_option("11", "Mint Grey Tokens", "🪙")
-            self.menu.print_menu_option("12", "Burn Grey Tokens", "🔥")
-            self.menu.print_menu_option("13", "Mint USDATEST (Faucet)", "💰")
-            self.menu.print_menu_option("14", "Burn USDATEST", "🔥")
+            self.menu.print_menu_option("5", "Compile Investor Contract", "💼")
+            self.menu.print_menu_option("6", "Mint Protocol Tokens", "✓")
+            self.menu.print_menu_option("7", "Burn Tokens", "✓")
+            self.menu.print_menu_option("8", "Update Protocol Datum", "✓")
+            self.menu.print_menu_option("9", "Create Project", "✓")
+            self.menu.print_menu_option("10", "Burn Project Tokens", "✓")
+            self.menu.print_menu_option("11", "Update Project Datum", "✓")
+            self.menu.print_menu_option("12", "Mint Grey Tokens", "🪙")
+            self.menu.print_menu_option("13", "Burn Grey Tokens", "🔥")
+            self.menu.print_menu_option("14", "Mint USDATEST (Faucet)", "💰")
+            self.menu.print_menu_option("15", "Burn USDATEST", "🔥")
             self.menu.print_separator()
-            self.menu.print_menu_option("15", "Query Contract Datum", "🔍")
-            self.menu.print_menu_option("16", "Delete Empty Contract", "🗑")
-            self.menu.print_menu_option("17", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("16", "Query Contract Datum", "🔍")
+            self.menu.print_menu_option("17", "Delete Empty Contract", "🗑")
+            self.menu.print_menu_option("18", "Delete Grey Tokens Only", "🧹")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-17)")
+            choice = self.menu.get_input("Select an option (0-18)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3624,30 +3903,32 @@ class CardanoCLI:
             elif choice == "4":
                 self.compile_grey_contract_menu()
             elif choice == "5":
-                self.mint_protocol_token()
+                self.compile_investor_contract_menu()
             elif choice == "6":
-                self.burn_tokens_menu()
+                self.mint_protocol_token()
             elif choice == "7":
-                self.update_protocol_menu()
+                self.burn_tokens_menu()
             elif choice == "8":
-                self.create_project_menu()
+                self.update_protocol_menu()
             elif choice == "9":
-                self.burn_project_tokens_menu()
+                self.create_project_menu()
             elif choice == "10":
-                self.update_project_menu()
+                self.burn_project_tokens_menu()
             elif choice == "11":
-                self.mint_grey_tokens_menu()
+                self.update_project_menu()
             elif choice == "12":
-                self.burn_grey_tokens_menu()
+                self.mint_grey_tokens_menu()
             elif choice == "13":
-                self.mint_usda_faucet_menu()
+                self.burn_grey_tokens_menu()
             elif choice == "14":
-                self.burn_usda_tokens_menu()
+                self.mint_usda_faucet_menu()
             elif choice == "15":
-                self.query_contract_datum_menu()
+                self.burn_usda_tokens_menu()
             elif choice == "16":
-                self.delete_empty_contract_menu()
+                self.query_contract_datum_menu()
             elif choice == "17":
+                self.delete_empty_contract_menu()
+            elif choice == "18":
                 self.delete_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
@@ -3816,6 +4097,110 @@ class CardanoCLI:
 
         input("\nPress Enter to continue...")
 
+    def compile_investor_contract_menu(self):
+        """Compile investor spending contract for a specific project"""
+        self.menu.print_header("INVESTOR CONTRACT COMPILATION", "Compile Investor Spending Validator")
+
+        # Get available project contracts
+        project_contracts = self.contract_manager.list_project_contracts()
+
+        if not project_contracts:
+            self.menu.print_error("No project contracts found!")
+            self.menu.print_info("You must compile a project contract first (Option 3)")
+            input("\nPress Enter to continue...")
+            return
+
+        # Display available project contracts with their grey token status
+        self.menu.print_section("AVAILABLE PROJECT CONTRACTS")
+        projects_with_grey = []
+        for i, contract_name in enumerate(project_contracts, 1):
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(contract_name)
+            grey_contract = self.contract_manager.get_grey_token_contract(contract_name)
+
+            print(f"│ {i}. {contract_name.upper()}")
+            print(f"│    Project NFTs Policy ID: {project_nfts_contract.policy_id}")
+
+            if grey_contract:
+                print(f"│    ✓ Grey Contract: {grey_contract.policy_id}")
+                projects_with_grey.append(contract_name)
+            else:
+                print(f"│    ✗ Grey Contract: Not compiled (compile with Option 4 first)")
+
+            # Check if investor contract already exists
+            investor_contract_name = f"{contract_name}_investor"
+            if investor_contract_name in self.contract_manager.list_contracts():
+                investor_contract = self.contract_manager.get_contract(investor_contract_name)
+                print(f"│    ⚠ Investor contract already exists (Address: {str(investor_contract.testnet_addr)[:20]}...)")
+            print()
+
+        if not projects_with_grey:
+            self.menu.print_error("No projects with grey tokens found!")
+            self.menu.print_info("Compile grey token contracts first (Option 4)")
+            input("\nPress Enter to continue...")
+            return
+
+        # Ask user to select project
+        try:
+            choice_input = self.menu.get_input(
+                f"Select project contract for investor compilation (1-{len(project_contracts)}, or 0 to cancel)"
+            )
+            choice = int(choice_input)
+
+            if choice == 0:
+                self.menu.print_info("Compilation cancelled")
+                input("\nPress Enter to continue...")
+                return
+
+            if not (1 <= choice <= len(project_contracts)):
+                self.menu.print_error("Invalid selection")
+                input("\nPress Enter to continue...")
+                return
+
+            selected_project = project_contracts[choice - 1]
+
+            # Verify grey contract exists for selected project
+            if selected_project not in projects_with_grey:
+                self.menu.print_error(f"Project '{selected_project}' does not have a grey token contract!")
+                self.menu.print_info("Compile grey token contract first (Option 4)")
+                input("\nPress Enter to continue...")
+                return
+
+            # Check if investor contract already exists
+            investor_contract_name = f"{selected_project}_investor"
+            if investor_contract_name in self.contract_manager.list_contracts():
+                self.menu.print_warning(f"⚠ Investor contract already exists for '{selected_project}'")
+                if not self.menu.confirm_action("Overwrite existing investor contract?"):
+                    self.menu.print_info("Compilation cancelled")
+                    input("\nPress Enter to continue...")
+                    return
+
+            # Compile investor contract
+            self.menu.print_info(f"Compiling investor contract for '{selected_project}'...")
+            result = self.contract_manager.compile_investor_contract(selected_project)
+
+            if result["success"]:
+                self.menu.print_success("✅ Investor contract compiled successfully!")
+                self.menu.print_section("COMPILATION RESULTS")
+                print(f"│ Investor Contract Name: {result['investor_contract_name'].upper()}")
+                print(f"│ Investor Address: {result['investor_address']}")
+                print(f"│ Project Name: {result['project_name'].upper()}")
+                print(f"│ Protocol Policy ID: {result['protocol_policy_id']}")
+                print(f"│ Grey Token Policy ID: {result['grey_policy_id']}")
+                print(f"│ Grey Token Name: {result['grey_token_name']}")
+                print(f"│ Saved to Disk: {'✓' if result['saved'] else '✗'}")
+                print()
+
+                self.menu.print_info("Investor contract is now ready for grey token trading operations")
+            else:
+                self.menu.print_error(f"❌ Compilation failed: {result['error']}")
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a number.")
+        except Exception as e:
+            self.menu.print_error(f"❌ Compilation error: {e}")
+
+        input("\nPress Enter to continue...")
+
     def query_contract_datum_menu(self):
         """Query and display datum data from Protocol or Project contracts on-chain"""
         self.menu.print_header("QUERY CONTRACT DATUM", "View On-Chain Contract State")
@@ -3931,7 +4316,15 @@ class CardanoCLI:
                     print(f"│ STAKEHOLDERS ({len(datum['stakeholders'])}):")
                     if datum['stakeholders']:
                         for i, sh in enumerate(datum['stakeholders'], 1):
-                            print(f"│   {i}. Stakeholder: {sh['stakeholder']}")
+                            # Convert hex stakeholder name to string
+                            stakeholder_hex = sh['stakeholder']
+                            try:
+                                stakeholder_str = bytes.fromhex(stakeholder_hex).decode('utf-8')
+                                print(f"│   {i}. Stakeholder: {stakeholder_str}")
+                            except:
+                                # Fallback to hex if decode fails
+                                print(f"│   {i}. Stakeholder: {stakeholder_hex}")
+
                             print(f"│      PKH: {sh['pkh']}")
                             print(f"│      Participation: {sh['participation']}")
                             print(f"│      Claimed: {sh['claimed']}")
@@ -4383,14 +4776,23 @@ class CardanoCLI:
     def add_certification_to_list(self, certifications_list, project_state=0):
         """Add a new certification to the list"""
 
-        cert_date = self.menu.get_input("Enter certification date (POSIX timestamp)")
-        try:
-            certification_date = int(cert_date)
-            if certification_date < 0:
-                raise ValueError("Certification date must be positive")
-        except ValueError as e:
-            self.menu.print_error(f"Invalid certification date: {e}")
-            return
+        # Get current POSIX time in milliseconds as default
+        current_posix_time = int(time.time() * 1000)
+
+        cert_date = self.menu.get_input(
+            f"Enter certification date (POSIX timestamp in ms, default: {current_posix_time})"
+        )
+        if not cert_date.strip():
+            certification_date = current_posix_time
+            self.menu.print_info(f"Using current time: {certification_date}")
+        else:
+            try:
+                certification_date = int(cert_date)
+                if certification_date < 0:
+                    raise ValueError("Certification date must be positive")
+            except ValueError as e:
+                self.menu.print_error(f"Invalid certification date: {e}")
+                return
 
         quantity = self.menu.get_input("Enter quantity of carbon credits certified")
         try:
@@ -4449,14 +4851,6 @@ class CardanoCLI:
                 return
 
             cert = certifications_list[index]
-
-            # Handle real certification fields based on project state
-            # if project_state == 1:
-            #     # Project state is 1: real fields cannot be changed and must be empty
-            #     cert.real_certification_date = 0
-            #     cert.real_quantity = 0
-            #     self.menu.print_info("Real certification fields set to empty (project state is 1 - changes not allowed)")
-            # else:
 
             # Edit certification date
             new_cert_date = self.menu.get_input(

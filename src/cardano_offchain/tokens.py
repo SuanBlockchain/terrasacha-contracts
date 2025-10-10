@@ -19,6 +19,8 @@ from terrasacha_contracts.util import (
     PREFIX_REFERENCE_NFT,
     PREFIX_USER_NFT,
     unique_token_name,
+    DatumInvestor,
+    PriceWithPrecision,
 )
 from terrasacha_contracts.validators.project import (
     Certification,
@@ -679,7 +681,9 @@ class TokenOperations:
         self,
         project_id: bytes,
         project_metadata: bytes,
-        stakeholders: list,  # List of tuples: (stakeholder_name_bytes, participation_int)
+        stakeholders: list,  # List of tuples: (stakeholder_name_bytes, participation_int, pkh_hex_str)
+        investment_tokens: int = 0,  # Grey tokens available for investment
+        certifications: Optional[list] = None,  # List of certification dicts with date and quantity
         destination_address: Optional[pc.Address] = None,
         project_name: Optional[str] = None,
         wallet_override: Optional['CardanoWallet'] = None,
@@ -690,7 +694,9 @@ class TokenOperations:
         Args:
             project_id: 32-byte project identifier
             project_metadata: Metadata URI or hash
-            stakeholders: List of (stakeholder_name_bytes, participation_amount) tuples
+            stakeholders: List of (stakeholder_name_bytes, participation_amount, pkh_hex_str) tuples
+            investment_tokens: Grey tokens available for investment (default: 0)
+            certifications: List of certification dicts with certification_date, quantity, real_certification_date, real_quantity
             destination_address: Optional destination for user token
             project_name: Optional specific project contract name to use (e.g., "project_1")
 
@@ -733,13 +739,6 @@ class TokenOperations:
 
             # Get the compilation UTXO info for reference
             compilation_utxo_info = self.contract_manager.get_project_compilation_utxo(project_contract_name)
-            # compilation_utxo_ref = self.contract_manager.get_project_compilation_utxo_as_txoutref(compilation_utxo_info)
-
-            # if not compilation_utxo_ref:
-            #     return {
-            #         "success": False,
-            #         "error": f"Compilation UTXO not found for project '{project_contract_name}'. Please recompile the project contracts using CLI option 3."
-            #     }
 
             # Get UTXOs from the active wallet
             wallet_utxos = self.context.utxos(from_address)
@@ -844,6 +843,9 @@ class TokenOperations:
                 )
                 total_supply += participation
 
+            # Add investment tokens to total supply
+            total_supply += investment_tokens
+
             # Create project parameters
             # payment_vkey = self.wallet.get_payment_verification_key_hash()
             project_params = DatumProjectParams(
@@ -859,19 +861,31 @@ class TokenOperations:
                 total_supply=total_supply,
             )
 
-            # Create initial certification (empty)
-            initial_certifications = [
-                Certification(
-                    certification_date=0, quantity=0, real_certification_date=0, real_quantity=0
-                )
-            ]
+            # Create certifications list from user input or use empty default
+            if certifications and len(certifications) > 0:
+                certification_list = [
+                    Certification(
+                        certification_date=cert["certification_date"],
+                        quantity=cert["quantity"],
+                        real_certification_date=cert["real_certification_date"],
+                        real_quantity=cert["real_quantity"],
+                    )
+                    for cert in certifications
+                ]
+            else:
+                # Fallback to empty certification if none provided
+                certification_list = [
+                    Certification(
+                        certification_date=0, quantity=0, real_certification_date=0, real_quantity=0
+                    )
+                ]
 
             # Create project datum
             project_datum = DatumProject(
                 params=project_params,
                 project_token=project_token_info,
                 stakeholders=stakeholder_list,
-                certifications=initial_certifications,
+                certifications=certification_list,
             )
 
             # Add project output
@@ -1361,6 +1375,10 @@ class TokenOperations:
         project_name: Optional[str] = None,
         grey_token_quantity: int = 1,
         minting_mode: str = "free",
+        seller_pkh: Optional[bytes] = None,
+        price: Optional[int] = None,
+        precision: Optional[int] = None,
+        min_purchase: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Create a minting transaction for grey tokens
@@ -1372,11 +1390,17 @@ class TokenOperations:
             project_name: Optional specific project contract name to use
             grey_token_quantity: Number of grey tokens to mint (default: 1)
             minting_mode: Minting mode - "free" (requires authorization token) or "authorized" (any wallet, contract validates)
+            seller_pkh: Seller PKH for investor datum (free mode only)
+            price: Price per token as integer (free mode only)
+            precision: Price precision/decimals (free mode only)
+            min_purchase: Minimum purchase amount (free mode only)
 
         Returns:
             A dictionary containing the transaction details or an error message
 
-        Note: Grey tokens are always sent to the wallet submitting the transaction (paying fees)
+        Note:
+            - Free mode: Grey tokens sent to investor contract with DatumInvestor
+            - Authorized mode: Grey tokens sent to wallet
         """
         try:
             project_contract = self.contract_manager.get_project_contract(project_name)
@@ -1555,6 +1579,20 @@ class TokenOperations:
                     project_state=1,  # Move to token sale state
                 )
                 new_stakeholders = project_datum.stakeholders  # Keep original
+
+                # Free mode: Create investor datum for grey token sale
+                price_with_precision = PriceWithPrecision(
+                    price=price,
+                    precision=precision
+                )
+                investor_datum = DatumInvestor(
+                    seller_pkh=seller_pkh,
+                    grey_token_amount=grey_token_quantity,
+                    price_per_token=price_with_precision,
+                    min_purchase_amount=min_purchase
+                )
+                datum_to_use = investor_datum
+
             else:
                 # Authorized mode: Keep state unchanged, mark stakeholder as claimed
                 new_params = DatumProjectParams(
@@ -1582,6 +1620,9 @@ class TokenOperations:
                     else:
                         # Keep other stakeholders unchanged
                         new_stakeholders.append(stakeholder)
+
+                # Authorized mode: No datum for wallet
+                datum_to_use = None
 
             # Create updated project datum with mode-specific changes
             new_project_datum = DatumProject(
@@ -1612,20 +1653,35 @@ class TokenOperations:
             )
             builder.add_output(project_output)
 
+            # Determine destination address based on minting mode
+            if minting_mode == "free":
+                # Free mode: Send grey tokens to investor contract
+                investor_contract_name = f"{project_contract_name}_investor"
+                investor_contract = self.contract_manager.get_contract(investor_contract_name)
+                if not investor_contract:
+                    return {
+                        "success": False,
+                        "error": f"Investor contract '{investor_contract_name}' not found. This should have been compiled during minting setup.",
+                    }
+                destination_address = investor_contract.testnet_addr
+            else:
+                # Authorized mode: Send grey tokens to wallet
+                destination_address = from_address
+
             # Add user output with minted grey tokens
             user_value = pc.Value(0, grey_multi_asset)
             min_val_user = pc.min_lovelace(
                 self.context,
                 output=pc.TransactionOutput(
-                    from_address,
+                    destination_address,
                     user_value,
-                    datum=None,
+                    datum=datum_to_use,
                 ),
             )
             user_output = pc.TransactionOutput(
-                address=from_address,
+                address=destination_address,
                 amount=pc.Value(coin=min_val_user, multi_asset=grey_multi_asset),
-                datum=None,
+                datum=datum_to_use,
             )
             builder.add_output(user_output)
 
