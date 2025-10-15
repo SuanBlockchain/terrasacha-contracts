@@ -116,3 +116,4 @@ src/artifacts/
 VALIDATIONS.md
 grey_token_metadata.json
 src/terrasacha_contracts/validators/other.py
+DATABASE_MIGRATION_SUMMARY.md

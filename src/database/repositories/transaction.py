@@ -1,0 +1,92 @@
+"""
+Transaction Repository
+
+Manages transaction data access operations.
+"""
+
+from typing import List, Optional
+
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.database.models import Transaction, TransactionStatus
+from src.database.repositories.base import BaseRepository
+
+
+class TransactionRepository(BaseRepository[Transaction]):
+    """Repository for transaction operations"""
+
+    def __init__(self, session: AsyncSession):
+        """Initialize transaction repository"""
+        super().__init__(Transaction, session)
+
+    async def get_by_tx_id(self, tx_id: str) -> Optional[Transaction]:
+        """
+        Get transaction by tx_id
+
+        Args:
+            tx_id: Transaction ID
+
+        Returns:
+            Transaction instance or None
+        """
+        statement = select(Transaction).where(Transaction.tx_id == tx_id)
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_by_wallet(self, wallet_id: int, limit: int = 50) -> List[Transaction]:
+        """
+        Get transactions for a wallet
+
+        Args:
+            wallet_id: Wallet ID
+            limit: Maximum number of transactions
+
+        Returns:
+            List of transactions (most recent first)
+        """
+        statement = (
+            select(Transaction)
+            .where(Transaction.wallet_id == wallet_id)
+            .order_by(desc(Transaction.created_at))
+            .limit(limit)
+        )
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def get_by_status(self, status: TransactionStatus) -> List[Transaction]:
+        """
+        Get transactions by status
+
+        Args:
+            status: Transaction status
+
+        Returns:
+            List of transactions
+        """
+        statement = select(Transaction).where(Transaction.status == status).order_by(desc(Transaction.created_at))
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
+
+    async def get_pending(self) -> List[Transaction]:
+        """
+        Get all pending transactions
+
+        Returns:
+            List of pending transactions
+        """
+        return await self.get_by_status(TransactionStatus.PENDING)
+
+    async def get_recent(self, limit: int = 50) -> List[Transaction]:
+        """
+        Get recent transactions
+
+        Args:
+            limit: Maximum number of transactions
+
+        Returns:
+            List of recent transactions
+        """
+        statement = select(Transaction).order_by(desc(Transaction.created_at)).limit(limit)
+        result = await self.session.execute(statement)
+        return list(result.scalars().all())
