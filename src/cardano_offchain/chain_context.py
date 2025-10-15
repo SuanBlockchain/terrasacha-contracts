@@ -12,7 +12,7 @@ from blockfrost import ApiUrls, BlockFrostApi
 class CardanoChainContext:
     """Manages Cardano chain context and network configuration"""
 
-    def __init__(self, network: str = "testnet", blockfrost_api_key: str = None):
+    def __init__(self, network: str = "testnet", blockfrost_api_key: str | None = None):
         """
         Initialize chain context
 

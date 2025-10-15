@@ -4,8 +4,6 @@ Transaction Repository
 Manages transaction data access operations.
 """
 
-from typing import List, Optional
-
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +18,7 @@ class TransactionRepository(BaseRepository[Transaction]):
         """Initialize transaction repository"""
         super().__init__(Transaction, session)
 
-    async def get_by_tx_id(self, tx_id: str) -> Optional[Transaction]:
+    async def get_by_tx_id(self, tx_id: str) -> Transaction | None:
         """
         Get transaction by tx_id
 
@@ -34,7 +32,7 @@ class TransactionRepository(BaseRepository[Transaction]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_wallet(self, wallet_id: int, limit: int = 50) -> List[Transaction]:
+    async def get_by_wallet(self, wallet_id: int, limit: int = 50) -> list[Transaction]:
         """
         Get transactions for a wallet
 
@@ -54,7 +52,7 @@ class TransactionRepository(BaseRepository[Transaction]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def get_by_status(self, status: TransactionStatus) -> List[Transaction]:
+    async def get_by_status(self, status: TransactionStatus) -> list[Transaction]:
         """
         Get transactions by status
 
@@ -68,7 +66,7 @@ class TransactionRepository(BaseRepository[Transaction]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def get_pending(self) -> List[Transaction]:
+    async def get_pending(self) -> list[Transaction]:
         """
         Get all pending transactions
 
@@ -77,7 +75,7 @@ class TransactionRepository(BaseRepository[Transaction]):
         """
         return await self.get_by_status(TransactionStatus.PENDING)
 
-    async def get_recent(self, limit: int = 50) -> List[Transaction]:
+    async def get_recent(self, limit: int = 50) -> list[Transaction]:
         """
         Get recent transactions
 

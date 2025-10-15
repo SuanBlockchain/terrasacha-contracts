@@ -2,8 +2,6 @@
 Mock objects and comprehensive test cases for the OpShin protocol validator
 """
 
-from typing import Dict, List, Optional
-
 import pytest
 from opshin.ledger.api_v2 import *
 from opshin.prelude import *
@@ -56,7 +54,7 @@ class MockCommon:
             )
 
     def create_mock_tx_out(
-        self, address: Address, value: Dict[bytes, Dict[bytes, int]] = None, datum: Optional[OutputDatum] = None
+        self, address: Address, value: dict[bytes, dict[bytes, int]] = None, datum: OutputDatum | None = None
     ) -> TxOut:
         """Create a mock transaction output"""
         if value is None:
@@ -70,11 +68,11 @@ class MockCommon:
 
     def create_mock_tx_info(
         self,
-        inputs: List[TxInInfo] = None,
-        outputs: List[TxOut] = None,
-        mint: Dict[bytes, Dict[bytes, int]] = None,
+        inputs: list[TxInInfo] = None,
+        outputs: list[TxOut] = None,
+        mint: dict[bytes, dict[bytes, int]] = None,
         purpose_oref: TxOutRef = None,
-        signatories: List[bytes] = None,
+        signatories: list[bytes] = None,
     ) -> TxInfo:
         """Create a mock transaction info"""
         if inputs is None:
@@ -219,12 +217,12 @@ class TestUtilityFunctions(MockCommon):
         context = self.create_mock_script_context(Minting(bytes.fromhex("c" * 56)), tx_info)
 
         # Should find the UTXO
-        assert has_utxo(context, oref) == True
+        assert has_utxo(context, oref)
 
         # Should not find a different UTXO
         different_oref = self.create_mock_oref(bytes.fromhex("d" * 64), 0)
         # different_oref = TxOutRef(TxId(bytes.fromhex("d" * 64)), 0)
-        assert has_utxo(context, different_oref) == False
+        assert not has_utxo(context, different_oref)
 
     def test_only_one_input_from_address(self):
         """Test only_one_input_from_address utility function"""
@@ -244,16 +242,16 @@ class TestUtilityFunctions(MockCommon):
         )
 
         # Test with only one input from address1
-        assert only_one_input_from_address(address1, [input1, input2]) == True
+        assert only_one_input_from_address(address1, [input1, input2])
 
         # Test with two inputs from address1
-        assert only_one_input_from_address(address1, [input1, input2, input3]) == False
+        assert not only_one_input_from_address(address1, [input1, input2, input3])
 
         # Test with no inputs from address1
-        assert only_one_input_from_address(address1, [input2]) == False
+        assert not only_one_input_from_address(address1, [input2])
 
         # Test with empty input list
-        assert only_one_input_from_address(address1, []) == False
+        assert not only_one_input_from_address(address1, [])
 
     def test_only_one_output_to_address(self):
         """Test only_one_output_to_address utility function"""
@@ -266,16 +264,16 @@ class TestUtilityFunctions(MockCommon):
         output3 = self.create_mock_tx_out(address1)  # Same address as output1
 
         # Test with only one output to address1
-        assert only_one_output_to_address(address1, [output1, output2]) == True
+        assert only_one_output_to_address(address1, [output1, output2])
 
         # Test with two outputs to address1
-        assert only_one_output_to_address(address1, [output1, output2, output3]) == False
+        assert not only_one_output_to_address(address1, [output1, output2, output3])
 
         # Test with no outputs to address1
-        assert only_one_output_to_address(address1, [output2]) == False
+        assert not only_one_output_to_address(address1, [output2])
 
         # Test with empty output list
-        assert only_one_output_to_address(address1, []) == False
+        assert not only_one_output_to_address(address1, [])
 
     def test_amount_of_token_in_output(self):
         """Test amount_of_token_in_output utility function"""
@@ -387,17 +385,17 @@ class TestUtilityFunctions(MockCommon):
         output_with_token = self.create_mock_tx_out(
             self.sample_address, value={b"": 2000000, policy_id: {token_name: 5}}
         )
-        assert check_token_present(policy_id, output_with_token) == True
+        assert check_token_present(policy_id, output_with_token)
 
         # Test token not present - no policy
         output_no_policy = self.create_mock_tx_out(self.sample_address, value={b"": 2000000})
-        assert check_token_present(policy_id, output_no_policy) == False
+        assert not check_token_present(policy_id, output_no_policy)
 
         # Test token present with amount 1 (minimum positive)
         output_one_token = self.create_mock_tx_out(
             self.sample_address, value={b"": 2000000, policy_id: {token_name: 1}}
         )
-        assert check_token_present(policy_id, output_one_token) == True
+        assert check_token_present(policy_id, output_one_token)
 
 
 class TestProtocol(MockCommon):
@@ -641,7 +639,7 @@ class TestProtocol(MockCommon):
 
         policy_id = self.sample_policy_id
         protocol_token_name = unique_token_name(oref_protocol, PREFIX_REFERENCE_NFT)
-        user_token_name = unique_token_name(oref_protocol, PREFIX_USER_NFT)  # Correct pairing
+        # user_token_name would be for pairing, but test verifies user has NO token
 
         # Create datums
         old_datum = self.create_mock_datum_protocol()
@@ -915,7 +913,6 @@ class TestProtocol(MockCommon):
 
     def test_validator_invalid_redeemer_type(self):
         """Test validator fails with invalid redeemer type"""
-        oref_protocol = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         policy_id = self.sample_policy_id
         old_datum = self.create_mock_datum_protocol()
         invalid_redeemer = PlutusData()  # Invalid redeemer type
@@ -1177,7 +1174,6 @@ class TestProtocolNFTMinting(MockCommon):
         consumed_utxo_ref = self.create_mock_oref(bytes.fromhex("a" * 64), 0)
         other_utxo_ref = self.create_mock_oref(bytes.fromhex("b" * 64), 0)
 
-        consumed_utxo = self.create_mock_tx_out(self.sample_address)
         other_utxo = self.create_mock_tx_out(self.sample_address)
 
         other_input = self.create_mock_tx_in_info(other_utxo_ref, other_utxo)

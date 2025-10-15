@@ -4,8 +4,6 @@ Wallet Repository
 Manages wallet data access operations.
 """
 
-from typing import List, Optional
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +18,7 @@ class WalletRepository(BaseRepository[Wallet]):
         """Initialize wallet repository"""
         super().__init__(Wallet, session)
 
-    async def get_by_name(self, name: str) -> Optional[Wallet]:
+    async def get_by_name(self, name: str) -> Wallet | None:
         """
         Get wallet by name
 
@@ -34,7 +32,7 @@ class WalletRepository(BaseRepository[Wallet]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_address(self, address: str) -> Optional[Wallet]:
+    async def get_by_address(self, address: str) -> Wallet | None:
         """
         Get wallet by address (enterprise or staking)
 
@@ -44,13 +42,11 @@ class WalletRepository(BaseRepository[Wallet]):
         Returns:
             Wallet instance or None
         """
-        statement = select(Wallet).where(
-            (Wallet.enterprise_address == address) | (Wallet.staking_address == address)
-        )
+        statement = select(Wallet).where((Wallet.enterprise_address == address) | (Wallet.staking_address == address))
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_default(self) -> Optional[Wallet]:
+    async def get_default(self) -> Wallet | None:
         """
         Get default wallet
 
@@ -92,7 +88,7 @@ class WalletRepository(BaseRepository[Wallet]):
         await self.session.commit()
         return True
 
-    async def get_by_network(self, network: str) -> List[Wallet]:
+    async def get_by_network(self, network: str) -> list[Wallet]:
         """
         Get all wallets for a specific network
 

@@ -5,7 +5,7 @@ Pure transaction functionality without console dependencies.
 Handles transaction building, signing, and submission.
 """
 
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 import pycardano as pc
 from blockfrost import ApiError
@@ -17,7 +17,7 @@ from .wallet import CardanoWallet, WalletManager
 class TransactionBuilderHelper:
     """Helper class for building transactions with both local and reference scripts"""
 
-    def __init__(self, context: pc.ChainContext, contract_manager):
+    def __init__(self, context: pc.ChainContext, contract_manager: Any):
         self.context = context
         self.contract_manager = contract_manager
 
@@ -50,7 +50,7 @@ class TransactionBuilderHelper:
             # For local scripts, the script will be included directly when needed
             return True
 
-    def get_script_for_minting(self, contract_name: str) -> Optional[pc.NativeScript]:
+    def get_script_for_minting(self, contract_name: str) -> pc.NativeScript | None:
         """
         Get script for minting operations
 
@@ -65,7 +65,7 @@ class TransactionBuilderHelper:
             return None
         return script_info["cbor"]
 
-    def get_script_for_spending(self, contract_name: str) -> Optional[pc.NativeScript]:
+    def get_script_for_spending(self, contract_name: str) -> pc.NativeScript | None:
         """
         Get script for spending operations
 
@@ -86,9 +86,9 @@ class CardanoTransactions:
 
     def __init__(
         self,
-        wallet_source: Union[CardanoWallet, WalletManager],
+        wallet_source: CardanoWallet | WalletManager,
         chain_context: CardanoChainContext,
-        contract_manager=None,
+        contract_manager: Any = None,
     ):
         """
         Initialize transaction manager
@@ -106,7 +106,10 @@ class CardanoTransactions:
             self.wallet = wallet_source
         elif isinstance(wallet_source, WalletManager):
             self.wallet_manager = wallet_source
-            self.wallet = wallet_source.get_wallet()  # Get default wallet
+            wallet = wallet_source.get_wallet()  # Get default wallet
+            if not wallet:
+                raise ValueError("No default wallet available in WalletManager")
+            self.wallet = wallet
         else:
             raise ValueError("wallet_source must be CardanoWallet or WalletManager")
 
@@ -116,12 +119,11 @@ class CardanoTransactions:
 
         # Initialize transaction builder helper for reference script support
         self.contract_manager = contract_manager
+        self.builder_helper: TransactionBuilderHelper | None = None
         if contract_manager:
             self.builder_helper = TransactionBuilderHelper(self.context, contract_manager)
-        else:
-            self.builder_helper = None
 
-    def get_wallet(self, wallet_name: Optional[str] = None) -> Optional[CardanoWallet]:
+    def get_wallet(self, wallet_name: str | None = None) -> CardanoWallet | None:
         """
         Get wallet by name or default wallet
 
@@ -150,11 +152,11 @@ class CardanoTransactions:
             return True
         return False
 
-    def get_available_wallets(self) -> List[str]:
+    def get_available_wallets(self) -> list[str]:
         """Get list of available wallet names"""
         return self.wallet_manager.get_wallet_names()
 
-    def get_active_wallet_name(self) -> Optional[str]:
+    def get_active_wallet_name(self) -> str | None:
         """Get name of currently active wallet"""
         return self.wallet_manager.get_default_wallet_name()
 
@@ -171,8 +173,8 @@ class CardanoTransactions:
         return self.wallet_manager.check_all_balances(self.api, limit_addresses)
 
     def create_simple_transaction(
-        self, to_address: str, amount_ada: float, from_address_index: int = 0, wallet_name: Optional[str] = None
-    ) -> Optional[pc.Transaction]:
+        self, to_address: str, amount_ada: float, from_address_index: int = 0, wallet_name: str | None = None
+    ) -> pc.Transaction | None:
         """
         Create a simple ADA transfer transaction
 
@@ -221,9 +223,9 @@ class CardanoTransactions:
             return signed_tx
 
         except Exception as e:
-            raise Exception(f"Error creating transaction: {e}")
+            raise Exception(f"Error creating transaction: {e}") from e
 
-    def submit_transaction(self, signed_tx: pc.Transaction) -> Optional[str]:
+    def submit_transaction(self, signed_tx: pc.Transaction) -> str | None:
         """
         Submit a signed transaction to the network
 
@@ -242,10 +244,10 @@ class CardanoTransactions:
             if not signed_tx.id:
                 raise Exception("Transaction submission failed - no transaction ID")
 
-            return signed_tx.id.payload.hex()
+            return str(signed_tx.id.payload.hex())
 
         except ApiError as e:
-            raise Exception(f"Error submitting transaction: {e}")
+            raise Exception(f"Error submitting transaction: {e}") from e
 
     def get_transaction_info(self, tx_id: str) -> dict:
         """
@@ -263,10 +265,10 @@ class CardanoTransactions:
             "network": self.chain_context.network,
         }
 
-    def sorted_utxos(self, txs: List[pc.UTxO]):
+    def sorted_utxos(self, txs: list[pc.UTxO]) -> list[pc.UTxO]:
         return sorted(txs, key=lambda u: (u.input.transaction_id.payload, u.input.index))
 
-    def find_utxo_by_policy_id(self, utxos: List[pc.UTxO], policy_id: pc.ScriptHash) -> pc.UTxO:
+    def find_utxo_by_policy_id(self, utxos: list[pc.UTxO], policy_id: pc.ScriptHash) -> pc.UTxO:
         """Find UTXOs that contain tokens from a specific policy ID.
 
         Args:
@@ -280,7 +282,7 @@ class CardanoTransactions:
         for utxo in utxos:
             # Check if the UTXO contains any tokens from the specified policy
             if utxo.output.amount.multi_asset:
-                for pi, assets in utxo.output.amount.multi_asset.data.items():
+                for pi, _assets in utxo.output.amount.multi_asset.data.items():
                     if pi == policy_id:
                         utxo_to_spend = utxo
                         break  # Found a match, no need to check other policies in this UTXO
@@ -361,7 +363,7 @@ class CardanoTransactions:
         return builder
 
     def sign_and_submit_transaction(
-        self, builder: pc.TransactionBuilder, signing_keys: List[pc.ExtendedSigningKey], change_address: pc.Address
+        self, builder: pc.TransactionBuilder, signing_keys: list[pc.ExtendedSigningKey], change_address: pc.Address
     ) -> dict:
         """
         Sign and submit a transaction from builder
@@ -381,6 +383,9 @@ class CardanoTransactions:
             # Submit
             tx_id = self.submit_transaction(signed_tx)
 
+            if tx_id is None:
+                return {"success": False, "error": "Transaction submission failed", "transaction": None}
+
             return {
                 "success": True,
                 "tx_id": tx_id,
@@ -393,11 +398,11 @@ class CardanoTransactions:
 
     def create_reference_script(
         self,
-        project_name: Optional[str] = None,
-        destination_address: Optional[pc.Address] = None,
-        source_wallet: Optional[CardanoWallet] = None,
-        available_utxos: Optional[List[pc.UTxO]] = None,
-    ) -> Dict[str, Any]:
+        project_name: str | None = None,
+        destination_address: pc.Address | None = None,
+        source_wallet: CardanoWallet | None = None,
+        available_utxos: list[pc.UTxO] | None = None,
+    ) -> dict[str, Any]:
         """
         Create a reference script for the specified project
 
@@ -507,12 +512,12 @@ class CardanoTransactions:
 
     def create_project_nfts_reference_script(
         self,
-        project_name: Optional[str] = None,
-        source_address: Optional[pc.Address] = None,
-        destination_address: Optional[pc.Address] = None,
-        source_wallet: Optional[CardanoWallet] = None,
-        available_utxos: Optional[List[pc.UTxO]] = None,
-    ) -> Dict[str, Any]:
+        project_name: str | None = None,
+        source_address: pc.Address | None = None,
+        destination_address: pc.Address | None = None,
+        source_wallet: CardanoWallet | None = None,
+        available_utxos: list[pc.UTxO] | None = None,
+    ) -> dict[str, Any]:
         """
         Create a reference script for the project NFTs minting policy
 

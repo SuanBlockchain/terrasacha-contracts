@@ -88,70 +88,70 @@ build-contracts: check-uv
 # Testing
 test: check-uv
 	@echo "$(BLUE)Running all tests...$(NC)"
-	uv run pytest -v
+	uv run --with pytest-cov pytest -v
 	@echo "$(GREEN)✓ All tests completed$(NC)"
 
 test-fast: check-uv
 	@echo "$(BLUE)Running fast tests...$(NC)"
-	uv run pytest -v -m "not slow and not integration"
+	uv run --with pytest-cov pytest -v -m "not slow and not integration"
 	@echo "$(GREEN)✓ Fast tests completed$(NC)"
 
 test-slow: check-uv
 	@echo "$(BLUE)Running slow/performance tests...$(NC)"
-	uv run pytest -v -m "slow"
+	uv run --with pytest-cov pytest -v -m "slow"
 	@echo "$(GREEN)✓ Slow tests completed$(NC)"
 
 test-unit: check-uv
 	@echo "$(BLUE)Running unit tests...$(NC)"
-	uv run pytest -v -m "unit"
+	uv run --with pytest-cov pytest -v -m "unit"
 	@echo "$(GREEN)✓ Unit tests completed$(NC)"
 
 test-integration: check-uv
 	@echo "$(BLUE)Running integration tests...$(NC)"
-	uv run pytest -v -m "integration"
+	uv run --with pytest-cov pytest -v -m "integration"
 	@echo "$(GREEN)✓ Integration tests completed$(NC)"
 
 test-contracts: build
 	@echo "$(BLUE)Testing contract compilation and validation...$(NC)"
-	uv run pytest -v tests/test_contract_compilation.py
+	uv run --with pytest-cov pytest -v tests/test_contract_compilation.py
 	@echo "$(GREEN)✓ Contract tests completed$(NC)"
 
 coverage: check-uv
 	@echo "$(BLUE)Running tests with coverage...$(NC)"
-	uv run pytest --cov=src --cov-report=html --cov-report=term-missing --cov-report=xml
+	uv run --with pytest-cov pytest --cov=src --cov-report=html --cov-report=term-missing --cov-report=xml
 	@echo "$(GREEN)✓ Coverage report generated in htmlcov/index.html$(NC)"
 
 benchmark: check-uv
 	@echo "$(BLUE)Running performance benchmarks...$(NC)"
-	uv run pytest --benchmark-only -v
+	uv run --with pytest-benchmark pytest --benchmark-only -v
 	@echo "$(GREEN)✓ Benchmarks completed$(NC)"
 
 watch-tests: check-uv
 	@echo "$(BLUE)Starting test watch mode...$(NC)"
 	@echo "$(YELLOW)Press Ctrl+C to stop$(NC)"
-	uv run ptw -- -v
+	uv run --with pytest-watch ptw -- -v
 
 # Code Quality
 format: check-uv
 	@echo "$(BLUE)Formatting code...$(NC)"
-	uv run ruff format .
-	uv run ruff check --select I --fix .
+	uv run --with ruff ruff format .
+	uv run --with ruff ruff check --select I --fix .
 	@echo "$(GREEN)✓ Code formatted$(NC)"
 
 type-check: check-uv
 	@echo "$(BLUE)Running type checking...$(NC)"
-	uv run mypy
+	uv run --with mypy mypy
 	@echo "$(GREEN)✓ Type checking completed$(NC)"
 
 lint: check-uv format type-check
 	@echo "$(BLUE)Running all linting checks...$(NC)"
-	uv run ruff check .
+	uv run --with ruff ruff check .
 	@echo "$(GREEN)✓ All linting checks passed$(NC)"
 
 lint-fix: check-uv
 	@echo "$(BLUE)Running linting with auto-fixes...$(NC)"
-	uv run ruff check --fix .
-	uv run ruff format .
+	uv run --with ruff ruff check --fix .
+	uv run --with ruff ruff format .
 	@echo "$(GREEN)✓ Linting fixes applied$(NC)"
 
 # Documentation
@@ -201,19 +201,19 @@ release-check: clean install lint type-check test coverage build docs
 # Advanced Testing Options
 test-verbose: check-uv
 	@echo "$(BLUE)Running tests with maximum verbosity...$(NC)"
-	uv run pytest -vv -s
+	uv run --with pytest-cov pytest -vv -s
 
 test-debug: check-uv
 	@echo "$(BLUE)Running tests in debug mode...$(NC)"
-	uv run pytest -vv -s --pdb
+	uv run --with pytest-cov pytest -vv -s --pdb
 
 test-failed: check-uv
 	@echo "$(BLUE)Running only previously failed tests...$(NC)"
-	uv run pytest --lf -v
+	uv run --with pytest-cov pytest --lf -v
 
 test-parallel: check-uv
 	@echo "$(BLUE)Running tests in parallel...$(NC)"
-	uv run pytest -n auto -v
+	uv run --with pytest-cov --with pytest-xdist pytest -n auto -v
 
 # Contract-specific commands
 validate-contracts: build
@@ -286,7 +286,7 @@ status: env-info
 # Advanced development commands
 fix-imports: check-uv
 	@echo "$(BLUE)Fixing import order...$(NC)"
-	uv run ruff check --select I --fix .
+	uv run --with ruff ruff check --select I --fix .
 	@echo "$(GREEN)✓ Imports fixed$(NC)"
 
 check-deps: check-uv

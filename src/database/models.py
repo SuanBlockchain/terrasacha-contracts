@@ -7,7 +7,6 @@ and wallet management in PostgreSQL.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
 
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
@@ -82,7 +81,7 @@ class Wallet(TimestampMixin, table=True):
 
     __tablename__ = "wallets"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True, nullable=False)
     network: NetworkType = Field(nullable=False)
     mnemonic_encrypted: str = Field(nullable=False)  # Encrypted BIP39 mnemonic
@@ -93,8 +92,8 @@ class Wallet(TimestampMixin, table=True):
     extra_data: dict = Field(default={}, sa_column=Column(JSON))
 
     # Relationships
-    transactions: List["Transaction"] = Relationship(back_populates="wallet")
-    protocols: List["Protocol"] = Relationship(back_populates="wallet")
+    transactions: list["Transaction"] = Relationship(back_populates="wallet")
+    protocols: list["Protocol"] = Relationship(back_populates="wallet")
 
 
 # ============================================================================
@@ -111,7 +110,7 @@ class Contract(TimestampMixin, table=True):
 
     __tablename__ = "contracts"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     name: str = Field(index=True, nullable=False)
     network: NetworkType = Field(nullable=False)
     contract_type: ContractType = Field(nullable=False)
@@ -119,29 +118,29 @@ class Contract(TimestampMixin, table=True):
 
     # Contract identifiers
     policy_id: str = Field(index=True, unique=True, nullable=False)
-    testnet_address: Optional[str] = Field(default=None)
-    mainnet_address: Optional[str] = Field(default=None)
+    testnet_address: str | None = Field(default=None)
+    mainnet_address: str | None = Field(default=None)
 
     # Script storage
-    cbor_hex: Optional[str] = Field(default=None)  # For local contracts
+    cbor_hex: str | None = Field(default=None)  # For local contracts
 
     # Reference script info (if storage_type == REFERENCE_SCRIPT)
-    reference_tx_id: Optional[str] = Field(default=None)
-    reference_output_index: Optional[int] = Field(default=None)
-    reference_address: Optional[str] = Field(default=None)
+    reference_tx_id: str | None = Field(default=None)
+    reference_output_index: int | None = Field(default=None)
+    reference_address: str | None = Field(default=None)
 
     # Compilation metadata
-    compilation_timestamp: Optional[datetime] = Field(default=None)
-    compilation_utxo_tx_id: Optional[str] = Field(default=None)
-    compilation_utxo_index: Optional[int] = Field(default=None)
+    compilation_timestamp: datetime | None = Field(default=None)
+    compilation_utxo_tx_id: str | None = Field(default=None)
+    compilation_utxo_index: int | None = Field(default=None)
 
     # Additional metadata
     extra_data: dict = Field(default={}, sa_column=Column(JSON))
 
     # Relationships
-    protocols: List["Protocol"] = Relationship(back_populates="contract")
-    projects: List["Project"] = Relationship(back_populates="contract")
-    transactions: List["Transaction"] = Relationship(back_populates="contract")
+    protocols: list["Protocol"] = Relationship(back_populates="contract")
+    projects: list["Project"] = Relationship(back_populates="contract")
+    transactions: list["Transaction"] = Relationship(back_populates="contract")
 
 
 # ============================================================================
@@ -158,7 +157,7 @@ class Protocol(TimestampMixin, table=True):
 
     __tablename__ = "protocols"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     contract_id: int = Field(foreign_key="contracts.id", nullable=False)
     wallet_id: int = Field(foreign_key="wallets.id", nullable=False)
 
@@ -168,14 +167,14 @@ class Protocol(TimestampMixin, table=True):
     user_nft_token_name: str = Field(nullable=False)
 
     # Protocol state (from on-chain datum)
-    project_admins: List[str] = Field(default=[], sa_column=Column(JSON))  # List of PKH hex strings
+    project_admins: list[str] = Field(default=[], sa_column=Column(JSON))  # List of PKH hex strings
     protocol_fee: int = Field(nullable=False)  # Fee in lovelace
     oracle_id: str = Field(nullable=False)  # Oracle policy ID
-    projects: List[str] = Field(default=[], sa_column=Column(JSON))  # List of project ID hashes
+    projects: list[str] = Field(default=[], sa_column=Column(JSON))  # List of project ID hashes
 
     # UTXO tracking
-    current_utxo_tx_id: Optional[str] = Field(default=None, index=True)
-    current_utxo_index: Optional[int] = Field(default=None)
+    current_utxo_tx_id: str | None = Field(default=None, index=True)
+    current_utxo_index: int | None = Field(default=None)
     balance_lovelace: int = Field(default=0)
 
     # Status
@@ -184,7 +183,7 @@ class Protocol(TimestampMixin, table=True):
     # Relationships
     contract: Contract = Relationship(back_populates="protocols")
     wallet: Wallet = Relationship(back_populates="protocols")
-    project_instances: List["Project"] = Relationship(back_populates="protocol")
+    project_instances: list["Project"] = Relationship(back_populates="protocol")
 
 
 # ============================================================================
@@ -201,7 +200,7 @@ class Project(TimestampMixin, table=True):
 
     __tablename__ = "projects"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     contract_id: int = Field(foreign_key="contracts.id", nullable=False)
     protocol_id: int = Field(foreign_key="protocols.id", nullable=False)
 
@@ -215,32 +214,32 @@ class Project(TimestampMixin, table=True):
     project_nft_token_name: str = Field(nullable=False)
 
     # Grey token information
-    grey_token_policy_id: Optional[str] = Field(default=None, index=True)
-    grey_token_name: Optional[str] = Field(default=None)
+    grey_token_policy_id: str | None = Field(default=None, index=True)
+    grey_token_name: str | None = Field(default=None)
     total_supply: int = Field(default=0)
 
     # Project state
     project_state: ProjectState = Field(default=ProjectState.INITIALIZED, nullable=False)
 
     # UTXO tracking
-    current_utxo_tx_id: Optional[str] = Field(default=None, index=True)
-    current_utxo_index: Optional[int] = Field(default=None)
+    current_utxo_tx_id: str | None = Field(default=None, index=True)
+    current_utxo_index: int | None = Field(default=None)
     balance_lovelace: int = Field(default=0)
 
     # Status
     is_active: bool = Field(default=True, nullable=False)
 
     # Compilation tracking
-    compilation_utxo_tx_id: Optional[str] = Field(default=None)
-    compilation_utxo_index: Optional[int] = Field(default=None)
+    compilation_utxo_tx_id: str | None = Field(default=None)
+    compilation_utxo_index: int | None = Field(default=None)
 
     # Relationships
     contract: Contract = Relationship(back_populates="projects")
     protocol: Protocol = Relationship(back_populates="project_instances")
-    stakeholders: List["Stakeholder"] = Relationship(back_populates="project")
-    certifications: List["Certification"] = Relationship(back_populates="project")
-    tokens: List["Token"] = Relationship(back_populates="project")
-    sales: List["InvestorSale"] = Relationship(back_populates="project")
+    stakeholders: list["Stakeholder"] = Relationship(back_populates="project")
+    certifications: list["Certification"] = Relationship(back_populates="project")
+    tokens: list["Token"] = Relationship(back_populates="project")
+    sales: list["InvestorSale"] = Relationship(back_populates="project")
 
 
 # ============================================================================
@@ -257,7 +256,7 @@ class Stakeholder(TimestampMixin, table=True):
 
     __tablename__ = "stakeholders"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="projects.id", nullable=False)
 
     # Stakeholder info
@@ -284,7 +283,7 @@ class Certification(TimestampMixin, table=True):
 
     __tablename__ = "certifications"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="projects.id", nullable=False)
 
     # Certification data
@@ -311,8 +310,8 @@ class Token(TimestampMixin, table=True):
 
     __tablename__ = "tokens"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    project_id: Optional[int] = Field(default=None, foreign_key="projects.id")
+    id: int | None = Field(default=None, primary_key=True)
+    project_id: int | None = Field(default=None, foreign_key="projects.id")
 
     # Token identification
     policy_id: str = Field(index=True, nullable=False)
@@ -321,14 +320,14 @@ class Token(TimestampMixin, table=True):
 
     # Token details
     quantity: int = Field(default=1)
-    owner_address: Optional[str] = Field(default=None, index=True)
-    owner_pkh: Optional[str] = Field(default=None)
+    owner_address: str | None = Field(default=None, index=True)
+    owner_pkh: str | None = Field(default=None)
 
     # Token metadata
     token_metadata: dict = Field(default={}, sa_column=Column(JSON))
 
     # Relationships
-    project: Optional[Project] = Relationship(back_populates="tokens")
+    project: Project | None = Relationship(back_populates="tokens")
 
 
 # ============================================================================
@@ -345,7 +344,7 @@ class UTXO(TimestampMixin, table=True):
 
     __tablename__ = "utxos"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
 
     # UTXO identification
     tx_id: str = Field(index=True, nullable=False)
@@ -358,11 +357,11 @@ class UTXO(TimestampMixin, table=True):
     # Purpose tracking
     purpose: str = Field(nullable=False)  # "compilation", "protocol_state", "project_state", "investor_contract"
     is_spent: bool = Field(default=False, nullable=False, index=True)
-    spent_at: Optional[datetime] = Field(default=None)
+    spent_at: datetime | None = Field(default=None)
 
     # References
-    contract_id: Optional[int] = Field(default=None, foreign_key="contracts.id")
-    project_id: Optional[int] = Field(default=None, foreign_key="projects.id")
+    contract_id: int | None = Field(default=None, foreign_key="contracts.id")
+    project_id: int | None = Field(default=None, foreign_key="projects.id")
 
     # UTXO metadata
     extra_data: dict = Field(default={}, sa_column=Column(JSON))
@@ -382,9 +381,9 @@ class Transaction(TimestampMixin, table=True):
 
     __tablename__ = "transactions"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
-    wallet_id: Optional[int] = Field(default=None, foreign_key="wallets.id")
-    contract_id: Optional[int] = Field(default=None, foreign_key="contracts.id")
+    id: int | None = Field(default=None, primary_key=True)
+    wallet_id: int | None = Field(default=None, foreign_key="wallets.id")
+    contract_id: int | None = Field(default=None, foreign_key="contracts.id")
 
     # Transaction identification
     tx_id: str = Field(index=True, unique=True, nullable=False)
@@ -393,30 +392,30 @@ class Transaction(TimestampMixin, table=True):
     # Transaction details
     status: TransactionStatus = Field(default=TransactionStatus.PENDING, nullable=False, index=True)
     operation: str = Field(nullable=False)  # "mint_protocol", "create_project", "buy_grey", etc.
-    description: Optional[str] = Field(default=None)
+    description: str | None = Field(default=None)
 
     # Amounts
-    fee_lovelace: Optional[int] = Field(default=None)
-    total_output_lovelace: Optional[int] = Field(default=None)
+    fee_lovelace: int | None = Field(default=None)
+    total_output_lovelace: int | None = Field(default=None)
 
     # Inputs/Outputs
-    inputs: List[dict] = Field(default=[], sa_column=Column(JSON))
-    outputs: List[dict] = Field(default=[], sa_column=Column(JSON))
+    inputs: list[dict] = Field(default=[], sa_column=Column(JSON))
+    outputs: list[dict] = Field(default=[], sa_column=Column(JSON))
 
     # Transaction metadata
     tx_metadata: dict = Field(default={}, sa_column=Column(JSON))
 
     # Confirmation tracking
-    submitted_at: Optional[datetime] = Field(default=None)
-    confirmed_at: Optional[datetime] = Field(default=None)
-    block_height: Optional[int] = Field(default=None)
+    submitted_at: datetime | None = Field(default=None)
+    confirmed_at: datetime | None = Field(default=None)
+    block_height: int | None = Field(default=None)
 
     # Error tracking
-    error_message: Optional[str] = Field(default=None)
+    error_message: str | None = Field(default=None)
 
     # Relationships
-    wallet: Optional[Wallet] = Relationship(back_populates="transactions")
-    contract: Optional[Contract] = Relationship(back_populates="transactions")
+    wallet: Wallet | None = Relationship(back_populates="transactions")
+    contract: Contract | None = Relationship(back_populates="transactions")
 
 
 # ============================================================================
@@ -433,7 +432,7 @@ class InvestorSale(TimestampMixin, table=True):
 
     __tablename__ = "investor_sales"
 
-    id: Optional[int] = Field(default=None, primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="projects.id", nullable=False)
 
     # Investor contract identification
@@ -450,8 +449,8 @@ class InvestorSale(TimestampMixin, table=True):
     min_purchase_amount: int = Field(nullable=False)
 
     # UTXO tracking
-    current_utxo_tx_id: Optional[str] = Field(default=None, index=True)
-    current_utxo_index: Optional[int] = Field(default=None)
+    current_utxo_tx_id: str | None = Field(default=None, index=True)
+    current_utxo_index: int | None = Field(default=None)
 
     # Status
     is_active: bool = Field(default=True, nullable=False)

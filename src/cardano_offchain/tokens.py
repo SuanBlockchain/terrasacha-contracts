@@ -7,15 +7,15 @@ Handles minting, burning, and token management operations.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import pycardano as pc
 from opshin.prelude import FalseData, TrueData, TxId, TxOutRef
 
-from terrasacha_contracts.minting_policies.grey import BurnGrey, MintGrey
-from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject
-from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
-from terrasacha_contracts.util import (
+from terrasacha_contracts.minting_policies.grey import BurnGrey, MintGrey  # type: ignore[import-untyped]
+from terrasacha_contracts.minting_policies.project_nfts import BurnProject, MintProject  # type: ignore[import-untyped]
+from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint  # type: ignore[import-untyped]
+from terrasacha_contracts.util import (  # type: ignore[import-untyped]
     PREFIX_REFERENCE_NFT,
     PREFIX_USER_NFT,
     BuyGrey,
@@ -25,7 +25,7 @@ from terrasacha_contracts.util import (
     UpdatePrice,
     unique_token_name,
 )
-from terrasacha_contracts.validators.project import (
+from terrasacha_contracts.validators.project import (  # type: ignore[import-untyped]
     Certification,
     DatumProject,
     DatumProjectParams,
@@ -35,7 +35,11 @@ from terrasacha_contracts.validators.project import (
     UpdateProject,
     UpdateToken,
 )
-from terrasacha_contracts.validators.protocol import DatumProtocol, EndProtocol, UpdateProtocol
+from terrasacha_contracts.validators.protocol import (  # type: ignore[import-untyped]
+    DatumProtocol,
+    EndProtocol,
+    UpdateProtocol,
+)
 
 from .chain_context import CardanoChainContext
 from .contracts import ContractManager, ReferenceScriptContract
@@ -43,7 +47,7 @@ from .transactions import CardanoTransactions
 from .wallet import CardanoWallet
 
 
-def convert_metadata_keys(obj):
+def convert_metadata_keys(obj: Any) -> Any:
     """
     Convert string keys to integers for metadata (CIP-25 format).
     PyCardano's Metadata class requires integer keys in the first layer.
@@ -72,7 +76,7 @@ def convert_metadata_keys(obj):
 
 def prepare_grey_token_metadata(
     grey_minting_policy_id: pc.ScriptHash, grey_token_name: bytes, metadata_file_path: Path
-) -> Optional[pc.AuxiliaryData]:
+) -> pc.AuxiliaryData | None:
     """
     Prepare CIP-25 metadata for grey token minting with dynamic policy ID and token name.
 
@@ -85,7 +89,7 @@ def prepare_grey_token_metadata(
         AuxiliaryData with metadata, or None if preparation fails
     """
 
-    def split_description_strings(description_list, max_bytes=64):
+    def split_description_strings(description_list: list[str], max_bytes: int = 64) -> list[str]:
         """
         Split description strings into chunks that don't exceed max_bytes.
         PyCardano requires each metadata string to be ≤ 64 bytes.
@@ -105,7 +109,7 @@ def prepare_grey_token_metadata(
             else:
                 # Split text into chunks
                 words = text.split()
-                current_chunk = []
+                current_chunk: list[str] = []
                 current_length = 0
 
                 for word in words:
@@ -131,14 +135,14 @@ def prepare_grey_token_metadata(
 
     try:
         # Load metadata template
-        with open(metadata_file_path, "r") as f:
+        with open(metadata_file_path) as f:
             metadata_template = json.load(f)
 
         # Get actual policy ID and token name
         actual_policy_id = grey_minting_policy_id.to_primitive().hex()
         try:
             actual_token_name = grey_token_name.decode("utf-8")
-        except:
+        except UnicodeDecodeError:
             actual_token_name = grey_token_name.hex()
 
         # Extract template structure
@@ -201,7 +205,7 @@ class TokenOperations:
         self.context = chain_context.get_context()
         self.api = chain_context.get_api()
 
-    def _get_script_info_for_transaction(self, contract_name: str) -> Optional[Dict[str, Any]]:
+    def _get_script_info_for_transaction(self, contract_name: str) -> dict[str, Any] | None:
         """
         Get script information for transaction building, handling both local and reference scripts
 
@@ -239,8 +243,8 @@ class TokenOperations:
     def _add_script_to_builder(
         self,
         builder: pc.TransactionBuilder,
-        script_info: Dict[str, Any],
-        redeemer: Optional[pc.Redeemer] = None,
+        script_info: dict[str, Any],
+        redeemer: pc.Redeemer | None = None,
         is_minting: bool = False,
     ) -> bool:
         """
@@ -273,7 +277,7 @@ class TokenOperations:
                 # For spending, the script will be added in add_script_input call
                 return True
 
-    def create_minting_transaction(self, destination_address: Optional[pc.Address] = None) -> Dict[str, Any]:
+    def create_minting_transaction(self, destination_address: pc.Address | None = None) -> dict[str, Any]:
         """
         Create a minting transaction for protocol and user NFTs
 
@@ -382,7 +386,7 @@ class TokenOperations:
         except Exception as e:
             return {"success": False, "error": f"Minting transaction creation failed: {e}"}
 
-    def create_burn_transaction(self, user_address: Optional[pc.Address] = None) -> Dict[str, Any]:
+    def create_burn_transaction(self, user_address: pc.Address | None = None) -> dict[str, Any]:
         """
         Create a burn transaction for protocol and user NFTs
 
@@ -482,8 +486,8 @@ class TokenOperations:
             return {"success": False, "error": f"Burn transaction creation failed: {e}"}
 
     def create_protocol_update_transaction(
-        self, user_address: Optional[pc.Address] = None, new_datum: DatumProtocol = None
-    ) -> Dict[str, Any]:
+        self, user_address: pc.Address | None = None, new_datum: DatumProtocol = None
+    ) -> dict[str, Any]:
         """
         Create a transaction to update the protocol datum
 
@@ -596,11 +600,11 @@ class TokenOperations:
         project_metadata: bytes,
         stakeholders: list,  # List of tuples: (stakeholder_name_bytes, participation_int, pkh_hex_str)
         investment_tokens: int = 0,  # Grey tokens available for investment
-        certifications: Optional[list] = None,  # List of certification dicts with date and quantity
-        destination_address: Optional[pc.Address] = None,
-        project_name: Optional[str] = None,
+        certifications: list | None = None,  # List of certification dicts with date and quantity
+        destination_address: pc.Address | None = None,
+        project_name: str | None = None,
         wallet_override: Optional["CardanoWallet"] = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Create a project minting transaction for project and user NFTs
 
@@ -650,6 +654,8 @@ class TokenOperations:
 
             # Get the compilation UTXO info for reference
             compilation_utxo_info = self.contract_manager.get_project_compilation_utxo(project_contract_name)
+            if not compilation_utxo_info:
+                return {"success": False, "error": "Compilation UTXO info not found for project"}
 
             # Get UTXOs from the active wallet
             wallet_utxos = self.context.utxos(from_address)
@@ -823,8 +829,8 @@ class TokenOperations:
             return {"success": False, "error": f"Project minting transaction creation failed: {e}"}
 
     def create_project_burn_transaction(
-        self, user_address: Optional[pc.Address] = None, project_name: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, user_address: pc.Address | None = None, project_name: str | None = None
+    ) -> dict[str, Any]:
         """
         Create a burn transaction for project and user NFTs.
         Automatically detects and handles both local and reference script contracts.
@@ -842,15 +848,15 @@ class TokenOperations:
             if not project_contract:
                 return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
 
+            # Get project contract name for reference
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
+
             # Get the corresponding project NFTs minting policy
-            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_contract_name)
             if not project_nfts_contract:
                 return {"success": False, "error": "Required contracts not compiled"}
-
-            # Get project contract name for reference
-            project_contract_name = (
-                self.contract_manager.get_project_name_from_contract(project_contract) or project_name
-            )
             project_nfts_name = f"{project_contract_name}_nfts"
 
             # Get contract info using helper methods
@@ -1017,11 +1023,8 @@ class TokenOperations:
             return {"success": False, "error": f"Project burn transaction creation failed: {e}"}
 
     def create_project_update_transaction(
-        self,
-        user_address: Optional[pc.Address] = None,
-        new_datum: DatumProject = None,
-        project_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        self, user_address: pc.Address | None = None, new_datum: DatumProject = None, project_name: str | None = None
+    ) -> dict[str, Any]:
         """
         Create a transaction to update the project datum
 
@@ -1040,9 +1043,9 @@ class TokenOperations:
                 return {"success": False, "error": f"Project contract '{project_name}' not compiled"}
 
             # Get project contract name for reference
-            project_contract_name = (
-                self.contract_manager.get_project_name_from_contract(project_contract) or project_name
-            )
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
 
             # Get contract info using helper methods
             project_info = self._get_script_info_for_transaction(project_contract_name)
@@ -1050,7 +1053,9 @@ class TokenOperations:
                 return {"success": False, "error": "Project contract info not available"}
 
             # Get the corresponding project NFTs minting policy
-            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_contract_name)
+            if not project_nfts_contract:
+                return {"success": False, "error": "Project NFTs contract not found"}
 
             # Get contract info
             minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
@@ -1170,14 +1175,14 @@ class TokenOperations:
 
     def create_grey_minting_transaction(
         self,
-        project_name: Optional[str] = None,
+        project_name: str | None = None,
         grey_token_quantity: int = 1,
         minting_mode: str = "free",
-        seller_pkh: Optional[bytes] = None,
-        price: Optional[int] = None,
-        precision: Optional[int] = None,
-        min_purchase: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        seller_pkh: bytes | None = None,
+        price: int | None = None,
+        precision: int | None = None,
+        min_purchase: int | None = None,
+    ) -> dict[str, Any]:
         """
         Create a minting transaction for grey tokens
         Purpose of this Tx is to UpdateToken datum in the project contract while minting grey tokens
@@ -1202,17 +1207,19 @@ class TokenOperations:
         """
         try:
             project_contract = self.contract_manager.get_project_contract(project_name)
-            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
-
-            if not project_contract or not project_nfts_contract:
-                return {"success": False, "error": "Project contract or NFTs contract not found"}
-
-            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+            if not project_contract:
+                return {"success": False, "error": "Project contract not found"}
 
             # Find the name of the project contract being used
             project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
             if not project_contract_name:
                 return {"success": False, "error": "Could not determine project contract name"}
+
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_contract_name)
+            if not project_nfts_contract:
+                return {"success": False, "error": "Project NFTs contract not found"}
+
+            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
 
             # Get contract info using helper method to handle both local and reference scripts
             project_info = self._get_script_info_for_transaction(project_contract_name)
@@ -1288,7 +1295,6 @@ class TokenOperations:
 
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
-
 
             # Select redeemer based on minting mode
             if minting_mode == "free":
@@ -1467,7 +1473,7 @@ class TokenOperations:
         except Exception as e:
             return {"success": False, "error": f"Grey token minting transaction creation failed: {e}"}
 
-    def burn_grey_tokens(self, project_name: Optional[str] = None, burn_quantity: int = 1) -> Dict[str, Any]:
+    def burn_grey_tokens(self, project_name: str | None = None, burn_quantity: int = 1) -> dict[str, Any]:
         """
         Create a burning transaction for grey tokens that only interacts with the grey contract.
         Bypasses project contract validation - grey contract always succeeds for burning.
@@ -1482,17 +1488,19 @@ class TokenOperations:
         try:
             # Get project contract and NFTs contract
             project_contract = self.contract_manager.get_project_contract(project_name)
-            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_name)
-
-            if not project_contract or not project_nfts_contract:
-                return {"success": False, "error": "Project contract or NFTs contract not found"}
-
-            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+            if not project_contract:
+                return {"success": False, "error": "Project contract not found"}
 
             # Find the name of the project contract being used
             project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
             if not project_contract_name:
                 return {"success": False, "error": "Could not determine project contract name"}
+
+            project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_contract_name)
+            if not project_nfts_contract:
+                return {"success": False, "error": "Project NFTs contract not found"}
+
+            project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
 
             project_address = project_contract.testnet_addr
 
@@ -1575,9 +1583,7 @@ class TokenOperations:
             if total_lovelace_in_selected < MIN_FEE_ESTIMATE:
                 # Find UTXOs not yet selected that have lovelace
                 additional_fee_utxos = [
-                    utxo
-                    for utxo in user_utxos
-                    if utxo not in selected_utxos and utxo.output.amount.coin >= 1_000_000
+                    utxo for utxo in user_utxos if utxo not in selected_utxos and utxo.output.amount.coin >= 1_000_000
                 ]
 
                 if additional_fee_utxos:
@@ -1639,8 +1645,8 @@ class TokenOperations:
             return {"success": False, "error": f"Grey token burning transaction creation failed: {e}"}
 
     def cancel_grey_sale(
-        self, project_name: Optional[str] = None, destination_address: Optional[pc.Address] = None
-    ) -> Dict[str, Any]:
+        self, project_name: str | None = None, destination_address: pc.Address | None = None
+    ) -> dict[str, Any]:
         """
         Cancel grey token sale by consuming investor contract UTXO and returning tokens to seller.
         Uses CancelSale redeemer which only requires seller signature.
@@ -1774,8 +1780,8 @@ class TokenOperations:
             return {"success": False, "error": f"Grey token sale cancellation failed: {e}"}
 
     def update_grey_sale_price(
-        self, project_name: Optional[str] = None, new_price: int = None, new_precision: int = None
-    ) -> Dict[str, Any]:
+        self, project_name: str | None = None, new_price: int | None = None, new_precision: int | None = None
+    ) -> dict[str, Any]:
         """
         Update grey token sale price in investor contract.
         Contract validates seller signature on-chain - no off-chain PKH validation.
@@ -1923,7 +1929,7 @@ class TokenOperations:
         except Exception as e:
             return {"success": False, "error": f"Grey token sale price update failed: {e}"}
 
-    def create_usda_mint_transaction(self, amount: int = 1000) -> Dict[str, Any]:
+    def create_usda_mint_transaction(self, amount: int = 1000) -> dict[str, Any]:
         """
         Create a minting transaction for USDA test tokens (faucet)
 
@@ -1942,6 +1948,8 @@ class TokenOperations:
                 if not compile_result["success"]:
                     return {"success": False, "error": f"Failed to compile myUSDFree: {compile_result.get('error')}"}
                 usda_contract = self.contract_manager.get_contract("myUSDFree")
+                if not usda_contract:
+                    return {"success": False, "error": "Failed to retrieve compiled myUSDFree contract"}
 
             usda_policy_id = pc.ScriptHash(bytes.fromhex(usda_contract.policy_id))
             usda_token_name = b"USDATEST"
@@ -1974,7 +1982,7 @@ class TokenOperations:
         except Exception as e:
             return {"success": False, "error": f"USDA mint transaction creation failed: {e}"}
 
-    def create_usda_burn_transaction(self, amount: int) -> Dict[str, Any]:
+    def create_usda_burn_transaction(self, amount: int) -> dict[str, Any]:
         """
         Create a burning transaction for USDA test tokens
 
@@ -1993,6 +2001,8 @@ class TokenOperations:
                 if not compile_result["success"]:
                     return {"success": False, "error": f"Failed to compile myUSDFree: {compile_result.get('error')}"}
                 usda_contract = self.contract_manager.get_contract("myUSDFree")
+                if not usda_contract:
+                    return {"success": False, "error": "Failed to retrieve compiled myUSDFree contract"}
 
             usda_policy_id = pc.ScriptHash(bytes.fromhex(usda_contract.policy_id))
             usda_token_name = b"USDATEST"
@@ -2043,8 +2053,8 @@ class TokenOperations:
             return {"success": False, "error": f"USDA burn transaction creation failed: {e}"}
 
     def buy_grey_tokens(
-        self, project_name: Optional[str] = None, amount: int = 1, buyer_address: Optional[pc.Address] = None
-    ) -> Dict[str, Any]:
+        self, project_name: str | None = None, amount: int = 1, buyer_address: pc.Address | None = None
+    ) -> dict[str, Any]:
         """
         Buy grey tokens from investor contract using USDATEST tokens.
         All validations are performed on-chain by the investor contract.
@@ -2059,16 +2069,16 @@ class TokenOperations:
         """
         try:
             # Get project contract to determine investor contract name
-            # project_contract = self.contract_manager.get_project_contract(project_name)
-            # if not project_contract:
-            #     return {"success": False, "error": "Project contract not found"}
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                return {"success": False, "error": "Project contract not found"}
 
-            # project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
-            # if not project_contract_name:
-            #     return {"success": False, "error": "Could not determine project contract name"}
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
 
             # Get investor contract
-            investor_contract_name = f"{project_name}_investor"
+            investor_contract_name = f"{project_contract_name}_investor"
             investor_contract = self.contract_manager.get_contract(investor_contract_name)
             if not investor_contract:
                 return {
@@ -2084,7 +2094,7 @@ class TokenOperations:
                 return {"success": False, "error": "No investor UTXOs found - no active sale"}
 
             # Get grey token contract to identify grey tokens
-            grey_contract = self.contract_manager.get_grey_token_contract(project_name)
+            grey_contract = self.contract_manager.get_grey_token_contract(project_contract_name)
             if not grey_contract:
                 return {"success": False, "error": "Grey token contract not found"}
 
@@ -2142,7 +2152,7 @@ class TokenOperations:
 
             # Calculate USDA payment
             total_payment_raw = amount * investor_datum.price_per_token.price
-            divisor = 10 ** investor_datum.price_per_token.precision
+            divisor = 10**investor_datum.price_per_token.precision
             total_payment = total_payment_raw // divisor
 
             # On-chain contract directly subtracts protocol_fee from total_payment (both in USDA)
@@ -2175,7 +2185,6 @@ class TokenOperations:
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
 
-
             # Add protocol UTXO as reference input (for fee extraction)
             builder.reference_inputs.add(protocol_utxo_to_spend)
 
@@ -2194,7 +2203,7 @@ class TokenOperations:
             for utxo in wallet_utxos:
                 builder.add_input(utxo)
 
-                        # If tokens remain, add investor contract continuation output
+                # If tokens remain, add investor contract continuation output
             if remaining_tokens > 0:
                 # Create updated investor datum with reduced token amount
                 new_investor_datum = DatumInvestor(
@@ -2237,9 +2246,12 @@ class TokenOperations:
 
             # Add output: USDA payment to seller
             seller_address = pc.Address(
-                payment_part=pc.VerificationKeyHash(investor_datum.seller_pkh), network=self.chain_context.cardano_network
+                payment_part=pc.VerificationKeyHash(investor_datum.seller_pkh),
+                network=self.chain_context.cardano_network,
             )
-            usda_multi_asset = pc.MultiAsset({usda_policy_id: pc.Asset({pc.AssetName(usda_token_name): seller_payment})})
+            usda_multi_asset = pc.MultiAsset(
+                {usda_policy_id: pc.Asset({pc.AssetName(usda_token_name): seller_payment})}
+            )
             usda_value = pc.Value(0, usda_multi_asset)
             min_val_usda = pc.min_lovelace(
                 self.context, output=pc.TransactionOutput(seller_address, usda_value, datum=None)
@@ -2248,7 +2260,6 @@ class TokenOperations:
                 address=seller_address, amount=pc.Value(coin=min_val_usda, multi_asset=usda_multi_asset), datum=None
             )
             builder.add_output(usda_output)
-
 
             # Build and sign transaction
             signing_key = self.wallet.get_signing_key(0)

@@ -11,20 +11,13 @@ import os
 import pathlib
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pycardano as pc
 from dotenv import load_dotenv
+from menu_formatter import MenuFormatter
 from opshin.builder import PlutusContract
-
-
-# Load environment variables
-PROJECT_ROOT = pathlib.Path(__file__).parent.parent
-ENV_FILE = PROJECT_ROOT / "menu/.env"
-load_dotenv(ENV_FILE)
-
-# Import core Cardano functionality
-from opshin.prelude import TrueData, FalseData
+from opshin.prelude import FalseData, TrueData
 
 from src.cardano_offchain import (
     CardanoChainContext,
@@ -33,7 +26,6 @@ from src.cardano_offchain import (
     TokenOperations,
     WalletManager,
 )
-from src.cardano_offchain.menu.menu_formatter import MenuFormatter
 from terrasacha_contracts.validators.project import (
     Certification,
     DatumProject,
@@ -44,12 +36,18 @@ from terrasacha_contracts.validators.project import (
 from terrasacha_contracts.validators.protocol import DatumProtocol
 
 
+# Load environment variables
+PROJECT_ROOT = pathlib.Path(__file__).parent.parent
+ENV_FILE = PROJECT_ROOT / "/.env"
+load_dotenv(ENV_FILE)
+
+
 @dataclass
 class WalletSelection:
     """Result of wallet/address selection"""
 
     address: pc.Address
-    wallet_name: Optional[str]  # None if custom address was entered
+    wallet_name: str | None  # None if custom address was entered
     should_switch_wallet: bool  # Whether to switch to this wallet
 
 
@@ -90,7 +88,7 @@ class CardanoCLI:
         wallet_names = self.wallet_manager.get_wallet_names()
         return f"ℹ Available wallets: {', '.join(wallet_names)}"
 
-    def resolve_address_input(self, input_str: str, switch_wallet: bool = False) -> Optional[str]:
+    def resolve_address_input(self, input_str: str, switch_wallet: bool = False) -> str | None:
         """
         Resolve address input - if it's a wallet name, return the main address
         Optionally switch to that wallet if it's a wallet name
@@ -177,7 +175,7 @@ class CardanoCLI:
             wallets_to_show = [active_wallet_name] if active_wallet_name else []
 
         print(f"Network: {self.network.upper()}")
-        print(f"Wallet Type: HD Wallet (BIP32)")
+        print("Wallet Type: HD Wallet (BIP32)")
         print(f"Active Wallet: {active_wallet_name}")
         if show_all_wallets:
             print(f"Total Wallets: {len(self.wallet_manager.get_wallet_names())}")
@@ -195,7 +193,7 @@ class CardanoCLI:
             print(f"  Enterprise: {wallet_info['main_addresses']['enterprise']}")
             print(f"  Staking:    {wallet_info['main_addresses']['staking']}")
 
-            print(f"DERIVED ADDRESSES (First 5):")
+            print("DERIVED ADDRESSES (First 5):")
             for addr_info in wallet_info["derived_addresses"][:5]:
                 print(f"  {addr_info['index']:2d} | {addr_info['path']:20s} | {addr_info['enterprise_address']}")
 
@@ -328,14 +326,14 @@ class CardanoCLI:
                 print(f"Main Enterprise Address: {wallet_info['main_addresses']['enterprise']}")
                 print(f"Main Staking Address: {wallet_info['main_addresses']['staking']}")
 
-                print(f"\nDerived Addresses:")
+                print("\nDerived Addresses:")
                 for addr_info in wallet_info["derived_addresses"]:
                     print(f"  {addr_info['index']:2d} | {addr_info['enterprise_address']}")
 
                 # Check balance for this specific wallet
                 try:
                     balances = wallet.check_balances(self.chain_context.get_api())
-                    print(f"\nBalance Summary:")
+                    print("\nBalance Summary:")
                     print(f"  Enterprise: {balances['main_addresses']['enterprise']['balance'] / 1_000_000:.6f} ADA")
                     for addr in balances["derived_addresses"]:
                         if addr["balance"] > 0:
@@ -455,7 +453,7 @@ class CardanoCLI:
                 # For minting policies, show policy ID and storage type
                 print(f"│ 📝 {name.upper()}")
                 print(f"│   Policy ID: {info['policy_id']}")
-                print(f"│   Type: Minting Policy")
+                print("│   Type: Minting Policy")
                 print(f"│   Storage: {'📍 Reference Script' if storage_type == 'reference_script' else '💾 Local'}")
 
                 if storage_type == "reference_script" and hasattr(contract, "reference_tx_id"):
@@ -469,7 +467,7 @@ class CardanoCLI:
                 print(f"│   Policy ID: {info['policy_id']}")
                 print(f"│   Address: {info['address']}")
                 print(f"│   Balance: {info['balance_ada']:.6f} ADA")
-                print(f"│   Type: Spending Validator")
+                print("│   Type: Spending Validator")
                 print(f"│   Storage: {'📍 Reference Script' if storage_type == 'reference_script' else '💾 Local'}")
 
                 if storage_type == "reference_script" and hasattr(contract, "reference_tx_id"):
@@ -733,7 +731,7 @@ class CardanoCLI:
                     continue
 
             # Get certification quantity
-            quantity_input = self.menu.get_input(f"Quantity of carbon credits for this certification period")
+            quantity_input = self.menu.get_input("Quantity of carbon credits for this certification period")
             try:
                 cert_quantity = int(quantity_input)
                 if cert_quantity <= 0:
@@ -780,7 +778,7 @@ class CardanoCLI:
         print(f"Investment Grey Tokens: {investment_tokens:,}")
         print(f"Total Grey Token Supply: {total_supply:,}")
         print(f"Stakeholders ({len(stakeholders)}):")
-        for i, (name, participation, stakeholder_pkh) in enumerate(stakeholders, 1):
+        for i, (name, participation, _stakeholder_pkh) in enumerate(stakeholders, 1):
             percentage = (participation / total_participation) * 100
             print(f"  {i}. {name.decode('utf-8')}: {participation:,} ({percentage:.2f}%)")
         print(f"Certifications ({len(certifications)}):")
@@ -802,7 +800,7 @@ class CardanoCLI:
         available_wallets = self.wallet_manager.get_wallet_names()
         current_wallet = self.wallet_manager.get_default_wallet_name()
 
-        print(f"\nAvailable wallets:")
+        print("\nAvailable wallets:")
         for i, wallet_name in enumerate(available_wallets, 1):
             is_active = wallet_name == current_wallet
             status = " (CURRENT)" if is_active else ""
@@ -976,7 +974,7 @@ class CardanoCLI:
             protocol_utxo = None
             for utxo in protocol_utxos:
                 if utxo.output.amount.multi_asset:
-                    for policy_id, assets in utxo.output.amount.multi_asset.data.items():
+                    for policy_id, _assets in utxo.output.amount.multi_asset.data.items():
                         if policy_id == minting_policy_id:
                             protocol_utxo = utxo
                             break
@@ -1004,14 +1002,14 @@ class CardanoCLI:
                 if len(current_datum.project_admins) > 3:
                     print(f"│           ... and {len(current_datum.project_admins) - 3} more")
             else:
-                print(f"│ Admins: None (empty)")
+                print("│ Admins: None (empty)")
             print()
             if current_datum.projects:
                 print(f"│ Projects: {[project.hex()[:16] + '...' for project in current_datum.projects[:3]]}")
                 if len(current_datum.projects) > 3:
                     print(f"│           ... and {len(current_datum.projects) - 3} more")
             else:
-                print(f"│ Projects: None (empty)")
+                print("│ Projects: None (empty)")
             print()
 
         except Exception as e:
@@ -1025,7 +1023,7 @@ class CardanoCLI:
         new_fee_lovelace = current_datum.protocol_fee
         new_oracle_id = current_datum.oracle_id
         new_admin_list = current_datum.project_admins.copy()
-        projects_name = current_datum.projects.copy()
+        _projects_name = current_datum.projects.copy()
         # Option to specify custom fee or use default increment
         fee_input = self.menu.get_input("Enter new protocol fee in ADA (or press Enter for +0.5 ADA increment)")
 
@@ -1438,7 +1436,7 @@ class CardanoCLI:
                         self.menu.print_info(f"Compiling investor contract for {selected_project}...")
                         result = self.contract_manager.compile_investor_contract(selected_project)
                         if result["success"]:
-                            self.menu.print_success(f"✓ Investor contract compiled successfully!")
+                            self.menu.print_success("✓ Investor contract compiled successfully!")
                             print(f"│ Contract Address: {result['investor_address']}")
                         else:
                             self.menu.print_error(
@@ -1552,7 +1550,7 @@ class CardanoCLI:
 
             # Get minimum purchase amount
             try:
-                min_purchase_input = self.menu.get_input(f"Enter minimum purchase amount (tokens, default: 1)")
+                min_purchase_input = self.menu.get_input("Enter minimum purchase amount (tokens, default: 1)")
                 min_purchase_amount = int(min_purchase_input) if min_purchase_input.strip() else 1
 
                 if min_purchase_amount <= 0:
@@ -2192,7 +2190,7 @@ class CardanoCLI:
         print(f"│ Project Contract: {selected_project}")
         print(f"│ Seller Wallet: {current_wallet} (must match datum)")
         print(f"│ Destination: {dest_display}")
-        print(f"│ Action: Cancel sale and return grey tokens to seller")
+        print("│ Action: Cancel sale and return grey tokens to seller")
 
         if not self.menu.confirm_action("Proceed with grey token sale cancellation?"):
             self.menu.print_info("Grey token sale cancellation cancelled")
@@ -2260,11 +2258,7 @@ class CardanoCLI:
 
             try:
                 choice = (
-                    int(
-                        self.menu.get_input(
-                            f"Select project contract for price update (1-{len(project_contracts)})"
-                        )
-                    )
+                    int(self.menu.get_input(f"Select project contract for price update (1-{len(project_contracts)})"))
                     - 1
                 )
                 if 0 <= choice < len(project_contracts):
@@ -2405,8 +2399,8 @@ class CardanoCLI:
             old_actual = old_price / (10**old_precision)
             print(f"│ Current Price: {old_price} / 10^{old_precision} = {old_actual} USDA per token")
         print(f"│ New Price: {new_price} / 10^{new_precision} = {new_actual_price} USDA per token")
-        print(f"│ ")
-        print(f"│ ⚠ WARNING: Transaction will fail if wallet doesn't match seller PKH in datum")
+        print("│ ")
+        print("│ ⚠ WARNING: Transaction will fail if wallet doesn't match seller PKH in datum")
 
         if not self.menu.confirm_action("Proceed with price update?"):
             self.menu.print_info("Price update cancelled")
@@ -2504,7 +2498,7 @@ class CardanoCLI:
                                             token_amount = sum(grey_assets.values())
 
                                             actual_price = datum.price_per_token.price / (
-                                                10 ** datum.price_per_token.precision
+                                                10**datum.price_per_token.precision
                                             )
 
                                             print(f"│ {i}. {project_name.upper()}")
@@ -2613,10 +2607,10 @@ class CardanoCLI:
             print(f"│ Total USDA Payment: {total_payment:,}")
             print(f"│ Payment to Seller: {seller_payment:,} USDA")
             print(f"│ Protocol Fee: {protocol_fee:,} USDA")
-            print(f"│ ")
-            print(f"│ ⚠ NOTE: Transaction requires USDATEST tokens in wallet")
-            print(f"│ ⚠ Contract validates: amount >= min_purchase and amount <= available")
-            print(f"│ ⚠ WARNING: Protocol fee is interpreted as USDA, not lovelace")
+            print("│ ")
+            print("│ ⚠ NOTE: Transaction requires USDATEST tokens in wallet")
+            print("│ ⚠ Contract validates: amount >= min_purchase and amount <= available")
+            print("│ ⚠ WARNING: Protocol fee is interpreted as USDA, not lovelace")
 
             self.menu.print_info("Creating purchase transaction...")
 
@@ -2733,7 +2727,7 @@ class CardanoCLI:
             project_utxo = None
             for utxo in project_utxos:
                 if utxo.output.amount.multi_asset:
-                    for policy_id, assets in utxo.output.amount.multi_asset.data.items():
+                    for policy_id, _assets in utxo.output.amount.multi_asset.data.items():
                         if policy_id == minting_policy_id:
                             project_utxo = utxo
                             break
@@ -3422,7 +3416,9 @@ class CardanoCLI:
                     sh_name = name.decode("utf-8", errors="ignore")
                     pkh_display = sh.pkh.hex()[:16] + "..." if sh.pkh else "empty"
                     claimed_display = "True" if str(sh.claimed) == "TrueData()" else "False"
-                    print(f"│      • {sh_name} - PKH: {pkh_display} - Participation: {sh.participation:,} - Claimed: {claimed_display}")
+                    print(
+                        f"│      • {sh_name} - PKH: {pkh_display} - Participation: {sh.participation:,} - Claimed: {claimed_display}"
+                    )
                 print("│")
 
             # Find removed stakeholders
@@ -3603,7 +3599,7 @@ class CardanoCLI:
             if len(list1) != len(list2):
                 return False
 
-            for s1, s2 in zip(list1, list2):
+            for s1, s2 in zip(list1, list2, strict=False):
                 if (
                     s1.stakeholder != s2.stakeholder
                     or s1.pkh != s2.pkh
@@ -3805,7 +3801,7 @@ class CardanoCLI:
             changes_made = True
         else:
             # Check if any stakeholder details changed
-            for i, (old_sh, new_sh) in enumerate(zip(old_datum.stakeholders, new_datum.stakeholders)):
+            for i, (old_sh, new_sh) in enumerate(zip(old_datum.stakeholders, new_datum.stakeholders, strict=False)):
                 if (
                     old_sh.stakeholder != new_sh.stakeholder
                     or old_sh.pkh != new_sh.pkh
@@ -3841,7 +3837,9 @@ class CardanoCLI:
             changes_made = True
         else:
             # Check if any certification details changed
-            for i, (old_cert, new_cert) in enumerate(zip(old_datum.certifications, new_datum.certifications)):
+            for i, (old_cert, new_cert) in enumerate(
+                zip(old_datum.certifications, new_datum.certifications, strict=False)
+            ):
                 if (
                     old_cert.certification_date != new_cert.certification_date
                     or old_cert.quantity != new_cert.quantity
@@ -3864,7 +3862,7 @@ class CardanoCLI:
 
     def select_wallet_or_address(
         self, purpose: str, mode: str = "wallet_only", allow_custom_address: bool = True
-    ) -> Optional[WalletSelection]:
+    ) -> WalletSelection | None:
         """
         Unified wallet/address selection function
 
@@ -3969,7 +3967,7 @@ class CardanoCLI:
             self.menu.print_error("Please enter a valid number")
             return None
 
-    def select_storage_type(self) -> Optional[str]:
+    def select_storage_type(self) -> str | None:
         """
         Ask user to select storage type for contracts
 
@@ -4004,7 +4002,7 @@ class CardanoCLI:
             self.menu.print_error("Invalid input")
             return None
 
-    def select_reference_script_wallets(self, source_address: pc.Address) -> Optional[Dict[str, Any]]:
+    def select_reference_script_wallets(self, source_address: pc.Address) -> dict[str, Any] | None:
         """
         Select wallets for reference script creation
         Can optionally use different funding wallet from compilation wallet
@@ -4062,7 +4060,7 @@ class CardanoCLI:
 
         return {"source": funding_address, "destination": destination_address, "source_wallet": funding_wallet}
 
-    def _handle_reference_script_creation(self, contract_names: List[str], source_address: pc.Address) -> None:
+    def _handle_reference_script_creation(self, contract_names: list[str], source_address: pc.Address) -> None:
         """
         Handle creation of reference scripts for compiled contracts
 
@@ -4535,7 +4533,7 @@ class CardanoCLI:
                 print(f"│    ✓ Grey Contract: {grey_contract.policy_id}")
                 projects_with_grey.append(contract_name)
             else:
-                print(f"│    ✗ Grey Contract: Not compiled (compile with Option 4 first)")
+                print("│    ✗ Grey Contract: Not compiled (compile with Option 4 first)")
 
             # Check if investor contract already exists
             investor_contract_name = f"{contract_name}_investor"
@@ -4687,7 +4685,7 @@ class CardanoCLI:
                         for i, admin in enumerate(datum["project_admins"], 1):
                             print(f"│   {i}. {admin}")
                     else:
-                        print(f"│   (none)")
+                        print("│   (none)")
                     print()
 
                     print(f"│ Projects ({len(datum['projects'])}):")
@@ -4695,14 +4693,14 @@ class CardanoCLI:
                         for i, proj in enumerate(datum["projects"], 1):
                             print(f"│   {i}. {proj}")
                     else:
-                        print(f"│   (none)")
+                        print("│   (none)")
 
                 elif result["contract_type"] == "project":
                     self.menu.print_section("PROJECT DATUM")
                     datum = result["datum"]
 
                     # Project Parameters
-                    print(f"│ PROJECT PARAMETERS:")
+                    print("│ PROJECT PARAMETERS:")
                     print(f"│   Project ID: {datum['params']['project_id']}")
                     print(f"│   Metadata: {datum['params']['project_metadata']}")
 
@@ -4714,7 +4712,7 @@ class CardanoCLI:
                     print()
 
                     # Project Token
-                    print(f"│ PROJECT TOKEN:")
+                    print("│ PROJECT TOKEN:")
                     print(f"│   Policy ID: {datum['project_token']['policy_id']}")
 
                     # Convert hex token name to string
@@ -4722,7 +4720,7 @@ class CardanoCLI:
                     try:
                         token_name_str = bytes.fromhex(token_name_hex).decode("utf-8")
                         print(f"│   Token Name: {token_name_str}")
-                    except:
+                    except (ValueError, UnicodeDecodeError):
                         # Fallback to hex if decode fails
                         print(f"│   Token Name: {token_name_hex}")
 
@@ -4738,7 +4736,7 @@ class CardanoCLI:
                             try:
                                 stakeholder_str = bytes.fromhex(stakeholder_hex).decode("utf-8")
                                 print(f"│   {i}. Stakeholder: {stakeholder_str}")
-                            except:
+                            except (ValueError, UnicodeDecodeError):
                                 # Fallback to hex if decode fails
                                 print(f"│   {i}. Stakeholder: {stakeholder_hex}")
 
@@ -4746,9 +4744,9 @@ class CardanoCLI:
                             print(f"│      Participation: {sh['participation']}")
                             print(f"│      Claimed: {sh['claimed']}")
                             if i < len(datum["stakeholders"]):
-                                print(f"│")
+                                print("│")
                     else:
-                        print(f"│   (none)")
+                        print("│   (none)")
                     print()
 
                     # Certifications
@@ -4760,9 +4758,9 @@ class CardanoCLI:
                             print(f"│      Real Cert Date: {cert['real_certification_date']}")
                             print(f"│      Real Quantity: {cert['real_quantity']}")
                             if i < len(datum["certifications"]):
-                                print(f"│")
+                                print("│")
                     else:
-                        print(f"│   (none)")
+                        print("│   (none)")
 
                 elif result["contract_type"] == "investor":
                     self.menu.print_section("INVESTOR DATUM")
@@ -4773,7 +4771,7 @@ class CardanoCLI:
                     print()
 
                     # Grey token sale info
-                    print(f"│ GREY TOKEN SALE:")
+                    print("│ GREY TOKEN SALE:")
                     print(f"│   Tokens Available: {datum['grey_token_amount']:,}")
 
                     # Price with calculation
@@ -4869,7 +4867,7 @@ class CardanoCLI:
                     if delete_grey_tokens:
                         warning_msg += f"\n  It will also delete the associated '{grey_contract_name}' contracts"
                     else:
-                        warning_msg += f"\n  Grey token contracts will be preserved for future use"
+                        warning_msg += "\n  Grey token contracts will be preserved for future use"
 
                 self.menu.print_warning(warning_msg)
                 if not self.menu.confirm_action("Proceed with deletion?"):
@@ -4926,7 +4924,7 @@ class CardanoCLI:
                         input("Press Enter to continue...")
                         return
 
-                    self.menu.print_success(f"✓ Reference script UTXO spent successfully")
+                    self.menu.print_success("✓ Reference script UTXO spent successfully")
                     self.menu.print_info(f"Transaction ID: {spend_result['tx_id']}")
                     self.menu.print_info(f"Destination: {spend_result['destination']}")
 
@@ -5308,7 +5306,7 @@ class CardanoCLI:
                     self.menu.print_error(f"Invalid real quantity: {e}")
                     return
 
-            self.menu.print_success(f"✓ Updated certification")
+            self.menu.print_success("✓ Updated certification")
 
         except ValueError:
             self.menu.print_error("Invalid input - please enter a number")

@@ -3,8 +3,6 @@ Minimal functional test suite for OpShin project validator
 Tests updated to match current contract design
 """
 
-from typing import Dict, List, Optional
-
 import pytest
 from opshin.ledger.api_v2 import *
 from opshin.prelude import *
@@ -93,8 +91,8 @@ class MockCommonProject:
         self,
         params: DatumProjectParams = None,
         project_token: TokenProject = None,
-        stakeholders: List[StakeHolderParticipation] = None,
-        certifications: List[Certification] = None,
+        stakeholders: list[StakeHolderParticipation] = None,
+        certifications: list[Certification] = None,
     ) -> DatumProject:
         """Create a mock project datum"""
         if params is None:
@@ -121,7 +119,7 @@ class MockCommonProject:
         )
 
     def create_mock_tx_out(
-        self, address: Address, value: Dict[bytes, Dict[bytes, int]] = None, datum: Optional[OutputDatum] = None
+        self, address: Address, value: dict[bytes, dict[bytes, int]] = None, datum: OutputDatum | None = None
     ) -> TxOut:
         """Create a mock transaction output"""
         if value is None:
@@ -134,7 +132,7 @@ class MockCommonProject:
         return TxInInfo(out_ref=oref, resolved=resolved)
 
     def create_mock_tx_info(
-        self, inputs: List[TxInInfo] = None, outputs: List[TxOut] = None, signatories: List[bytes] = None
+        self, inputs: list[TxInInfo] = None, outputs: list[TxOut] = None, signatories: list[bytes] = None
     ) -> TxInfo:
         """Create a mock transaction info"""
         if inputs is None:

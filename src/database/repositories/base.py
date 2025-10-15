@@ -4,11 +4,12 @@ Base Repository
 Provides common CRUD operations for all repositories.
 """
 
-from typing import Any, Generic, List, Optional, Type, TypeVar
+from typing import Any, Generic, TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import SQLModel
+
 
 ModelType = TypeVar("ModelType", bound=SQLModel)
 
@@ -16,7 +17,7 @@ ModelType = TypeVar("ModelType", bound=SQLModel)
 class BaseRepository(Generic[ModelType]):
     """Base repository with common CRUD operations"""
 
-    def __init__(self, model: Type[ModelType], session: AsyncSession):
+    def __init__(self, model: type[ModelType], session: AsyncSession):
         """
         Initialize repository
 
@@ -42,7 +43,7 @@ class BaseRepository(Generic[ModelType]):
         await self.session.refresh(obj)
         return obj
 
-    async def get(self, id: int) -> Optional[ModelType]:
+    async def get(self, id: int) -> ModelType | None:
         """
         Get record by ID
 
@@ -54,7 +55,7 @@ class BaseRepository(Generic[ModelType]):
         """
         return await self.session.get(self.model, id)
 
-    async def get_all(self, skip: int = 0, limit: int = 100) -> List[ModelType]:
+    async def get_all(self, skip: int = 0, limit: int = 100) -> list[ModelType]:
         """
         Get all records with pagination
 
@@ -69,7 +70,7 @@ class BaseRepository(Generic[ModelType]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def update(self, id: int, **kwargs: Any) -> Optional[ModelType]:
+    async def update(self, id: int, **kwargs: Any) -> ModelType | None:
         """
         Update record by ID
 

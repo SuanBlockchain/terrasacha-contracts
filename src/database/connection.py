@@ -5,22 +5,20 @@ Handles async database connections, session management, and engine configuration
 All schema changes should be managed through Alembic migrations.
 """
 
-import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
 
-from pydantic import PostgresDsn
 from pydantic_settings import BaseSettings
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlmodel import SQLModel, create_engine
+from sqlalchemy import Engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlmodel import create_engine
 
 
 class DatabaseSettings(BaseSettings):
     """Database configuration from environment variables"""
 
     # PostgreSQL connection - all values loaded from .env file
-    postgres_host: str = "localhost"  # Safe default, typically localhost for development
+    postgres_host: str  # No default - must be set in .env
     postgres_port: int  # No default - must be set in .env
     postgres_user: str  # No default - must be set in .env
     postgres_password: str  # No default - must be set in .env
@@ -65,7 +63,7 @@ class DatabaseManager:
     All schema changes must be managed through Alembic migrations.
     """
 
-    def __init__(self, settings: Optional[DatabaseSettings] = None):
+    def __init__(self, settings: DatabaseSettings | None = None):
         """
         Initialize database manager
 
@@ -73,11 +71,11 @@ class DatabaseManager:
             settings: Database settings (loads from environment if not provided)
         """
         self.settings = settings or DatabaseSettings()
-        self._engine: Optional[AsyncEngine] = None
-        self._sync_engine = None
-        self._async_session_factory: Optional[sessionmaker] = None
+        self._engine: AsyncEngine | None = None
+        self._sync_engine: Engine | None = None
+        self._async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
-    def get_sync_engine(self):
+    def get_sync_engine(self) -> Engine:
         """
         Get synchronous database engine
 
@@ -113,7 +111,7 @@ class DatabaseManager:
             )
         return self._engine
 
-    def get_session_factory(self) -> sessionmaker:
+    def get_session_factory(self) -> async_sessionmaker[AsyncSession]:
         """
         Get async session factory
 
@@ -121,12 +119,8 @@ class DatabaseManager:
             SQLAlchemy async session factory
         """
         if self._async_session_factory is None:
-            self._async_session_factory = sessionmaker(
-                bind=self.get_async_engine(),
-                class_=AsyncSession,
-                expire_on_commit=False,
-                autocommit=False,
-                autoflush=False,
+            self._async_session_factory = async_sessionmaker(
+                bind=self.get_async_engine(), class_=AsyncSession, expire_on_commit=False
             )
         return self._async_session_factory
 
@@ -167,7 +161,7 @@ class DatabaseManager:
 # ============================================================================
 
 # Singleton instance for application-wide use
-_db_manager: Optional[DatabaseManager] = None
+_db_manager: DatabaseManager | None = None
 
 
 def get_db_manager() -> DatabaseManager:

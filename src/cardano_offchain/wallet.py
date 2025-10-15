@@ -6,7 +6,7 @@ Handles wallet creation, address generation, and key management.
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pycardano as pc
 from blockfrost import ApiError, BlockFrostApi
@@ -49,10 +49,10 @@ class CardanoWallet:
         )
 
         # Derived addresses storage
-        self.addresses = []
-        self.signing_keys = []
+        self.addresses: list[dict[str, Any]] = []
+        self.signing_keys: list[pc.ExtendedSigningKey] = []
 
-    def generate_addresses(self, count: int) -> List[Dict[str, Any]]:
+    def generate_addresses(self, count: int) -> list[dict[str, Any]]:
         """
         Generate multiple addresses for the wallet
 
@@ -97,7 +97,7 @@ class CardanoWallet:
 
         return generated_addresses
 
-    def get_wallet_info(self) -> Dict[str, Any]:
+    def get_wallet_info(self) -> dict[str, Any]:
         """
         Get comprehensive wallet information
 
@@ -118,7 +118,7 @@ class CardanoWallet:
             ],
         }
 
-    def check_balances(self, api: BlockFrostApi, limit_addresses: int = 5) -> Dict[str, Any]:
+    def check_balances(self, api: BlockFrostApi, limit_addresses: int = 5) -> dict[str, Any]:
         """
         Check balances for wallet addresses
 
@@ -129,7 +129,7 @@ class CardanoWallet:
         Returns:
             Dictionary containing balance information
         """
-        balances = {
+        balances: dict[str, Any] = {
             "main_addresses": {
                 "enterprise": {"address": str(self.enterprise_address), "balance": 0},
                 "staking": {"address": str(self.staking_address), "balance": 0},
@@ -173,13 +173,13 @@ class CardanoWallet:
             )
 
         except ApiError as e:
-            raise Exception(f"Error checking balances: {e}")
+            raise Exception(f"Error checking balances: {e}") from e
 
         return balances
 
     def get_payment_verification_key_hash(self) -> bytes:
         """Get the payment verification key hash"""
-        return self.payment_skey.to_verification_key().hash().payload
+        return bytes(self.payment_skey.to_verification_key().hash().payload)
 
     def get_address(self, index: int = 0, use_staking: bool = False) -> pc.Address:
         """
@@ -201,7 +201,7 @@ class CardanoWallet:
         addr_info = self.addresses[index - 1]
         return addr_info["staking_address"] if use_staking else addr_info["enterprise_address"]
 
-    def find_wallet_index_by_address(self, target_address: pc.Address, max_search: int = 20) -> Optional[int]:
+    def find_wallet_index_by_address(self, target_address: pc.Address, max_search: int = 20) -> int | None:
         """
         Find the wallet index that corresponds to a given address within this wallet
 
@@ -247,7 +247,7 @@ class CardanoWallet:
                 ):
                     return i
 
-            except Exception as e:
+            except Exception:
                 # Skip this index if derivation fails
                 continue
         return None
@@ -282,8 +282,8 @@ class WalletManager:
             network: Network type ("testnet" or "mainnet")
         """
         self.network = network
-        self.wallets: Dict[str, CardanoWallet] = {}
-        self.default_wallet: Optional[str] = None
+        self.wallets: dict[str, CardanoWallet] = {}
+        self.default_wallet: str | None = None
 
     def add_wallet(self, name: str, mnemonic: str, set_as_default: bool = False) -> CardanoWallet:
         """
@@ -305,7 +305,7 @@ class WalletManager:
 
         return wallet
 
-    def get_wallet(self, name: Optional[str] = None) -> Optional[CardanoWallet]:
+    def get_wallet(self, name: str | None = None) -> CardanoWallet | None:
         """
         Get wallet by name or default wallet
 
@@ -320,7 +320,7 @@ class WalletManager:
 
         return self.wallets.get(name) if name else None
 
-    def get_wallet_names(self) -> List[str]:
+    def get_wallet_names(self) -> list[str]:
         """Get list of all wallet names"""
         return list(self.wallets.keys())
 
@@ -339,7 +339,7 @@ class WalletManager:
             return True
         return False
 
-    def get_default_wallet_name(self) -> Optional[str]:
+    def get_default_wallet_name(self) -> str | None:
         """Get name of default wallet"""
         return self.default_wallet
 
@@ -360,7 +360,7 @@ class WalletManager:
             return True
         return False
 
-    def check_all_balances(self, api: BlockFrostApi, limit_addresses: int = 5) -> Dict[str, Any]:
+    def check_all_balances(self, api: BlockFrostApi, limit_addresses: int = 5) -> dict[str, Any]:
         """
         Check balances for all wallets
 
@@ -371,14 +371,14 @@ class WalletManager:
         Returns:
             Dictionary containing balance information for all wallets
         """
-        all_balances = {}
+        all_balances: dict[str, Any] = {}
         total_across_wallets = 0
 
         for name, wallet in self.wallets.items():
             try:
                 balances = wallet.check_balances(api, limit_addresses)
                 all_balances[name] = balances
-                total_across_wallets += balances["total_balance"]
+                total_across_wallets += int(balances["total_balance"])
             except Exception as e:
                 all_balances[name] = {"error": str(e), "total_balance": 0}
 
@@ -420,7 +420,7 @@ class WalletManager:
 
         return manager
 
-    def get_wallet_info_all(self) -> Dict[str, Any]:
+    def get_wallet_info_all(self) -> dict[str, Any]:
         """
         Get comprehensive information for all wallets
 

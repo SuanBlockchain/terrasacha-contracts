@@ -4,8 +4,6 @@ Contract Repository
 Manages contract data access operations.
 """
 
-from typing import List, Optional
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +18,7 @@ class ContractRepository(BaseRepository[Contract]):
         """Initialize contract repository"""
         super().__init__(Contract, session)
 
-    async def get_by_policy_id(self, policy_id: str) -> Optional[Contract]:
+    async def get_by_policy_id(self, policy_id: str) -> Contract | None:
         """
         Get contract by policy ID
 
@@ -34,7 +32,7 @@ class ContractRepository(BaseRepository[Contract]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_name(self, name: str) -> Optional[Contract]:
+    async def get_by_name(self, name: str) -> Contract | None:
         """
         Get contract by name
 
@@ -48,7 +46,7 @@ class ContractRepository(BaseRepository[Contract]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_type(self, contract_type: ContractType, network: str) -> List[Contract]:
+    async def get_by_type(self, contract_type: ContractType, network: str) -> list[Contract]:
         """
         Get all contracts of a specific type and network
 

@@ -6,24 +6,14 @@ Configured to work with SQLModel and load database settings from environment var
 
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
+from alembic import context
+
 # Import database settings and models
 from src.database.connection import DatabaseSettings
-from src.database.models import (
-    Certification,
-    Contract,
-    InvestorSale,
-    Project,
-    Protocol,
-    Stakeholder,
-    Token,
-    Transaction,
-    UTXO,
-    Wallet,
-)
+
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -77,9 +67,7 @@ def run_migrations_online() -> None:
 
     """
     connectable = engine_from_config(
-        config.get_section(config.config_ini_section, {}),
-        prefix="sqlalchemy.",
-        poolclass=pool.NullPool,
+        config.get_section(config.config_ini_section, {}), prefix="sqlalchemy.", poolclass=pool.NullPool
     )
 
     with connectable.connect() as connection:

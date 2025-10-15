@@ -249,7 +249,7 @@ def resolve_linear_input(tx_info: TxInfo, input_index: int, purpose: Spending) -
     Also checks that the input is referenced correctly and that there is only one.
     """
     previous_state_input_unresolved = tx_info.inputs[input_index]
-    assert previous_state_input_unresolved.out_ref == purpose.tx_out_ref, f"Referenced wrong input"
+    assert previous_state_input_unresolved.out_ref == purpose.tx_out_ref, "Referenced wrong input"
     previous_state_input = previous_state_input_unresolved.resolved
     assert only_one_input_from_address(previous_state_input.address, tx_info.inputs), (
         "More than one input from the contract address"

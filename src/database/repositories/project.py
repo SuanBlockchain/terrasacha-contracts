@@ -4,8 +4,6 @@ Project Repository
 Manages project data access operations.
 """
 
-from typing import List, Optional
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +18,7 @@ class ProjectRepository(BaseRepository[Project]):
         """Initialize project repository"""
         super().__init__(Project, session)
 
-    async def get_by_name(self, name: str) -> Optional[Project]:
+    async def get_by_name(self, name: str) -> Project | None:
         """
         Get project by name
 
@@ -34,7 +32,7 @@ class ProjectRepository(BaseRepository[Project]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_project_id(self, project_id: str) -> Optional[Project]:
+    async def get_by_project_id(self, project_id: str) -> Project | None:
         """
         Get project by on-chain project ID
 
@@ -48,7 +46,7 @@ class ProjectRepository(BaseRepository[Project]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_by_protocol(self, protocol_id: int) -> List[Project]:
+    async def get_by_protocol(self, protocol_id: int) -> list[Project]:
         """
         Get all projects for a protocol
 
@@ -62,7 +60,7 @@ class ProjectRepository(BaseRepository[Project]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def get_by_state(self, state: ProjectState) -> List[Project]:
+    async def get_by_state(self, state: ProjectState) -> list[Project]:
         """
         Get all projects in a specific state
 
@@ -76,7 +74,7 @@ class ProjectRepository(BaseRepository[Project]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def get_active(self) -> List[Project]:
+    async def get_active(self) -> list[Project]:
         """
         Get all active projects
 

@@ -71,6 +71,9 @@ extend-exclude = [
     "build",
     "dist",
     "artifacts",
+    "src/terrasacha_contracts/validators/",
+    "src/terrasacha_contracts/minting_policies/",
+    "src/terrasacha_contracts/util.py",
 ]
 
 [tool.ruff.lint]
@@ -90,7 +93,7 @@ ignore = [
 # Per-file ignores
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # imported but unused
-"tests/*" = ["S101"]      # use of assert
+"tests/*" = ["S101", "F403", "F405"]  # use of assert, star imports
 
 [tool.ruff.lint.isort]
 known-first-party = ["terrasacha_contracts"]
@@ -107,7 +110,8 @@ skip-magic-trailing-comma = true  # Ignore trailing commas for more compact form
 line-ending = "auto"
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.11"
+# plugins = ["sqlalchemy.ext.mypy.plugin"]  # Disabled - requires mypy to be installed in same environment
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -130,6 +134,7 @@ exclude = [
     "^\\.venv/",
     "^src/terrasacha_contracts/",  # Skip all OpShin contract files
     "^src/scripts/",               # Skip build scripts
+    "^src/database/",              # Skip database models - requires SQLAlchemy plugin
 ]
 
 [[tool.mypy.overrides]]
@@ -138,6 +143,10 @@ module = [
     "pycardano.*",
     "hypothesis.*",
     "parameterized.*",
+    "blockfrost.*",
+    "sqlalchemy.*",
+    "sqlmodel.*",
+    "pydantic_settings.*",
 ]
 ignore_missing_imports = true
 
