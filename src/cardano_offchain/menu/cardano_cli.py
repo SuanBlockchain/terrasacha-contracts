@@ -24,7 +24,7 @@ ENV_FILE = PROJECT_ROOT / "menu/.env"
 load_dotenv(ENV_FILE)
 
 # Import core Cardano functionality
-from opshin.prelude import TrueData
+from opshin.prelude import TrueData, FalseData
 
 from src.cardano_offchain import (
     CardanoChainContext,
@@ -569,7 +569,7 @@ class CardanoCLI:
         project_contracts = self.contract_manager.list_project_contracts()
         selected_project_name = None
         if not project_contracts:
-            project_contract = None
+            pass
         elif len(project_contracts) == 1:
             # Only one project contract available
             selected_project_name = project_contracts[0]
@@ -585,7 +585,6 @@ class CardanoCLI:
                 choice = int(self.menu.get_input(f"Select project contract (1-{len(project_contracts)})")) - 1
                 if 0 <= choice < len(project_contracts):
                     selected_project_name = project_contracts[choice]
-                    project_contract = self.contract_manager.get_project_contract(selected_project_name)
                     self.menu.print_info(f"Selected project contract: {selected_project_name.upper()}")
                 else:
                     self.menu.print_error("Invalid project selection")
@@ -684,6 +683,9 @@ class CardanoCLI:
             self.menu.print_error(f"Invalid investment tokens amount: {e}")
             return
 
+        # Calculate total supply (stakeholder participation + investment tokens)
+        total_supply = total_participation + investment_tokens
+
         # Certification periods setup
         self.menu.print_section("CERTIFICATION PERIODS SETUP")
         self.menu.print_warning(
@@ -776,7 +778,6 @@ class CardanoCLI:
         print(f"Metadata: {metadata_uri}")
         print(f"Stakeholder Participation: {total_participation:,} lovelace")
         print(f"Investment Grey Tokens: {investment_tokens:,}")
-        total_supply = total_participation + investment_tokens
         print(f"Total Grey Token Supply: {total_supply:,}")
         print(f"Stakeholders ({len(stakeholders)}):")
         for i, (name, participation, stakeholder_pkh) in enumerate(stakeholders, 1):
@@ -1508,7 +1509,11 @@ class CardanoCLI:
             # Get seller PKH from selected wallet
             if seller_selection.wallet_name:
                 # Get PKH from wallet
-                seller_wallet = self.wallet_manager.load_wallet(seller_selection.wallet_name)
+                seller_wallet = self.wallet_manager.get_wallet(seller_selection.wallet_name)
+                if not seller_wallet:
+                    self.menu.print_error(f"Wallet '{seller_selection.wallet_name}' not found")
+                    input("Press Enter to continue...")
+                    return
                 seller_pkh_bytes = seller_wallet.get_payment_verification_key_hash()
             else:
                 self.menu.print_error("Could not get PKH from selected wallet")
@@ -2087,6 +2092,572 @@ class CardanoCLI:
 
         except ValueError:
             self.menu.print_error("Invalid input. Please enter a number.")
+
+        input("\nPress Enter to continue...")
+
+    def cancel_grey_sale_menu(self):
+        """Cancel grey token sale and return tokens to seller"""
+        self.menu.print_header("CANCEL GREY TOKEN SALE", "Return Grey Tokens to Seller")
+
+        # Project contract selection
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            self.menu.print_error("No project contracts found")
+            input("Press Enter to continue...")
+            return
+        elif len(project_contracts) == 1:
+            # Only one project contract available
+            selected_project = project_contracts[0]
+            self.menu.print_info(f"Using project contract: {selected_project.upper()}")
+        else:
+            # Multiple project contracts - let user choose
+            self.menu.print_section("PROJECT CONTRACT SELECTION")
+            self.menu.print_info("Multiple project contracts available:")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+
+            try:
+                choice = (
+                    int(
+                        self.menu.get_input(
+                            f"Select project contract for grey token sale cancellation (1-{len(project_contracts)})"
+                        )
+                    )
+                    - 1
+                )
+                if 0 <= choice < len(project_contracts):
+                    selected_project = project_contracts[choice]
+                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                else:
+                    self.menu.print_error("Invalid project selection")
+                    input("Press Enter to continue...")
+                    return
+            except (ValueError, IndexError):
+                self.menu.print_error("Invalid input for project selection")
+                input("Press Enter to continue...")
+                return
+
+        # Ask for seller wallet (must match datum seller_pkh)
+        wallet_selection = self.select_wallet_or_address(
+            "seller (must match the sale)", mode="wallet_only", allow_custom_address=False
+        )
+        if not wallet_selection:
+            self.menu.print_info("Grey token sale cancellation cancelled")
+            input("Press Enter to continue...")
+            return
+
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
+                    input("Press Enter to continue...")
+                    return
+
+        # Ask for destination address for returned tokens (optional, defaults to seller wallet)
+        self.menu.print_section("DESTINATION ADDRESS")
+        self.menu.print_info("Where should the grey tokens be returned?")
+        print("│ 1. Current wallet (seller)")
+        print("│ 2. Custom address")
+
+        try:
+            dest_choice = self.menu.get_input("Select destination (1-2, default: 1)")
+            if not dest_choice or dest_choice == "1":
+                destination_address = None  # Will default to seller's wallet in the method
+                dest_display = "Current wallet (seller)"
+            elif dest_choice == "2":
+                custom_addr = self.menu.get_input("Enter destination address")
+                try:
+                    destination_address = pc.Address.from_primitive(custom_addr)
+                    dest_display = custom_addr
+                except Exception as e:
+                    self.menu.print_error(f"Invalid address: {e}")
+                    input("Press Enter to continue...")
+                    return
+            else:
+                self.menu.print_error("Invalid choice")
+                input("Press Enter to continue...")
+                return
+        except Exception as e:
+            self.menu.print_error(f"Invalid input: {e}")
+            input("Press Enter to continue...")
+            return
+
+        # Show transaction preview
+        self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
+        print(f"│ Project Contract: {selected_project}")
+        print(f"│ Seller Wallet: {current_wallet} (must match datum)")
+        print(f"│ Destination: {dest_display}")
+        print(f"│ Action: Cancel sale and return grey tokens to seller")
+
+        if not self.menu.confirm_action("Proceed with grey token sale cancellation?"):
+            self.menu.print_info("Grey token sale cancellation cancelled")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            self.menu.print_info("Creating grey token sale cancellation transaction...")
+
+            # Create the cancellation transaction
+            result = self.token_operations.cancel_grey_sale(
+                project_name=selected_project, destination_address=destination_address
+            )
+
+            if result["success"]:
+                self.menu.print_success("✓ Grey token sale cancellation transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Grey Token Name: {result['grey_token_name']}")
+                print(f"│ Grey Policy ID: {result['grey_policy_id']}")
+                print(f"│ Returned Tokens: {result['returned_tokens']:,}")
+                print(f"│ Destination: {result['destination_address']}")
+
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ Grey token sale cancellation transaction submitted!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info("Grey tokens have been returned to seller successfully")
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
+                else:
+                    self.menu.print_info("Transaction not submitted")
+            else:
+                self.menu.print_error(f"Failed to create cancellation transaction: {result['error']}")
+
+        except Exception as e:
+            self.menu.print_error(f"Grey token sale cancellation failed: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def update_grey_sale_price_menu(self):
+        """Update grey token sale price in investor contract"""
+        self.menu.print_header("UPDATE GREY TOKEN SALE PRICE", "Modify Price in Investor Contract")
+
+        # Project contract selection
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            self.menu.print_error("No project contracts found")
+            input("Press Enter to continue...")
+            return
+        elif len(project_contracts) == 1:
+            # Only one project contract available
+            selected_project = project_contracts[0]
+            self.menu.print_info(f"Using project contract: {selected_project.upper()}")
+        else:
+            # Multiple project contracts - let user choose
+            self.menu.print_section("PROJECT CONTRACT SELECTION")
+            self.menu.print_info("Multiple project contracts available:")
+            for i, contract_name in enumerate(project_contracts, 1):
+                print(f"│ {i}. {contract_name.upper()}")
+
+            try:
+                choice = (
+                    int(
+                        self.menu.get_input(
+                            f"Select project contract for price update (1-{len(project_contracts)})"
+                        )
+                    )
+                    - 1
+                )
+                if 0 <= choice < len(project_contracts):
+                    selected_project = project_contracts[choice]
+                    self.menu.print_info(f"Selected project contract: {selected_project.upper()}")
+                else:
+                    self.menu.print_error("Invalid project selection")
+                    input("Press Enter to continue...")
+                    return
+            except (ValueError, IndexError):
+                self.menu.print_error("Invalid input for project selection")
+                input("Press Enter to continue...")
+                return
+
+        # Ask for wallet to use for signing
+        wallet_selection = self.select_wallet_or_address(
+            "signing (contract validates seller on-chain)", mode="wallet_only", allow_custom_address=False
+        )
+        if not wallet_selection:
+            self.menu.print_info("Price update cancelled")
+            input("Press Enter to continue...")
+            return
+
+        # Switch to selected wallet if different from current
+        if wallet_selection.wallet_name:
+            current_wallet = self.wallet_manager.get_default_wallet_name()
+            if wallet_selection.wallet_name != current_wallet:
+                if self.switch_to_wallet(wallet_selection.wallet_name):
+                    self.menu.print_info(f"Switched to wallet: {wallet_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {wallet_selection.wallet_name}")
+                    input("Press Enter to continue...")
+                    return
+
+        # Display current price info from investor contract
+        self.menu.print_section("CURRENT SALE INFO")
+        try:
+            # Get investor contract address
+            investor_contract_name = f"{selected_project}_investor"
+            investor_contract = self.contract_manager.get_contract(investor_contract_name)
+            if not investor_contract:
+                self.menu.print_error(f"Investor contract '{investor_contract_name}' not found")
+                input("Press Enter to continue...")
+                return
+
+            # Query investor UTXO
+            investor_utxos = self.chain_context.get_context().utxos(investor_contract.testnet_addr)
+            if not investor_utxos:
+                self.menu.print_error("No active sale found at investor contract")
+                input("Press Enter to continue...")
+                return
+
+            # Get grey contract to find UTXO with grey tokens
+            grey_contract = self.contract_manager.get_grey_token_contract(selected_project)
+            if grey_contract:
+                grey_policy_id = pc.ScriptHash(bytes.fromhex(grey_contract.policy_id))
+                investor_utxo = None
+                for utxo in investor_utxos:
+                    if grey_policy_id in utxo.output.amount.multi_asset:
+                        investor_utxo = utxo
+                        break
+
+                if investor_utxo and investor_utxo.output.datum:
+                    from terrasacha_contracts.util import DatumInvestor
+
+                    current_datum = DatumInvestor.from_cbor(investor_utxo.output.datum.cbor)
+                    old_price = current_datum.price_per_token.price
+                    old_precision = current_datum.price_per_token.precision
+                    old_actual_price = old_price / (10**old_precision)
+
+                    print(f"│ Current Price: {old_price} / 10^{old_precision} = {old_actual_price} USDA per token")
+                    print(f"│ Grey Tokens Available: {current_datum.grey_token_amount:,}")
+                    print(f"│ Min Purchase Amount: {current_datum.min_purchase_amount:,}")
+                    print(f"│ Seller PKH: {current_datum.seller_pkh.hex()}")
+                else:
+                    self.menu.print_warning("Could not read current sale info")
+                    old_price = None
+                    old_precision = None
+            else:
+                self.menu.print_warning("Could not find grey contract to query current sale")
+                old_price = None
+                old_precision = None
+
+        except Exception as e:
+            self.menu.print_warning(f"Could not query current sale info: {e}")
+            old_price = None
+            old_precision = None
+
+        # Ask for new price
+        self.menu.print_section("NEW PRICE")
+        try:
+            new_price_input = self.menu.get_input("Enter new price (integer, must be > 0)")
+            new_price = int(new_price_input)
+
+            if new_price <= 0:
+                self.menu.print_error("Price must be greater than 0")
+                input("Press Enter to continue...")
+                return
+
+        except ValueError:
+            self.menu.print_error("Invalid price. Please enter an integer.")
+            input("Press Enter to continue...")
+            return
+
+        # Ask for new precision
+        try:
+            if old_precision is not None:
+                precision_prompt = f"Enter new precision (integer >= 0, current: {old_precision}, press Enter to keep)"
+            else:
+                precision_prompt = "Enter new precision (integer >= 0)"
+
+            precision_input = self.menu.get_input(precision_prompt)
+
+            if not precision_input.strip() and old_precision is not None:
+                new_precision = old_precision
+            else:
+                new_precision = int(precision_input)
+
+            if new_precision < 0:
+                self.menu.print_error("Precision must be non-negative")
+                input("Press Enter to continue...")
+                return
+
+        except ValueError:
+            self.menu.print_error("Invalid precision. Please enter an integer.")
+            input("Press Enter to continue...")
+            return
+
+        # Calculate and display new actual price
+        new_actual_price = new_price / (10**new_precision)
+
+        # Show transaction preview
+        self.menu.print_section("TRANSACTION PREVIEW")
+        current_wallet = self.wallet_manager.get_default_wallet_name()
+        print(f"│ Project Contract: {selected_project}")
+        print(f"│ Signing Wallet: {current_wallet}")
+        if old_price is not None and old_precision is not None:
+            old_actual = old_price / (10**old_precision)
+            print(f"│ Current Price: {old_price} / 10^{old_precision} = {old_actual} USDA per token")
+        print(f"│ New Price: {new_price} / 10^{new_precision} = {new_actual_price} USDA per token")
+        print(f"│ ")
+        print(f"│ ⚠ WARNING: Transaction will fail if wallet doesn't match seller PKH in datum")
+
+        if not self.menu.confirm_action("Proceed with price update?"):
+            self.menu.print_info("Price update cancelled")
+            input("Press Enter to continue...")
+            return
+
+        try:
+            self.menu.print_info("Creating price update transaction...")
+
+            # Create the price update transaction
+            result = self.token_operations.update_grey_sale_price(
+                project_name=selected_project, new_price=new_price, new_precision=new_precision
+            )
+
+            if result["success"]:
+                self.menu.print_success("✓ Price update transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Grey Token Name: {result['grey_token_name']}")
+                print(f"│ Grey Policy ID: {result['grey_policy_id']}")
+                print(
+                    f"│ Old Price: {result['old_price']} / 10^{result['old_precision']} = {result['old_price'] / (10 ** result['old_precision'])}"
+                )
+                print(
+                    f"│ New Price: {result['new_price']} / 10^{result['new_precision']} = {result['new_price'] / (10 ** result['new_precision'])}"
+                )
+                print(f"│ Grey Tokens: {result['token_amount']:,}")
+
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ Price update transaction submitted!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info("Grey token sale price has been updated successfully")
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
+                        self.menu.print_info("Transaction may have been rejected by contract (seller mismatch)")
+                else:
+                    self.menu.print_info("Transaction not submitted")
+            else:
+                self.menu.print_error(f"Failed to create price update transaction: {result['error']}")
+
+        except Exception as e:
+            self.menu.print_error(f"Price update failed: {e}")
+
+        input("\nPress Enter to continue...")
+
+    def buy_grey_tokens_menu(self):
+        """Buy grey tokens from investor contract using USDATEST tokens"""
+        self.menu.print_header("BUY GREY TOKENS", "Purchase Grey Tokens with USDATEST")
+
+        # Get available project contracts
+        project_contracts = self.contract_manager.list_project_contracts()
+        if not project_contracts:
+            self.menu.print_error("No project contracts found!")
+            input("\nPress Enter to continue...")
+            return
+
+        # Display available project contracts with investor contract status
+        self.menu.print_section("AVAILABLE PROJECTS WITH GREY TOKENS FOR SALE")
+        projects_with_sale = []
+
+        for i, project_name in enumerate(project_contracts, 1):
+            investor_contract_name = f"{project_name}_investor"
+            investor_contract = self.contract_manager.get_contract(investor_contract_name)
+
+            if investor_contract:
+                # Check if there are grey tokens for sale
+                try:
+                    investor_address = investor_contract.testnet_addr
+                    investor_utxos = self.chain_context.get_context().utxos(investor_address)
+
+                    if investor_utxos:
+                        # Get grey token contract
+                        grey_contract = self.contract_manager.get_grey_token_contract(project_name)
+                        if grey_contract:
+                            grey_policy_id_hex = grey_contract.policy_id
+                            import pycardano as pc
+
+                            grey_policy_id = pc.ScriptHash(bytes.fromhex(grey_policy_id_hex))
+
+                            # Find UTXO with grey tokens
+                            for utxo in investor_utxos:
+                                if grey_policy_id in utxo.output.amount.multi_asset:
+                                    # Get datum info
+                                    if utxo.output.datum:
+                                        from terrasacha_contracts.util import DatumInvestor
+
+                                        try:
+                                            datum = DatumInvestor.from_cbor(utxo.output.datum.cbor)
+                                            grey_assets = utxo.output.amount.multi_asset[grey_policy_id]
+                                            token_amount = sum(grey_assets.values())
+
+                                            actual_price = datum.price_per_token.price / (
+                                                10 ** datum.price_per_token.precision
+                                            )
+
+                                            print(f"│ {i}. {project_name.upper()}")
+                                            print(f"│    Available: {token_amount:,} grey tokens")
+                                            print(
+                                                f"│    Price: {actual_price} USDA per token ({datum.price_per_token.price} / 10^{datum.price_per_token.precision})"
+                                            )
+                                            print(f"│    Min Purchase: {datum.min_purchase_amount:,} tokens")
+                                            print(f"│    Investor Contract: {investor_contract_name}")
+                                            print()
+
+                                            projects_with_sale.append(
+                                                {
+                                                    "name": project_name,
+                                                    "available": token_amount,
+                                                    "price": datum.price_per_token.price,
+                                                    "precision": datum.price_per_token.precision,
+                                                    "min_purchase": datum.min_purchase_amount,
+                                                }
+                                            )
+                                            break
+                                        except Exception:
+                                            pass
+                except Exception:
+                    pass
+
+        if not projects_with_sale:
+            self.menu.print_error("No active grey token sales found!")
+            self.menu.print_info("Grey tokens must be minted and locked in investor contract first")
+            input("\nPress Enter to continue...")
+            return
+
+        # Ask user to select project
+        try:
+            choice_input = self.menu.get_input(
+                f"Select project to buy from (1-{len(projects_with_sale)}, or 0 to cancel)"
+            )
+            choice = int(choice_input)
+
+            if choice == 0:
+                self.menu.print_info("Purchase cancelled")
+                input("\nPress Enter to continue...")
+                return
+
+            if not (1 <= choice <= len(projects_with_sale)):
+                self.menu.print_error("Invalid selection")
+                input("\nPress Enter to continue...")
+                return
+
+            selected_project = projects_with_sale[choice - 1]
+            project_name = selected_project["name"]
+
+            # Ask for purchase amount
+            amount_input = self.menu.get_input(
+                f"Enter amount of grey tokens to buy (min: {selected_project['min_purchase']:,})"
+            )
+            amount = int(amount_input)
+
+            if amount <= 0:
+                self.menu.print_error("Amount must be positive")
+                input("\nPress Enter to continue...")
+                return
+
+            # Select buyer wallet
+            buyer_selection = self.select_wallet_or_address(
+                purpose="grey token purchase", mode="source", allow_custom_address=False
+            )
+
+            if not buyer_selection:
+                self.menu.print_info("Purchase cancelled - no wallet selected")
+                input("\nPress Enter to continue...")
+                return
+
+            # Switch to selected wallet if needed
+            if buyer_selection.should_switch_wallet and buyer_selection.wallet_name:
+                if self.switch_to_wallet(buyer_selection.wallet_name):
+                    self.menu.print_info(f"✓ Switched to wallet: {buyer_selection.wallet_name}")
+                else:
+                    self.menu.print_error(f"Failed to switch to wallet: {buyer_selection.wallet_name}")
+                    input("\nPress Enter to continue...")
+                    return
+
+            # Calculate payment info
+            total_payment_raw = amount * selected_project["price"]
+            divisor = 10 ** selected_project["precision"]
+            total_payment = total_payment_raw // divisor
+
+            # Get protocol fee
+            protocol_contract = self.contract_manager.get_contract("protocol")
+            if protocol_contract:
+                protocol_datum_result = self.contract_manager.get_contract_datum("protocol")
+                if protocol_datum_result and protocol_datum_result.get("success"):
+                    protocol_fee = protocol_datum_result["datum"]["protocol_fee"]
+                else:
+                    protocol_fee = 1000000  # Default 1 ADA
+
+            # seller_payment = total_payment - protocol_fee
+            seller_payment = total_payment
+
+            # Show transaction preview
+            self.menu.print_section("TRANSACTION PREVIEW")
+            buyer_wallet_display = buyer_selection.wallet_name if buyer_selection.wallet_name else "Custom Address"
+            print(f"│ Project: {project_name.upper()}")
+            print(f"│ Buyer Wallet: {buyer_wallet_display}")
+            print(f"│ Grey Tokens to Buy: {amount:,}")
+            print(f"│ Total USDA Payment: {total_payment:,}")
+            print(f"│ Payment to Seller: {seller_payment:,} USDA")
+            print(f"│ Protocol Fee: {protocol_fee:,} USDA")
+            print(f"│ ")
+            print(f"│ ⚠ NOTE: Transaction requires USDATEST tokens in wallet")
+            print(f"│ ⚠ Contract validates: amount >= min_purchase and amount <= available")
+            print(f"│ ⚠ WARNING: Protocol fee is interpreted as USDA, not lovelace")
+
+            self.menu.print_info("Creating purchase transaction...")
+
+            # Create the buy transaction
+            result = self.token_operations.buy_grey_tokens(
+                project_name=project_name, amount=amount, buyer_address=buyer_selection.address
+            )
+
+            if result["success"]:
+                self.menu.print_success("✓ Purchase transaction created successfully!")
+                print(f"│ Transaction ID: {result['tx_id']}")
+                print(f"│ Grey Token Name: {result['grey_token_name']}")
+                print(f"│ Grey Policy ID: {result['grey_policy_id']}")
+                print(f"│ Amount Purchased: {result['amount_purchased']:,}")
+                print(f"│ Total USDA Payment: {result['total_payment']:,}")
+                print(f"│ Seller Receives: {result['seller_payment']:,} USDA")
+                print(f"│ Protocol Fee: {result['protocol_fee']:,} lovelace")
+                print(f"│ Remaining Tokens: {result['remaining_tokens']:,}")
+
+                # Submit the transaction
+                if self.menu.confirm_action("Submit transaction to blockchain?"):
+                    self.menu.print_info("Submitting transaction...")
+                    tx_id = self.transactions.submit_transaction(result["transaction"])
+
+                    if tx_id:
+                        self.menu.print_success("✓ Grey token purchase completed!")
+                        tx_info = self.transactions.get_transaction_info(tx_id)
+                        print(f"Explorer: {tx_info['explorer_url']}")
+                        self.menu.print_info(f"{result['amount_purchased']:,} grey tokens transferred to buyer")
+                    else:
+                        self.menu.print_error("Failed to submit transaction")
+                        self.menu.print_info("Transaction may have been rejected by contract validation")
+                else:
+                    self.menu.print_info("Transaction not submitted")
+            else:
+                self.menu.print_error(f"Failed to create purchase transaction: {result['error']}")
+
+        except ValueError:
+            self.menu.print_error("Invalid input. Please enter a valid number.")
+        except Exception as e:
+            self.menu.print_error(f"Purchase failed: {e}")
 
         input("\nPress Enter to continue...")
 
@@ -2824,15 +3395,86 @@ class CardanoCLI:
         # Stakeholder Changes
         if "stakeholders" in accumulated_changes:
             print("│ 👥 STAKEHOLDER CHANGES:")
-            current_count = len(current_datum.stakeholders)
-            new_count = len(accumulated_changes["stakeholders"])
+            current_stakeholders = current_datum.stakeholders
+            new_stakeholders = accumulated_changes["stakeholders"]
+
+            current_count = len(current_stakeholders)
+            new_count = len(new_stakeholders)
             print(f"│   • Stakeholder Count: {current_count} → {new_count}")
 
             # Calculate total participations
-            current_total_participation = sum(s.participation for s in current_datum.stakeholders)
-            new_total_participation = sum(s.participation for s in accumulated_changes["stakeholders"])
+            current_total_participation = sum(s.participation for s in current_stakeholders)
+            new_total_participation = sum(s.participation for s in new_stakeholders)
             print(f"│   • Total Participation: {current_total_participation:,} → {new_total_participation:,}")
             print("│")
+
+            # Detailed per-stakeholder comparison
+            # Build a mapping of stakeholder names for comparison
+            current_by_name = {s.stakeholder: s for s in current_stakeholders}
+            new_by_name = {s.stakeholder: s for s in new_stakeholders}
+
+            # Find added stakeholders
+            added_names = set(new_by_name.keys()) - set(current_by_name.keys())
+            if added_names:
+                print("│   ➕ ADDED STAKEHOLDERS:")
+                for name in added_names:
+                    sh = new_by_name[name]
+                    sh_name = name.decode("utf-8", errors="ignore")
+                    pkh_display = sh.pkh.hex()[:16] + "..." if sh.pkh else "empty"
+                    claimed_display = "True" if str(sh.claimed) == "TrueData()" else "False"
+                    print(f"│      • {sh_name} - PKH: {pkh_display} - Participation: {sh.participation:,} - Claimed: {claimed_display}")
+                print("│")
+
+            # Find removed stakeholders
+            removed_names = set(current_by_name.keys()) - set(new_by_name.keys())
+            if removed_names:
+                print("│   ➖ REMOVED STAKEHOLDERS:")
+                for name in removed_names:
+                    sh = current_by_name[name]
+                    sh_name = name.decode("utf-8", errors="ignore")
+                    print(f"│      • {sh_name}")
+                print("│")
+
+            # Find modified stakeholders
+            common_names = set(current_by_name.keys()) & set(new_by_name.keys())
+            modified_count = 0
+            for name in common_names:
+                old_sh = current_by_name[name]
+                new_sh = new_by_name[name]
+
+                # Check if any field changed
+                has_changes = (
+                    old_sh.pkh != new_sh.pkh
+                    or old_sh.participation != new_sh.participation
+                    or str(old_sh.claimed) != str(new_sh.claimed)
+                )
+
+                if has_changes:
+                    if modified_count == 0:
+                        print("│   🔄 MODIFIED STAKEHOLDERS:")
+                    modified_count += 1
+
+                    sh_name = name.decode("utf-8", errors="ignore")
+                    print(f"│      • {sh_name}:")
+
+                    if old_sh.pkh != new_sh.pkh:
+                        old_pkh = old_sh.pkh.hex()[:16] + "..." if old_sh.pkh else "empty"
+                        new_pkh = new_sh.pkh.hex()[:16] + "..." if new_sh.pkh else "empty"
+                        print(f"│         - PKH: {old_pkh} → {new_pkh}")
+
+                    if old_sh.participation != new_sh.participation:
+                        print(f"│         - Participation: {old_sh.participation:,} → {new_sh.participation:,}")
+
+                    if str(old_sh.claimed) != str(new_sh.claimed):
+                        old_claimed = "True" if str(old_sh.claimed) == "TrueData()" else "False"
+                        new_claimed = "True" if str(new_sh.claimed) == "TrueData()" else "False"
+                        print(f"│         - Claimed: {old_claimed} → {new_claimed}")
+
+            if modified_count > 0:
+                print("│")
+            elif not added_names and not removed_names:
+                print("│   ℹ No individual stakeholder changes detected")
+                print("│")
 
         # Certification Changes
         if "certifications" in accumulated_changes:
@@ -2911,34 +3553,37 @@ class CardanoCLI:
         # Get current stakeholders list (start with existing) - use deep copy to avoid reference issues
         new_stakeholders = copy.deepcopy(list(current_datum.stakeholders))
 
-        # For batch mode, show a simplified direct action menu
-        print("│ STAKEHOLDER OPERATIONS:")
-        print("│ 1. Add New Stakeholder")
-        print("│ 2. Edit Existing Stakeholder")
-        print("│ 3. Remove Stakeholder")
-        print("│ 4. View Current List")
-        print("│ 0. Done with Stakeholder Changes")
+        # Loop to allow multiple operations on stakeholders
+        while True:
+            # For batch mode, show a simplified direct action menu
+            print("│")
+            print("│ STAKEHOLDER OPERATIONS:")
+            print("│ 1. Add New Stakeholder")
+            print("│ 2. Edit Existing Stakeholder")
+            print("│ 3. Remove Stakeholder")
+            print("│ 4. View Current List")
+            print("│ 0. Done with Stakeholder Changes")
 
-        try:
-            choice = self.menu.get_input("Select stakeholder operation (0-4)")
-            choice_num = int(choice)
+            try:
+                choice = self.menu.get_input("Select stakeholder operation (0-4)")
+                choice_num = int(choice)
 
-            if choice_num == 0:
-                pass  # Skip changes
-            elif choice_num == 1:
-                self.add_stakeholder_to_list(new_stakeholders)
-            elif choice_num == 2:
-                self.edit_stakeholder_in_list(new_stakeholders)
-            elif choice_num == 3:
-                self.remove_stakeholder_from_list(new_stakeholders)
-            elif choice_num == 4:
-                self.display_stakeholder_list(new_stakeholders)
-                input("Press Enter to continue...")
-            else:
-                self.menu.print_error("Invalid option")
+                if choice_num == 0:
+                    break  # Exit loop when done
+                elif choice_num == 1:
+                    self.add_stakeholder_to_list(new_stakeholders)
+                elif choice_num == 2:
+                    self.edit_stakeholder_in_list(new_stakeholders)
+                elif choice_num == 3:
+                    self.remove_stakeholder_from_list(new_stakeholders)
+                elif choice_num == 4:
+                    self.display_stakeholder_list(new_stakeholders)
+                    input("Press Enter to continue...")
+                else:
+                    self.menu.print_error("Invalid option")
 
-        except ValueError:
-            self.menu.print_error("Invalid input - please enter a number")
+            except ValueError:
+                self.menu.print_error("Invalid input - please enter a number")
 
         # Validate total participation equals total supply
         if new_stakeholders:
@@ -3611,10 +4256,13 @@ class CardanoCLI:
             self.menu.print_menu_option("16", "Query Contract Datum", "🔍")
             self.menu.print_menu_option("17", "Delete Empty Contract", "🗑")
             self.menu.print_menu_option("18", "Delete Grey Tokens Only", "🧹")
+            self.menu.print_menu_option("19", "Cancel Grey Token Sale", "❌")
+            self.menu.print_menu_option("20", "Update Grey Token Sale Price", "💲")
+            self.menu.print_menu_option("21", "Buy Grey Tokens", "💰")
             self.menu.print_menu_option("0", "Back to Main Menu")
             self.menu.print_footer()
 
-            choice = self.menu.get_input("Select an option (0-18)")
+            choice = self.menu.get_input("Select an option (0-21)")
 
             if choice == "0":
                 self.menu.print_info("Returning to main menu...")
@@ -3694,6 +4342,12 @@ class CardanoCLI:
                 self.delete_empty_contract_menu()
             elif choice == "18":
                 self.delete_grey_tokens_menu()
+            elif choice == "19":
+                self.cancel_grey_sale_menu()
+            elif choice == "20":
+                self.update_grey_sale_price_menu()
+            elif choice == "21":
+                self.buy_grey_tokens_menu()
             else:
                 self.menu.print_error("Invalid option. Please try again.")
 
@@ -3982,7 +4636,12 @@ class CardanoCLI:
 
         self.menu.print_section("AVAILABLE CONTRACTS TO QUERY")
         for i, contract_name in enumerate(queryable_contracts, 1):
-            contract_type = "Protocol" if contract_name == "protocol" else "Project"
+            if contract_name == "protocol":
+                contract_type = "Protocol"
+            elif contract_name.endswith("_investor"):
+                contract_type = "Investor"
+            else:
+                contract_type = "Project"
             print(f"│ {i}. {contract_name.upper()} ({contract_type})")
 
         print()
@@ -4104,6 +4763,25 @@ class CardanoCLI:
                                 print(f"│")
                     else:
                         print(f"│   (none)")
+
+                elif result["contract_type"] == "investor":
+                    self.menu.print_section("INVESTOR DATUM")
+                    datum = result["datum"]
+
+                    # Seller info
+                    print(f"│ Seller PKH: {datum['seller_pkh']}")
+                    print()
+
+                    # Grey token sale info
+                    print(f"│ GREY TOKEN SALE:")
+                    print(f"│   Tokens Available: {datum['grey_token_amount']:,}")
+
+                    # Price with calculation
+                    price = datum["price_per_token"]["price"]
+                    precision = datum["price_per_token"]["precision"]
+                    actual_price = price / (10**precision)
+                    print(f"│   Price per Token: {price} / 10^{precision} = {actual_price} USDA")
+                    print(f"│   Min Purchase: {datum['min_purchase_amount']:,} tokens")
 
                 self.menu.print_footer()
                 self.menu.print_success("✓ Datum query completed successfully")
@@ -4364,26 +5042,14 @@ class CardanoCLI:
 
         if stakeholder_pkh.strip():
             pkh_bytes = bytes.fromhex(stakeholder_pkh)
-            # try:
-            #     if len(pkh_bytes) != 28:
-            #         raise ValueError("PKH must be exactly 28 bytes (56 hex chars)")
-            # except ValueError as e:
-            #     self.menu.print_error(f"Invalid PKH: {e}")
-            #     return
+
         else:
-            # Empty PKH is allowed (e.g., for "investor" stakeholders)
             pkh_bytes = b""
 
         participation = self.menu.get_input("Enter participation amount (lovelace)")
         participation_amount = int(participation)
-        # try:
-        #     if participation_amount <= 0:
-        #         raise ValueError("Participation must be positive")
-        # except ValueError as e:
-        #     self.menu.print_error(f"Invalid participation: {e}")
-        #     return
 
-        stakeholder_claimed = TrueData()
+        stakeholder_claimed = FalseData()
 
         new_stakeholder = StakeHolderParticipation(
             stakeholder=stakeholder_name.encode("utf-8"),

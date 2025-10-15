@@ -1,0 +1,107 @@
+site_name: Terrasacha Contracts
+site_description: Cardano smart contracts for carbon credit tokens and NFTs built with OpShin
+site_author: larestrepo
+site_url: https://suanblockchain.github.io/terrasacha-contracts/
+
+repo_name: SuanBlockchain/terrasacha-contracts
+repo_url: https://github.com/SuanBlockchain/terrasacha-contracts
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Light mode
+    - scheme: default
+      primary: green
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Dark mode
+    - scheme: slate
+      primary: green
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quickstart.md
+      - Development: getting-started/development.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Validators: architecture/validators.md
+      - Minting Policies: architecture/minting-policies.md
+      - Types & Datums: architecture/types.md
+  - Contracts:
+      - Protocol Validator: contracts/protocol-validator.md
+      - Protocol NFTs: contracts/protocol-nfts.md
+      - Contract Details: contracts/details.md
+      - Validations: contracts/validations.md
+  - API Reference:
+      - Validators: api/validators.md
+      - Minting Policies: api/minting-policies.md
+      - Types: api/types.md
+      - Utilities: api/utilities.md
+  - Testing:
+      - Overview: testing/overview.md
+      - Running Tests: testing/running-tests.md
+  - Development:
+      - Build System: development/build-system.md
+      - CLI Tools: development/cli-tools.md
+      - Claude Guide: development/claude-guide.md
+      - Contributing: development/contributing.md
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - admonition
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - def_list
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      enable_creation_date: true
+  - minify:
+      minify_html: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/SuanBlockchain/terrasacha-contracts
+  version:
+    provider: mike
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; 2024 Terrasacha

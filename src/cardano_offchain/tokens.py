@@ -18,8 +18,11 @@ from terrasacha_contracts.minting_policies.protocol_nfts import Burn, Mint
 from terrasacha_contracts.util import (
     PREFIX_REFERENCE_NFT,
     PREFIX_USER_NFT,
+    BuyGrey,
+    CancelSale,
     DatumInvestor,
     PriceWithPrecision,
+    UpdatePrice,
     unique_token_name,
 )
 from terrasacha_contracts.validators.project import (
@@ -1271,10 +1274,13 @@ class TokenOperations:
             except Exception as e:
                 return {"success": False, "error": f"Failed to get project datum: {e}"}
 
-            # Dynamically compile grey minting contract with the project PolicyID
-            grey_minting_contract = self.contract_manager.create_minting_contract("grey", project_minting_policy_id)
+            # Get pre-compiled grey minting contract from database
+            grey_minting_contract = self.contract_manager.get_grey_token_contract(project_contract_name)
             if not grey_minting_contract:
-                return {"success": False, "error": "Failed to compile grey minting contract"}
+                return {
+                    "success": False,
+                    "error": f"Grey token contract for '{project_contract_name}' not found. Please compile grey contract first using CLI option 'Compile Grey Contract'.",
+                }
 
             grey_minting_script = grey_minting_contract.cbor
             grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
@@ -1283,8 +1289,6 @@ class TokenOperations:
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
 
-            for u in payment_utxos:
-                builder.add_input(u)
 
             # Select redeemer based on minting mode
             if minting_mode == "free":
@@ -1325,6 +1329,8 @@ class TokenOperations:
                 # For local scripts, include the script
                 builder.add_script_input(project_utxo_to_spend, script=project_info["cbor"], redeemer=project_redeemer)
 
+            for u in payment_utxos:
+                builder.add_input(u)
             # Add minting script for grey tokens
             builder.add_minting_script(
                 script=grey_minting_script,
@@ -1445,6 +1451,7 @@ class TokenOperations:
 
             # Build and sign transaction
             signing_key = self.wallet.get_signing_key(0)
+            print(self.wallet.get_payment_verification_key_hash().hex())
             signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
 
             return {
@@ -1506,10 +1513,13 @@ class TokenOperations:
 
             grey_token_name = project_datum.project_token.token_name
 
-            # Dynamically compile grey minting contract with the project PolicyID
-            grey_minting_contract = self.contract_manager.create_minting_contract("grey", project_minting_policy_id)
+            # Get pre-compiled grey minting contract from database
+            grey_minting_contract = self.contract_manager.get_grey_token_contract(project_contract_name)
             if not grey_minting_contract:
-                return {"success": False, "error": "Failed to compile grey minting contract"}
+                return {
+                    "success": False,
+                    "error": f"Grey token contract for '{project_contract_name}' not found. Please compile grey contract first using CLI option 'Compile Grey Contract'.",
+                }
 
             grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_minting_contract.policy_id))
 
@@ -1550,22 +1560,34 @@ class TokenOperations:
                 if selected_tokens >= burn_quantity:
                     break
 
-            # Find additional UTXOs for fees (non-token UTXOs)
-            fee_utxos = [
-                utxo for utxo in user_utxos if utxo not in selected_utxos and utxo.output.amount.coin >= 2000000
-            ]
-            if not fee_utxos:
-                return {"success": False, "error": "No suitable UTXO found for transaction fees"}
+            # Check if selected token UTXOs have enough lovelace for fees
+            total_lovelace_in_selected = sum(utxo.output.amount.coin for utxo in selected_utxos)
+            MIN_FEE_ESTIMATE = 2_000_000  # 2 ADA buffer for transaction fees
 
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
 
-            # Add selected UTXOs as inputs
+            # Add selected token UTXOs as inputs
             for utxo in selected_utxos:
                 builder.add_input(utxo)
 
-            # Add fee UTXO
-            builder.add_input(fee_utxos[0])
+            # Only add additional UTXOs if selected ones don't have enough lovelace for fees
+            if total_lovelace_in_selected < MIN_FEE_ESTIMATE:
+                # Find UTXOs not yet selected that have lovelace
+                additional_fee_utxos = [
+                    utxo
+                    for utxo in user_utxos
+                    if utxo not in selected_utxos and utxo.output.amount.coin >= 1_000_000
+                ]
+
+                if additional_fee_utxos:
+                    # Add one more UTXO for fees
+                    builder.add_input(additional_fee_utxos[0])
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Insufficient lovelace for fees. Have {total_lovelace_in_selected / 1_000_000:.2f} ADA, need ~{MIN_FEE_ESTIMATE / 1_000_000:.2f} ADA",
+                    }
 
             # Create negative mint value (burning)
             grey_asset = pc.Asset({pc.AssetName(grey_token_name): -burn_quantity})
@@ -1615,6 +1637,291 @@ class TokenOperations:
 
         except Exception as e:
             return {"success": False, "error": f"Grey token burning transaction creation failed: {e}"}
+
+    def cancel_grey_sale(
+        self, project_name: Optional[str] = None, destination_address: Optional[pc.Address] = None
+    ) -> Dict[str, Any]:
+        """
+        Cancel grey token sale by consuming investor contract UTXO and returning tokens to seller.
+        Uses CancelSale redeemer which only requires seller signature.
+
+        Args:
+            project_name: Optional project name to find associated investor contract
+            destination_address: Optional destination address for returned tokens (defaults to seller's wallet)
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+            # Get project contract to determine investor contract name
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                return {"success": False, "error": "Project contract not found"}
+
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
+
+            # Get investor contract
+            investor_contract_name = f"{project_contract_name}_investor"
+            investor_contract = self.contract_manager.get_contract(investor_contract_name)
+            if not investor_contract:
+                return {
+                    "success": False,
+                    "error": f"Investor contract '{investor_contract_name}' not found. Compile contracts first.",
+                }
+
+            investor_address = investor_contract.testnet_addr
+
+            # Find investor UTXO containing grey tokens
+            investor_utxos = self.context.utxos(investor_address)
+            if not investor_utxos:
+                return {"success": False, "error": "No investor UTXOs found - no active sale to cancel"}
+
+            # Get grey token contract to identify grey tokens
+            grey_contract = self.contract_manager.get_grey_token_contract(project_contract_name)
+            if not grey_contract:
+                return {"success": False, "error": "Grey token contract not found"}
+
+            grey_policy_id = pc.ScriptHash(bytes.fromhex(grey_contract.policy_id))
+
+            # Find investor UTXO with grey tokens
+            investor_utxo_to_spend = None
+            for utxo in investor_utxos:
+                if grey_policy_id in utxo.output.amount.multi_asset:
+                    investor_utxo_to_spend = utxo
+                    break
+
+            if not investor_utxo_to_spend:
+                return {"success": False, "error": "No investor UTXO found with grey tokens"}
+
+            # Extract datum from investor UTXO
+            if not investor_utxo_to_spend.output.datum:
+                return {"success": False, "error": "Investor UTXO missing datum"}
+
+            try:
+                investor_datum = DatumInvestor.from_cbor(investor_utxo_to_spend.output.datum.cbor)
+            except Exception as e:
+                return {"success": False, "error": f"Failed to parse investor datum: {e}"}
+
+            # Verify seller PKH matches wallet
+            seller_pkh = self.wallet.get_payment_verification_key_hash()
+            if seller_pkh != investor_datum.seller_pkh:
+                return {
+                    "success": False,
+                    "error": f"Seller PKH mismatch. Wallet: {seller_pkh.hex()}, Datum: {investor_datum.seller_pkh.hex()}",
+                }
+
+            # Get grey token info from UTXO
+            grey_assets = investor_utxo_to_spend.output.amount.multi_asset[grey_policy_id]
+            grey_token_name = list(grey_assets.keys())[0]
+            grey_token_amount = grey_assets[grey_token_name]
+
+            # Set destination address (default to seller's wallet)
+            if destination_address is None:
+                destination_address = self.wallet.get_address(0)
+
+            # Get wallet UTXOs for transaction fees
+            from_address = self.wallet.get_address(0)
+            wallet_utxos = self.context.utxos(from_address)
+            if not wallet_utxos:
+                return {"success": False, "error": "No wallet UTXOs found for transaction fees"}
+
+            # Calculate input indices for redeemer
+            all_inputs_utxos = self.transactions.sorted_utxos(wallet_utxos + [investor_utxo_to_spend])
+            investor_input_index = all_inputs_utxos.index(investor_utxo_to_spend)
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+            # Add wallet UTXOs for fees
+            for utxo in wallet_utxos:
+                builder.add_input(utxo)
+
+            # Add investor UTXO as script input with CancelSale redeemer
+            cancel_redeemer = pc.Redeemer(CancelSale(investor_input_index=investor_input_index))
+            builder.add_script_input(investor_utxo_to_spend, script=investor_contract.cbor, redeemer=cancel_redeemer)
+
+            # Add output to return grey tokens to destination address
+            grey_multi_asset = pc.MultiAsset({grey_policy_id: pc.Asset({grey_token_name: grey_token_amount})})
+            token_value = pc.Value(0, grey_multi_asset)
+            min_val_tokens = pc.min_lovelace(
+                self.context, output=pc.TransactionOutput(destination_address, token_value, datum=None)
+            )
+            token_output = pc.TransactionOutput(
+                address=destination_address,
+                amount=pc.Value(coin=min_val_tokens, multi_asset=grey_multi_asset),
+                datum=None,
+            )
+            builder.add_output(token_output)
+
+            # Build and sign transaction (seller must sign)
+            signing_key = self.wallet.get_signing_key(0)
+            print(self.wallet.get_payment_verification_key_hash().hex())
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "grey_token_name": grey_token_name.payload.hex(),
+                "grey_policy_id": grey_contract.policy_id,
+                "returned_tokens": grey_token_amount,
+                "destination_address": str(destination_address),
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Grey token sale cancellation failed: {e}"}
+
+    def update_grey_sale_price(
+        self, project_name: Optional[str] = None, new_price: int = None, new_precision: int = None
+    ) -> Dict[str, Any]:
+        """
+        Update grey token sale price in investor contract.
+        Contract validates seller signature on-chain - no off-chain PKH validation.
+
+        Args:
+            project_name: Optional project name to find associated investor contract
+            new_price: New price as integer (must be > 0)
+            new_precision: New precision/decimals (must be >= 0)
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+            # Validate inputs
+            if new_price is None or new_price <= 0:
+                return {"success": False, "error": "New price must be provided and greater than 0"}
+            if new_precision is None or new_precision < 0:
+                return {"success": False, "error": "New precision must be provided and non-negative"}
+
+            # Get project contract to determine investor contract name
+            project_contract = self.contract_manager.get_project_contract(project_name)
+            if not project_contract:
+                return {"success": False, "error": "Project contract not found"}
+
+            project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            if not project_contract_name:
+                return {"success": False, "error": "Could not determine project contract name"}
+
+            # Get investor contract
+            investor_contract_name = f"{project_contract_name}_investor"
+            investor_contract = self.contract_manager.get_contract(investor_contract_name)
+            if not investor_contract:
+                return {
+                    "success": False,
+                    "error": f"Investor contract '{investor_contract_name}' not found. Compile contracts first.",
+                }
+
+            investor_address = investor_contract.testnet_addr
+
+            # Find investor UTXO containing grey tokens
+            investor_utxos = self.context.utxos(investor_address)
+            if not investor_utxos:
+                return {"success": False, "error": "No investor UTXOs found - no active sale to update"}
+
+            # Get grey token contract to identify grey tokens
+            grey_contract = self.contract_manager.get_grey_token_contract(project_contract_name)
+            if not grey_contract:
+                return {"success": False, "error": "Grey token contract not found"}
+
+            grey_policy_id = pc.ScriptHash(bytes.fromhex(grey_contract.policy_id))
+
+            # Find investor UTXO with grey tokens
+            investor_utxo_to_spend = None
+            for utxo in investor_utxos:
+                if grey_policy_id in utxo.output.amount.multi_asset:
+                    investor_utxo_to_spend = utxo
+                    break
+
+            if not investor_utxo_to_spend:
+                return {"success": False, "error": "No investor UTXO found with grey tokens"}
+
+            # Extract datum from investor UTXO (read-only, no validation)
+            if not investor_utxo_to_spend.output.datum:
+                return {"success": False, "error": "Investor UTXO missing datum"}
+
+            try:
+                investor_datum = DatumInvestor.from_cbor(investor_utxo_to_spend.output.datum.cbor)
+            except Exception as e:
+                return {"success": False, "error": f"Failed to parse investor datum: {e}"}
+
+            # Get grey token info from UTXO
+            grey_assets = investor_utxo_to_spend.output.amount.multi_asset[grey_policy_id]
+            grey_token_name = list(grey_assets.keys())[0]
+            grey_token_amount = grey_assets[grey_token_name]
+
+            # Create new datum with updated price (keep all other fields immutable)
+            new_price_with_precision = PriceWithPrecision(price=new_price, precision=new_precision)
+            new_investor_datum = DatumInvestor(
+                seller_pkh=investor_datum.seller_pkh,  # Immutable
+                grey_token_amount=investor_datum.grey_token_amount,  # Immutable
+                price_per_token=new_price_with_precision,  # Updated
+                min_purchase_amount=investor_datum.min_purchase_amount,  # Immutable
+            )
+
+            # Get wallet UTXOs for transaction fees
+            from_address = self.wallet.get_address(0)
+            wallet_utxos = self.context.utxos(from_address)
+            if not wallet_utxos:
+                return {"success": False, "error": "No wallet UTXOs found for transaction fees"}
+
+            # Calculate input indices for redeemer
+            all_inputs_utxos = self.transactions.sorted_utxos(wallet_utxos + [investor_utxo_to_spend])
+            investor_input_index = all_inputs_utxos.index(investor_utxo_to_spend)
+
+            # Calculate output index (investor output will be first output)
+            investor_output_index = 0
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+            # Add wallet UTXOs for fees
+            for utxo in wallet_utxos:
+                builder.add_input(utxo)
+
+            # Add investor UTXO as script input with UpdatePrice redeemer
+            update_redeemer = pc.Redeemer(
+                UpdatePrice(
+                    new_price_per_token=new_price_with_precision,
+                    investor_input_index=investor_input_index,
+                    investor_output_index=investor_output_index,
+                )
+            )
+            builder.add_script_input(investor_utxo_to_spend, script=investor_contract.cbor, redeemer=update_redeemer)
+
+            # Add investor output with updated datum and same grey tokens
+            grey_multi_asset = pc.MultiAsset({grey_policy_id: pc.Asset({grey_token_name: grey_token_amount})})
+            investor_value = pc.Value(0, grey_multi_asset)
+            min_val_investor = pc.min_lovelace(
+                self.context, output=pc.TransactionOutput(investor_address, investor_value, datum=new_investor_datum)
+            )
+            investor_output = pc.TransactionOutput(
+                address=investor_address,
+                amount=pc.Value(coin=min_val_investor, multi_asset=grey_multi_asset),
+                datum=new_investor_datum,
+            )
+            builder.add_output(investor_output)
+
+            # Build and sign transaction (contract validates seller signature)
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "grey_token_name": grey_token_name.payload.hex(),
+                "grey_policy_id": grey_contract.policy_id,
+                "old_price": investor_datum.price_per_token.price,
+                "old_precision": investor_datum.price_per_token.precision,
+                "new_price": new_price,
+                "new_precision": new_precision,
+                "token_amount": grey_token_amount,
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Grey token sale price update failed: {e}"}
 
     def create_usda_mint_transaction(self, amount: int = 1000) -> Dict[str, Any]:
         """
@@ -1734,3 +2041,232 @@ class TokenOperations:
 
         except Exception as e:
             return {"success": False, "error": f"USDA burn transaction creation failed: {e}"}
+
+    def buy_grey_tokens(
+        self, project_name: Optional[str] = None, amount: int = 1, buyer_address: Optional[pc.Address] = None
+    ) -> Dict[str, Any]:
+        """
+        Buy grey tokens from investor contract using USDATEST tokens.
+        All validations are performed on-chain by the investor contract.
+
+        Args:
+            project_name: Optional project name to find associated investor contract
+            amount: Amount of grey tokens to buy
+            buyer_address: Optional buyer address (defaults to wallet address)
+
+        Returns:
+            A dictionary containing the transaction details or an error message
+        """
+        try:
+            # Get project contract to determine investor contract name
+            # project_contract = self.contract_manager.get_project_contract(project_name)
+            # if not project_contract:
+            #     return {"success": False, "error": "Project contract not found"}
+
+            # project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+            # if not project_contract_name:
+            #     return {"success": False, "error": "Could not determine project contract name"}
+
+            # Get investor contract
+            investor_contract_name = f"{project_name}_investor"
+            investor_contract = self.contract_manager.get_contract(investor_contract_name)
+            if not investor_contract:
+                return {
+                    "success": False,
+                    "error": f"Investor contract '{investor_contract_name}' not found. Compile contracts first.",
+                }
+
+            investor_address = investor_contract.testnet_addr
+
+            # Find investor UTXO containing grey tokens
+            investor_utxos = self.context.utxos(investor_address)
+            if not investor_utxos:
+                return {"success": False, "error": "No investor UTXOs found - no active sale"}
+
+            # Get grey token contract to identify grey tokens
+            grey_contract = self.contract_manager.get_grey_token_contract(project_name)
+            if not grey_contract:
+                return {"success": False, "error": "Grey token contract not found"}
+
+            grey_policy_id = pc.ScriptHash(bytes.fromhex(grey_contract.policy_id))
+
+            # Find investor UTXO with grey tokens
+            investor_utxo_to_spend = None
+            for utxo in investor_utxos:
+                if grey_policy_id in utxo.output.amount.multi_asset:
+                    investor_utxo_to_spend = utxo
+                    break
+
+            if not investor_utxo_to_spend:
+                return {"success": False, "error": "No investor UTXO found with grey tokens"}
+
+            try:
+                investor_datum = DatumInvestor.from_cbor(investor_utxo_to_spend.output.datum.cbor)
+            except Exception as e:
+                return {"success": False, "error": f"Failed to parse investor datum: {e}"}
+
+            # Get grey token info from UTXO
+            grey_assets = investor_utxo_to_spend.output.amount.multi_asset[grey_policy_id]
+            grey_token_name = list(grey_assets.keys())[0]
+            grey_token_amount = grey_assets[grey_token_name]
+
+            # Get protocol contract for reference input (to extract fee)
+            protocol_contract = self.contract_manager.get_contract("protocol")
+            if not protocol_contract:
+                return {"success": False, "error": "Protocol contract not compiled"}
+
+            protocol_address = protocol_contract.testnet_addr
+            protocol_nfts_contract = self.contract_manager.get_contract("protocol_nfts")
+            if not protocol_nfts_contract:
+                return {"success": False, "error": "Protocol NFTs contract not compiled"}
+
+            protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
+
+            # Find protocol UTXO for reference input
+            protocol_utxos = self.context.utxos(protocol_address)
+            if not protocol_utxos:
+                return {"success": False, "error": "No protocol UTXOs found"}
+
+            protocol_utxo_to_spend = self.transactions.find_utxo_by_policy_id(
+                protocol_utxos, protocol_minting_policy_id
+            )
+            if not protocol_utxo_to_spend:
+                return {"success": False, "error": "No protocol UTXO found with specified policy ID"}
+
+            # Get protocol fee from protocol datum
+            try:
+                protocol_datum = DatumProtocol.from_cbor(protocol_utxo_to_spend.output.datum.cbor)
+                protocol_fee = protocol_datum.protocol_fee
+            except Exception as e:
+                return {"success": False, "error": f"Failed to parse protocol datum: {e}"}
+
+            # Calculate USDA payment
+            total_payment_raw = amount * investor_datum.price_per_token.price
+            divisor = 10 ** investor_datum.price_per_token.precision
+            total_payment = total_payment_raw // divisor
+
+            # On-chain contract directly subtracts protocol_fee from total_payment (both in USDA)
+            # So protocol_fee must be in USDA units, not lovelace
+            # seller_payment = total_payment - protocol_fee
+            seller_payment = total_payment
+
+            # Get buyer wallet info
+            from_address = self.wallet.get_address(0)
+            buyer_pkh = self.wallet.get_payment_verification_key_hash()
+
+            if buyer_address is None:
+                buyer_address = from_address
+
+            # Get wallet UTXOs for transaction fees and USDA payment
+            wallet_utxos = self.context.utxos(from_address)
+            if not wallet_utxos:
+                return {"success": False, "error": "No wallet UTXOs found for transaction"}
+
+            # Calculate remaining tokens after purchase
+            remaining_tokens = grey_token_amount - amount
+
+            # Calculate input indices for redeemer
+            all_inputs_utxos = self.transactions.sorted_utxos(wallet_utxos + [investor_utxo_to_spend])
+            investor_input_index = all_inputs_utxos.index(investor_utxo_to_spend)
+
+            # Calculate protocol reference index (only protocol UTXO in reference inputs)
+            protocol_ref_index = 0
+
+            # Create transaction builder
+            builder = pc.TransactionBuilder(self.context)
+
+
+            # Add protocol UTXO as reference input (for fee extraction)
+            builder.reference_inputs.add(protocol_utxo_to_spend)
+
+            # Add investor UTXO as script input with BuyGrey redeemer
+            buy_redeemer = pc.Redeemer(
+                BuyGrey(
+                    buyer_pkh=buyer_pkh,
+                    amount=amount,
+                    investor_input_index=investor_input_index,
+                    protocol_ref_index=protocol_ref_index,
+                    investor_output_index=0,
+                )
+            )
+            builder.add_script_input(investor_utxo_to_spend, script=investor_contract.cbor, redeemer=buy_redeemer)
+            # Add wallet UTXOs for fees and USDA payment
+            for utxo in wallet_utxos:
+                builder.add_input(utxo)
+
+                        # If tokens remain, add investor contract continuation output
+            if remaining_tokens > 0:
+                # Create updated investor datum with reduced token amount
+                new_investor_datum = DatumInvestor(
+                    seller_pkh=investor_datum.seller_pkh,
+                    grey_token_amount=remaining_tokens,
+                    price_per_token=investor_datum.price_per_token,
+                    min_purchase_amount=investor_datum.min_purchase_amount,
+                )
+
+                # Add investor output with remaining grey tokens
+                remaining_grey_multi_asset = pc.MultiAsset(
+                    {grey_policy_id: pc.Asset({grey_token_name: remaining_tokens})}
+                )
+                investor_value = pc.Value(0, remaining_grey_multi_asset)
+                min_val_investor = pc.min_lovelace(
+                    self.context,
+                    output=pc.TransactionOutput(investor_address, investor_value, datum=new_investor_datum),
+                )
+                investor_output = pc.TransactionOutput(
+                    address=investor_address,
+                    amount=pc.Value(coin=min_val_investor, multi_asset=remaining_grey_multi_asset),
+                    datum=new_investor_datum,
+                )
+                builder.add_output(investor_output)
+
+            # Get USDA policy ID
+            usda_policy_id = pc.ScriptHash(bytes.fromhex("56a9c69f1d33a7d56d913d820153b7e2e7cf0fa8dc2836ccb1d9caec"))
+            usda_token_name = b"USDATEST"
+
+            # Add output: Grey tokens to buyer
+            grey_multi_asset = pc.MultiAsset({grey_policy_id: pc.Asset({grey_token_name: amount})})
+            grey_value = pc.Value(0, grey_multi_asset)
+            min_val_grey = pc.min_lovelace(
+                self.context, output=pc.TransactionOutput(buyer_address, grey_value, datum=None)
+            )
+            grey_output = pc.TransactionOutput(
+                address=buyer_address, amount=pc.Value(coin=min_val_grey, multi_asset=grey_multi_asset), datum=None
+            )
+            builder.add_output(grey_output)
+
+            # Add output: USDA payment to seller
+            seller_address = pc.Address(
+                payment_part=pc.VerificationKeyHash(investor_datum.seller_pkh), network=self.chain_context.cardano_network
+            )
+            usda_multi_asset = pc.MultiAsset({usda_policy_id: pc.Asset({pc.AssetName(usda_token_name): seller_payment})})
+            usda_value = pc.Value(0, usda_multi_asset)
+            min_val_usda = pc.min_lovelace(
+                self.context, output=pc.TransactionOutput(seller_address, usda_value, datum=None)
+            )
+            usda_output = pc.TransactionOutput(
+                address=seller_address, amount=pc.Value(coin=min_val_usda, multi_asset=usda_multi_asset), datum=None
+            )
+            builder.add_output(usda_output)
+
+
+            # Build and sign transaction
+            signing_key = self.wallet.get_signing_key(0)
+            signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
+
+            return {
+                "success": True,
+                "transaction": signed_tx,
+                "tx_id": signed_tx.id.payload.hex(),
+                "grey_token_name": grey_token_name.payload.hex(),
+                "grey_policy_id": grey_contract.policy_id,
+                "amount_purchased": amount,
+                "total_payment": total_payment,
+                "seller_payment": seller_payment,
+                "protocol_fee": protocol_fee,
+                "remaining_tokens": remaining_tokens,
+                "buyer_address": str(buyer_address),
+            }
+
+        except Exception as e:
+            return {"success": False, "error": f"Grey token purchase failed: {e}"}

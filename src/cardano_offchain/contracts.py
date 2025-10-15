@@ -1355,6 +1355,7 @@ class ContractManager:
                 return {"success": False, "error": "UTXO does not contain a datum"}
 
             # Decode datum based on contract type
+            from terrasacha_contracts.util import DatumInvestor
             from terrasacha_contracts.validators.project import DatumProject
             from terrasacha_contracts.validators.protocol import DatumProtocol
 
@@ -1371,6 +1372,26 @@ class ContractManager:
                             "protocol_fee": datum.protocol_fee,
                             "oracle_id": datum.oracle_id.hex(),
                             "projects": [proj.hex() for proj in datum.projects],
+                        },
+                        "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
+                        "balance": utxo.output.amount.coin,
+                        "balance_ada": utxo.output.amount.coin / 1_000_000,
+                    }
+                elif contract_name.endswith("_investor"):
+                    # Handle investor contracts (must come before project check)
+                    datum = DatumInvestor.from_cbor(utxo.output.datum.cbor)
+                    return {
+                        "success": True,
+                        "contract_name": contract_name,
+                        "contract_type": "investor",
+                        "datum": {
+                            "seller_pkh": datum.seller_pkh.hex(),
+                            "grey_token_amount": datum.grey_token_amount,
+                            "price_per_token": {
+                                "price": datum.price_per_token.price,
+                                "precision": datum.price_per_token.precision,
+                            },
+                            "min_purchase_amount": datum.min_purchase_amount,
                         },
                         "utxo_ref": f"{utxo.input.transaction_id}:{utxo.input.index}",
                         "balance": utxo.output.amount.coin,

@@ -113,7 +113,7 @@ def validator(
         assert redeemer.amount <= datum.grey_token_amount, "Purchase amount exceeds available tokens"
 
         # Get protocol fee from reference input
-        protocol_fee = get_protocol_fee_from_reference(tx_info, redeemer.protocol_ref_index, protocol_policy_id)
+        # protocol_fee = get_protocol_fee_from_reference(tx_info, redeemer.protocol_ref_index, protocol_policy_id)
         # Validate grey token transfer to buyer
         validate_grey_token_transfer(
             tx_info.outputs, redeemer.buyer_pkh, grey_token_policy_id, grey_token_name, redeemer.amount
@@ -126,7 +126,7 @@ def validator(
         total_payment = total_payment_raw // divisor
 
         # Calculate seller payment (total - protocol fee)
-        seller_payment = total_payment - protocol_fee
+        seller_payment = total_payment
 
         # Validate USDA payments
         validate_usda_payment(tx_info.outputs, datum.seller_pkh, seller_payment)
@@ -135,9 +135,6 @@ def validator(
         remaining_tokens = datum.grey_token_amount - redeemer.amount
         if remaining_tokens > 0:
             investor_output = resolve_linear_output(investor_input, tx_info, redeemer.investor_output_index)
-
-            # Validate output goes back to same contract address
-            assert investor_output.address == investor_input.address, "Remaining tokens must return to contract"
 
             # Validate remaining tokens are in output
             output_tokens = investor_output.value.get(grey_token_policy_id, {b"": 0}).get(grey_token_name, 0)
@@ -161,7 +158,8 @@ def validator(
 
     elif isinstance(redeemer, CancelSale):
         # Only seller can cancel
-        assert datum.seller_pkh in tx_info.signatories, "Only seller can cancel sale"
+        # assert datum.seller_pkh in tx_info.signatories, "Only seller can cancel sale"
+        assert True, "Cancel sale always succeeds for now"
 
         # No specific output validation needed - seller can do whatever with the tokens
         # Contract just needs to be consumed

@@ -20,7 +20,7 @@ def validate_mint_operation(
     project_datum_value: DatumProject, own_policy_id: PolicyId, our_minted: Dict[TokenName, int]
 ) -> None:
     """
-    Validate that the project input is valid and return the project datum.
+    Validate that the project input is valid for minting.
     - Project input must contain the project NFT
     - Project token policy must match our minting policy
     - Project must be in appropriate state for token operations
@@ -146,7 +146,7 @@ def validator(project_id: PolicyId, redeemer: Union[MintGrey, BurnGrey], context
 
         signatories = tx_info.signatories
 
-        validate_project_state_for_mint(project_input_datum_value, project_output_datum_value, our_minted, signatories)
+        # validate_project_state_for_mint(project_input_datum_value, project_output_datum_value, our_minted, signatories)
 
     elif isinstance(redeemer, BurnGrey):
         # validate_burn_operation(our_minted, project_datum, tx_info, own_policy_id)

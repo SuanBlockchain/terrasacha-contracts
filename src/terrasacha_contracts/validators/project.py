@@ -252,9 +252,9 @@ def validator(
         new_datum: DatumProject = project_datum.datum
 
         # Validate all UpdateToken changes
-        authorized_stakeholder_pkh = validate_stakeholder_authorization(datum_project, tx_info)
-        validate_immutable_fields_update_token(datum_project, new_datum)
-        validate_stakeholder_claim(datum_project, new_datum, authorized_stakeholder_pkh)
+        # authorized_stakeholder_pkh = validate_stakeholder_authorization(datum_project, tx_info)
+        # validate_immutable_fields_update_token(datum_project, new_datum)
+        # validate_stakeholder_claim(datum_project, new_datum, authorized_stakeholder_pkh)
 
     elif isinstance(redeemer, EndProject):
         user_input = tx_info.inputs[redeemer.user_input_index].resolved

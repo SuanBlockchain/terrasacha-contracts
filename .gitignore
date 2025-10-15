@@ -94,6 +94,9 @@ test_contract.py
 # Build artifacts (optional - you might want to commit these)
 # artifacts/
 
+# MkDocs
+site/
+
 # Logs
 *.log
 logs/
