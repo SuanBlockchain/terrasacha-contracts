@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse
 
 from api.config import settings
 from api.utils.security import generate_api_key
+from api.routers.api_v1.api import api_router
 
 
 # from db.dblib import engine
@@ -19,7 +20,7 @@ app = FastAPI(
 root_router = APIRouter()
 
 app.include_router(root_router)
-# app.include_router(api_router, prefix=settings.API_V1_STR)
+app.include_router(api_router, prefix=settings.API_V1_STR)
 
 
 @app.get("/")
@@ -87,10 +88,3 @@ async def root():
 #         session.commit()
 #         session.refresh(db_hero)
 #         return db_hero
-
-
-@app.get("/generate-api-key")
-async def get_new_api_key():
-    api_key = generate_api_key()
-
-    return {"api_key": api_key}

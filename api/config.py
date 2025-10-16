@@ -5,9 +5,14 @@ Centralized settings for the FastAPI application.
 API metadata is hardcoded, while environment-specific settings load from .env file.
 """
 
-from pydantic_settings import BaseSettings
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from api.database.connection import DatabaseSettings
+
+# Get the project root directory (one level up from api/)
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 class Settings(BaseSettings):
@@ -29,6 +34,7 @@ class Settings(BaseSettings):
         "and investment contract interactions on the Cardano blockchain."
     )
     api_version: str = "1.0.0"
+    API_V1_STR: str = "/api/v1"
 
     # Contact information
     contact_name: str = "Terrasacha"
@@ -41,10 +47,14 @@ class Settings(BaseSettings):
     environment: str = "development"  # development, staging, production
     api_port: int = 8000
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"
+    api_key_dev: str  # No default - must be set in .env
+
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"),
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
 
     @property
     def contact(self) -> dict[str, str]:
