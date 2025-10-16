@@ -1575,6 +1575,9 @@ class TokenOperations:
             # Create transaction builder
             builder = pc.TransactionBuilder(self.context)
 
+            # Add project UTXO as reference input (required by grey contract for burn validation)
+            builder.reference_inputs.add(project_utxo_to_spend)
+
             # Add selected token UTXOs as inputs
             for utxo in selected_utxos:
                 builder.add_input(utxo)
@@ -1595,12 +1598,18 @@ class TokenOperations:
                         "error": f"Insufficient lovelace for fees. Have {total_lovelace_in_selected / 1_000_000:.2f} ADA, need ~{MIN_FEE_ESTIMATE / 1_000_000:.2f} ADA",
                     }
 
+            # Calculate project reference index (project UTXO is the only reference input, so index is 0)
+            project_ref_index = 0
+
             # Create negative mint value (burning)
             grey_asset = pc.Asset({pc.AssetName(grey_token_name): -burn_quantity})
             grey_multi_asset = pc.MultiAsset({grey_minting_policy_id: grey_asset})
 
-            # Add minting script for burning with BurnGrey redeemer
-            builder.add_minting_script(script=grey_minting_contract.cbor, redeemer=pc.Redeemer(BurnGrey()))
+            # Add minting script for burning with BurnGrey redeemer (includes project reference index)
+            builder.add_minting_script(
+                script=grey_minting_contract.cbor,
+                redeemer=pc.Redeemer(BurnGrey(project_reference_index=project_ref_index)),
+            )
 
             # Set the burn amount in the transaction
             builder.mint = grey_multi_asset
@@ -2172,11 +2181,24 @@ class TokenOperations:
             if not wallet_utxos:
                 return {"success": False, "error": "No wallet UTXOs found for transaction"}
 
+            # Filter out wallet UTXOs containing grey tokens to avoid token accounting conflicts
+            # This prevents issues on subsequent purchases where the buyer already owns grey tokens
+            filtered_wallet_utxos = [
+                utxo for utxo in wallet_utxos if grey_policy_id not in utxo.output.amount.multi_asset
+            ]
+
+            if not filtered_wallet_utxos:
+                return {
+                    "success": False,
+                    "error": "No suitable wallet UTXOs found. All UTXOs contain grey tokens. "
+                    "Please consolidate UTXOs or add fresh ADA/USDA inputs.",
+                }
+
             # Calculate remaining tokens after purchase
             remaining_tokens = grey_token_amount - amount
 
             # Calculate input indices for redeemer
-            all_inputs_utxos = self.transactions.sorted_utxos(wallet_utxos + [investor_utxo_to_spend])
+            all_inputs_utxos = self.transactions.sorted_utxos(filtered_wallet_utxos + [investor_utxo_to_spend])
             investor_input_index = all_inputs_utxos.index(investor_utxo_to_spend)
 
             # Calculate protocol reference index (only protocol UTXO in reference inputs)
@@ -2199,8 +2221,8 @@ class TokenOperations:
                 )
             )
             builder.add_script_input(investor_utxo_to_spend, script=investor_contract.cbor, redeemer=buy_redeemer)
-            # Add wallet UTXOs for fees and USDA payment
-            for utxo in wallet_utxos:
+            # Add filtered wallet UTXOs for fees and USDA payment (excluding grey tokens)
+            for utxo in filtered_wallet_utxos:
                 builder.add_input(utxo)
 
                 # If tokens remain, add investor contract continuation output

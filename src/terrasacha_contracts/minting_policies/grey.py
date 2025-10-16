@@ -14,6 +14,7 @@ class MintGrey(PlutusData):
 @dataclass()
 class BurnGrey(PlutusData):
     CONSTR_ID = 1
+    project_reference_index: int
 
 
 def validate_mint_operation(
@@ -124,17 +125,17 @@ def validator(project_id: PolicyId, redeemer: Union[MintGrey, BurnGrey], context
     # Get our minted/burned tokens
     our_minted = mint_value.get(own_policy_id, {b"": 0})
     assert len(our_minted) == 1, "Must mint or burn exactly 1 token type"
+    
 
     if isinstance(redeemer, MintGrey):
-        # assert True, "Minting always succeeds for now"
+
         # Validate project reference and get datum
         project_reference_input = tx_info.inputs[redeemer.project_input_index].resolved
-
-        assert check_token_present(project_id, project_reference_input), "Project input must have the project token"
-
         project_datum = project_reference_input.datum
         assert isinstance(project_datum, SomeOutputDatum), "Project input must have a datum"
         project_input_datum_value: DatumProject = project_datum.datum
+        
+        assert check_token_present(project_id, project_reference_input), "Project input must have the project token"
 
         validate_mint_operation(project_input_datum_value, own_policy_id, our_minted)
 
@@ -146,11 +147,15 @@ def validator(project_id: PolicyId, redeemer: Union[MintGrey, BurnGrey], context
 
         signatories = tx_info.signatories
 
-        # validate_project_state_for_mint(project_input_datum_value, project_output_datum_value, our_minted, signatories)
+        validate_project_state_for_mint(project_input_datum_value, project_output_datum_value, our_minted, signatories)
 
     elif isinstance(redeemer, BurnGrey):
-        # validate_burn_operation(our_minted, project_datum, tx_info, own_policy_id)
-        assert True, "Burning always succeeds for now"
+        project_reference_input = tx_info.reference_inputs[redeemer.project_reference_index].resolved
+        project_datum = project_reference_input.datum
+        assert isinstance(project_datum, SomeOutputDatum), "Project input must have a datum"
+        project_input_datum_value: DatumProject = project_datum.datum
+
+        validate_burn_operation(our_minted, project_input_datum_value, tx_info, own_policy_id)
 
     else:
         assert False, "Invalid redeemer type"
