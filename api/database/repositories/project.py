@@ -7,8 +7,8 @@ Manages project data access operations.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.models import Project, ProjectState
-from src.database.repositories.base import BaseRepository
+from api.database.models import Project, ProjectState
+from api.database.repositories.base import BaseRepository
 
 
 class ProjectRepository(BaseRepository[Project]):

@@ -7,8 +7,8 @@ Manages transaction data access operations.
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.models import Transaction, TransactionStatus
-from src.database.repositories.base import BaseRepository
+from api.database.models import Transaction, TransactionStatus
+from api.database.repositories.base import BaseRepository
 
 
 class TransactionRepository(BaseRepository[Transaction]):

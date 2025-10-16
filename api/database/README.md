@@ -78,7 +78,7 @@ uv run alembic history
 ### Using the Database Manager
 
 ```python
-from src.database.connection import DatabaseManager
+from api.database.connection import DatabaseManager
 
 # Initialize database manager
 db_manager = DatabaseManager()
@@ -92,9 +92,9 @@ async with db_manager.get_session() as session:
 ### Using Repositories
 
 ```python
-from src.database.connection import get_db_manager
-from src.database.repositories import WalletRepository, ContractRepository
-from src.database.models import Wallet, NetworkType
+from api.database.connection import get_db_manager
+from api.database.repositories import WalletRepository, ContractRepository
+from api.database.models import Wallet, NetworkType
 
 # Get database manager
 db_manager = get_db_manager()
@@ -130,8 +130,8 @@ async with db_manager.get_session() as session:
 ```python
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.database.connection import get_session
-from src.database.repositories import WalletRepository
+from api.database.connection import get_session
+from api.database.repositories import WalletRepository
 
 @app.get("/wallets")
 async def list_wallets(session: AsyncSession = Depends(get_session)):

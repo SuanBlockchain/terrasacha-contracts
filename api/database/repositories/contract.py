@@ -7,8 +7,8 @@ Manages contract data access operations.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.models import Contract, ContractType
-from src.database.repositories.base import BaseRepository
+from api.database.models import Contract, ContractType
+from api.database.repositories.base import BaseRepository
 
 
 class ContractRepository(BaseRepository[Contract]):

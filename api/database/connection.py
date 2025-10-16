@@ -17,9 +17,9 @@ from sqlmodel import create_engine
 class DatabaseSettings(BaseSettings):
     """Database configuration from environment variables"""
 
-    # PostgreSQL connection - all values loaded from .env file
-    postgres_host: str  # No default - must be set in .env
-    postgres_port: int  # No default - must be set in .env
+    # PostgreSQL connection - loaded from .env file with sensible defaults
+    postgres_host: str = "localhost"  # Default to localhost for local development
+    postgres_port: int = 5432  # Standard PostgreSQL port
     postgres_user: str  # No default - must be set in .env
     postgres_password: str  # No default - must be set in .env
     postgres_db: str  # No default - must be set in .env
@@ -34,7 +34,7 @@ class DatabaseSettings(BaseSettings):
     postgres_ssl: bool = False
 
     class Config:
-        env_file = "src/cardano_offchain/menu/.env"
+        env_file = ".env"
         case_sensitive = False
         extra = "ignore"  # Ignore extra fields from .env file
 

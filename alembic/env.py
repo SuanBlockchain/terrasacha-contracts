@@ -12,7 +12,7 @@ from sqlmodel import SQLModel
 from alembic import context
 
 # Import database settings and models
-from src.database.connection import DatabaseSettings
+from api.database.connection import DatabaseSettings
 
 
 # this is the Alembic Config object, which provides

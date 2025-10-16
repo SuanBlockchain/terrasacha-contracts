@@ -7,8 +7,8 @@ Manages wallet data access operations.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.models import Wallet
-from src.database.repositories.base import BaseRepository
+from api.database.models import Wallet
+from api.database.repositories.base import BaseRepository
 
 
 class WalletRepository(BaseRepository[Wallet]):
