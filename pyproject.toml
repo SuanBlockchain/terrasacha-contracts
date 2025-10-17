@@ -29,6 +29,7 @@ repository = "https://github.com/SuanBlockchain/terrasacha-contracts"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23.0",
     "ruff>=0.8.0",
     "mypy>=1.17.1",
     "pytest-cov>=6.2.1",
@@ -41,6 +42,7 @@ dev = [
 ]
 test = [
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23.0",
     "pytest-cov>=6.2.1",
     "pytest-xdist>=3.8.0",
     "pytest-mock>=3.14.1",
@@ -165,24 +167,32 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "--cov=src",
+    "--cov=api",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
     "--cov-report=xml",
 ]
-testpaths = ["tests"]
+# Multiple test directories: contract tests in src/tests, API tests in api/tests
+testpaths = ["src/tests", "api/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 markers = [
     "slow: marks tests as slow (deselect with -m 'not slow')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests", 
+    "integration: marks tests as integration tests (may require external services)",
+    "unit: marks tests as unit tests (no external dependencies)",
     "performance: marks tests as performance tests",
-    "contracts: marks tests related to contract compilation/validation",
+    "contracts: marks tests related to OpShin smart contracts",
+    "api: marks tests related to FastAPI endpoints",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
     "ignore::UserWarning:hypothesis.*",
 ]
+# Asyncio configuration for async tests
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]

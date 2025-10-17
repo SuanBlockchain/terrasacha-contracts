@@ -5,54 +5,11 @@ SQLModel models for storing contract information, transaction history,
 and wallet management in PostgreSQL.
 """
 
-from datetime import datetime
-from enum import Enum
+from datetime import datetime, timezone
 
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
-
-# ============================================================================
-# Enums
-# ============================================================================
-
-
-class NetworkType(str, Enum):
-    """Blockchain network types"""
-
-    TESTNET = "testnet"
-    MAINNET = "mainnet"
-
-
-class ContractType(str, Enum):
-    """Smart contract types"""
-
-    MINTING_POLICY = "minting_policy"
-    SPENDING_VALIDATOR = "spending_validator"
-
-
-class ContractStorageType(str, Enum):
-    """How contract scripts are stored"""
-
-    LOCAL = "local"
-    REFERENCE_SCRIPT = "reference_script"
-
-
-class TransactionStatus(str, Enum):
-    """Transaction processing status"""
-
-    PENDING = "pending"
-    SUBMITTED = "submitted"
-    CONFIRMED = "confirmed"
-    FAILED = "failed"
-
-
-class ProjectState(int, Enum):
-    """Project contract states"""
-
-    INITIALIZED = 0
-    DISTRIBUTED = 1
-    CERTIFIED = 2
-    CLOSED = 3
+from api.enums import ContractStorageType, ContractType, NetworkType, ProjectState, TransactionStatus
 
 
 # ============================================================================
@@ -63,8 +20,12 @@ class ProjectState(int, Enum):
 class TimestampMixin(SQLModel):
     """Mixin for timestamp fields"""
 
-    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
-    updated_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
+    )
 
 
 # ============================================================================
@@ -386,8 +347,7 @@ class Transaction(TimestampMixin, table=True):
     contract_id: int | None = Field(default=None, foreign_key="contracts.id")
 
     # Transaction identification
-    tx_id: str = Field(index=True, unique=True, nullable=False)
-    tx_hash: str = Field(index=True, nullable=False)
+    tx_hash: str = Field(index=True, unique=True, nullable=False)
 
     # Transaction details
     status: TransactionStatus = Field(default=TransactionStatus.PENDING, nullable=False, index=True)

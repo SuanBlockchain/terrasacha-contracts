@@ -10,6 +10,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from alembic import context
+from api.database import models  # Import all models so Alembic can detect them
 
 # Import database settings and models
 from api.database.connection import DatabaseSettings

@@ -14,6 +14,7 @@ from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import create_engine
 
+
 # Get the project root directory (two levels up from api/database/)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 
@@ -38,10 +39,7 @@ class DatabaseSettings(BaseSettings):
     postgres_ssl: bool = False
 
     model_config = SettingsConfigDict(
-        env_file=str(PROJECT_ROOT / ".env"),
-        env_file_encoding="utf-8",
-        case_sensitive=False,
-        extra="ignore",
+        env_file=str(PROJECT_ROOT / ".env"), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
 
     @property

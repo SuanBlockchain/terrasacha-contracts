@@ -1,12 +1,12 @@
-"""Initial database schema
+"""improved_schema_shared_enums_single_tx_hash
 
-Revision ID: 2f4e22895181
+Revision ID: 8527133d0d25
 Revises:
-Create Date: 2025-10-14 23:49:01.169746
+Create Date: 2025-10-16 19:41:28.089264
 
 """
 
-from collections.abc import Sequence
+from typing import Sequence, Union
 
 import sqlalchemy as sa
 import sqlmodel
@@ -15,10 +15,10 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision: str = "2f4e22895181"
-down_revision: str | Sequence[str] | None = None
-branch_labels: str | Sequence[str] | None = None
-depends_on: str | Sequence[str] | None = None
+revision: str = "8527133d0d25"
+down_revision: Union[str, Sequence[str], None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
@@ -99,7 +99,6 @@ def upgrade() -> None:
         sa.Column("id", sa.Integer(), nullable=False),
         sa.Column("wallet_id", sa.Integer(), nullable=True),
         sa.Column("contract_id", sa.Integer(), nullable=True),
-        sa.Column("tx_id", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column("tx_hash", sqlmodel.sql.sqltypes.AutoString(), nullable=False),
         sa.Column(
             "status", sa.Enum("PENDING", "SUBMITTED", "CONFIRMED", "FAILED", name="transactionstatus"), nullable=False
@@ -120,8 +119,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
     )
     op.create_index(op.f("ix_transactions_status"), "transactions", ["status"], unique=False)
-    op.create_index(op.f("ix_transactions_tx_hash"), "transactions", ["tx_hash"], unique=False)
-    op.create_index(op.f("ix_transactions_tx_id"), "transactions", ["tx_id"], unique=True)
+    op.create_index(op.f("ix_transactions_tx_hash"), "transactions", ["tx_hash"], unique=True)
     op.create_table(
         "projects",
         sa.Column("created_at", sa.DateTime(), nullable=False),
@@ -281,7 +279,6 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_projects_grey_token_policy_id"), table_name="projects")
     op.drop_index(op.f("ix_projects_current_utxo_tx_id"), table_name="projects")
     op.drop_table("projects")
-    op.drop_index(op.f("ix_transactions_tx_id"), table_name="transactions")
     op.drop_index(op.f("ix_transactions_tx_hash"), table_name="transactions")
     op.drop_index(op.f("ix_transactions_status"), table_name="transactions")
     op.drop_table("transactions")

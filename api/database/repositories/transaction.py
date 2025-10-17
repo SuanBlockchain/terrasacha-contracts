@@ -18,17 +18,17 @@ class TransactionRepository(BaseRepository[Transaction]):
         """Initialize transaction repository"""
         super().__init__(Transaction, session)
 
-    async def get_by_tx_id(self, tx_id: str) -> Transaction | None:
+    async def get_by_tx_hash(self, tx_hash: str) -> Transaction | None:
         """
-        Get transaction by tx_id
+        Get transaction by tx_hash
 
         Args:
-            tx_id: Transaction ID
+            tx_hash: Transaction hash
 
         Returns:
             Transaction instance or None
         """
-        statement = select(Transaction).where(Transaction.tx_id == tx_id)
+        statement = select(Transaction).where(Transaction.tx_hash == tx_hash)
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
