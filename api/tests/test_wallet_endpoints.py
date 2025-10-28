@@ -209,9 +209,7 @@ class TestWalletGenerateAddressesEndpoint:
     def test_generate_addresses_default_count(self, client: TestClient, auth_headers, default_wallet_name):
         """Test generating addresses with default count"""
         response = client.post(
-            f"/api/v1/wallets/{default_wallet_name}/addresses/generate",
-            headers=auth_headers,
-            json={"count": 5}
+            f"/api/v1/wallets/{default_wallet_name}/addresses/generate", headers=auth_headers, json={"count": 5}
         )
         data = assert_successful_response(response, ["wallet_name", "addresses", "count"])
 
@@ -224,9 +222,7 @@ class TestWalletGenerateAddressesEndpoint:
         """Test generating specific number of addresses"""
         count = 3
         response = client.post(
-            f"/api/v1/wallets/{default_wallet_name}/addresses/generate",
-            headers=auth_headers,
-            json={"count": count}
+            f"/api/v1/wallets/{default_wallet_name}/addresses/generate", headers=auth_headers, json={"count": count}
         )
         data = assert_successful_response(response)
 
@@ -235,9 +231,7 @@ class TestWalletGenerateAddressesEndpoint:
     def test_generate_addresses_validation(self, client: TestClient, auth_headers, default_wallet_name):
         """Test generated address structure validation"""
         response = client.post(
-            f"/api/v1/wallets/{default_wallet_name}/addresses/generate",
-            headers=auth_headers,
-            json={"count": 2}
+            f"/api/v1/wallets/{default_wallet_name}/addresses/generate", headers=auth_headers, json={"count": 2}
         )
         data = assert_successful_response(response)
 
@@ -252,26 +246,20 @@ class TestWalletGenerateAddressesEndpoint:
         """Test count parameter validation"""
         # Negative count
         response = client.post(
-            f"/api/v1/wallets/{default_wallet_name}/addresses/generate",
-            headers=auth_headers,
-            json={"count": -1}
+            f"/api/v1/wallets/{default_wallet_name}/addresses/generate", headers=auth_headers, json={"count": -1}
         )
         assert response.status_code == 422
 
         # Zero count
         response = client.post(
-            f"/api/v1/wallets/{default_wallet_name}/addresses/generate",
-            headers=auth_headers,
-            json={"count": 0}
+            f"/api/v1/wallets/{default_wallet_name}/addresses/generate", headers=auth_headers, json={"count": 0}
         )
         assert response.status_code in [200, 422]  # Depends on validation logic
 
     def test_generate_addresses_wallet_not_found(self, client: TestClient, auth_headers):
         """Test generating addresses for non-existent wallet"""
         response = client.post(
-            "/api/v1/wallets/nonexistent_wallet/addresses/generate",
-            headers=auth_headers,
-            json={"count": 5}
+            "/api/v1/wallets/nonexistent_wallet/addresses/generate", headers=auth_headers, json={"count": 5}
         )
         assert_error_response(response, 404, "not found")
 
@@ -283,12 +271,7 @@ class TestWalletEndpointEdgeCases:
 
     def test_special_characters_in_wallet_name(self, client: TestClient, auth_headers):
         """Test wallet name with special characters"""
-        special_names = [
-            "wallet-with-dashes",
-            "wallet_with_underscores",
-            "wallet123",
-            "wallet.with.dots",
-        ]
+        special_names = ["wallet-with-dashes", "wallet_with_underscores", "wallet123", "wallet.with.dots"]
 
         for name in special_names:
             response = client.get(f"/api/v1/wallets/{name}", headers=auth_headers)

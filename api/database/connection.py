@@ -74,7 +74,7 @@ class DatabaseManager:
         Args:
             settings: Database settings (loads from environment if not provided)
         """
-        self.settings = settings or DatabaseSettings()
+        self.settings = settings or DatabaseSettings()  # type: ignore[call-arg]  # Pydantic settings loads from env
         self._engine: AsyncEngine | None = None
         self._sync_engine: Engine | None = None
         self._async_session_factory: async_sessionmaker[AsyncSession] | None = None

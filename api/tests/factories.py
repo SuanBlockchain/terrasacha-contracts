@@ -87,11 +87,7 @@ class WalletFactory:
     """Factory for generating wallet test data"""
 
     @staticmethod
-    def create_wallet_data(
-        name: str = "test_wallet",
-        network: str = "testnet",
-        is_default: bool = False,
-    ) -> dict:
+    def create_wallet_data(name: str = "test_wallet", network: str = "testnet", is_default: bool = False) -> dict:
         """Create wallet test data"""
         enterprise_addr = CardanoAddressFactory.create_testnet_address()
         staking_addr = CardanoAddressFactory.create_stake_address(network)
@@ -102,18 +98,13 @@ class WalletFactory:
             "is_default": is_default,
             "enterprise_address": enterprise_addr,
             "staking_address": staking_addr,
-            "main_addresses": {
-                "enterprise": enterprise_addr,
-                "staking": staking_addr,
-            },
+            "main_addresses": {"enterprise": enterprise_addr, "staking": staking_addr},
             "derived_addresses": [],
         }
 
     @staticmethod
     def create_balance_data(
-        address: str | None = None,
-        balance_lovelace: int = 10000000,
-        assets: list | None = None,
+        address: str | None = None, balance_lovelace: int = 10000000, assets: list | None = None
     ) -> dict:
         """Create balance test data"""
         if address is None:
@@ -134,11 +125,7 @@ class DatabaseFactory:
 
     @staticmethod
     async def create_transaction(
-        session,
-        tx_hash: str | None = None,
-        status: str = "submitted",
-        operation: str = "send_ada",
-        **kwargs,
+        session, tx_hash: str | None = None, status: str = "submitted", operation: str = "send_ada", **kwargs
     ):
         """Create a transaction record in the database"""
         from api.database.models import Transaction
@@ -166,12 +153,7 @@ class DatabaseFactory:
         return transaction
 
     @staticmethod
-    async def create_wallet(
-        session,
-        name: str = "test_wallet",
-        network: str = "testnet",
-        **kwargs,
-    ):
+    async def create_wallet(session, name: str = "test_wallet", network: str = "testnet", **kwargs):
         """Create a wallet record in the database"""
         from api.database.models import Wallet
         from api.enums import NetworkType
@@ -179,14 +161,8 @@ class DatabaseFactory:
         wallet = Wallet(
             name=name,
             network=NetworkType(network),
-            enterprise_address=kwargs.get(
-                "enterprise_address",
-                CardanoAddressFactory.create_testnet_address(),
-            ),
-            staking_address=kwargs.get(
-                "staking_address",
-                CardanoAddressFactory.create_stake_address(network),
-            ),
+            enterprise_address=kwargs.get("enterprise_address", CardanoAddressFactory.create_testnet_address()),
+            staking_address=kwargs.get("staking_address", CardanoAddressFactory.create_stake_address(network)),
         )
 
         session.add(wallet)

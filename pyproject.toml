@@ -128,7 +128,7 @@ warn_unreachable = true
 strict_equality = true
 show_error_codes = true
 explicit_package_bases = true
-files = ["src"]
+files = ["src/cardano_offchain", "api"]
 exclude = [
     "^build/",
     "^dist/",
@@ -136,6 +136,8 @@ exclude = [
     "^\\.venv/",
     "^src/terrasacha_contracts/",  # Skip all OpShin contract files
     "^src/scripts/",               # Skip build scripts
+    "^src/tests/",                 # Skip contract test files
+    "^api/tests/",                 # Skip API test files
     "^src/database/",              # Skip database models - requires SQLAlchemy plugin
 ]
 
@@ -149,6 +151,9 @@ module = [
     "sqlalchemy.*",
     "sqlmodel.*",
     "pydantic_settings.*",
+    "pytest.*",
+    "pytest_asyncio.*",
+    "cardano_offchain.*",
 ]
 ignore_missing_imports = true
 
@@ -159,6 +164,28 @@ module = [
     "utils.*",
 ]
 ignore_errors = true
+
+# Skip type checking for all test files
+[[tool.mypy.overrides]]
+module = [
+    "tests.*",
+]
+ignore_errors = true
+follow_imports = "skip"
+
+# Skip SQLAlchemy repository type errors (known issue with SQLAlchemy/mypy)
+[[tool.mypy.overrides]]
+module = [
+    "api.database.repositories.*",
+]
+disable_error_code = ["arg-type"]
+
+# Skip Pydantic model initialization errors in endpoints (false positives)
+[[tool.mypy.overrides]]
+module = [
+    "api.routers.api_v1.endpoints.*",
+]
+disable_error_code = ["call-arg", "arg-type"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

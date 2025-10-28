@@ -1,4 +1,5 @@
 import secrets
+from typing import Annotated
 
 from fastapi import HTTPException, status
 from fastapi.params import Security
@@ -7,15 +8,16 @@ from fastapi.security import APIKeyHeader
 from api.config import settings
 
 
-api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
+api_key_header_scheme = APIKeyHeader(name="x-api-key", auto_error=False)
 
 
-def generate_api_key():
+def generate_api_key() -> str:
+    """Generate a random API key"""
     # Generate a random 32-character string using secrets.token_urlsafe()
     return secrets.token_urlsafe(32)
 
 
-def get_api_key(api_key_header: str = Security(api_key_header)) -> str:
+def get_api_key(api_key_header: Annotated[str | None, Security(api_key_header_scheme)]) -> str:
     """Retrieve and validate an API key from the query parameters or HTTP header.
 
     Args:

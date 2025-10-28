@@ -52,9 +52,9 @@ def assert_error_response(response, expected_status: int, error_message_contains
 
     if error_message_contains:
         detail = data["detail"].lower()
-        assert (
-            error_message_contains.lower() in detail
-        ), f"Expected '{error_message_contains}' in error message, got: {data['detail']}"
+        assert error_message_contains.lower() in detail, (
+            f"Expected '{error_message_contains}' in error message, got: {data['detail']}"
+        )
 
     return data
 

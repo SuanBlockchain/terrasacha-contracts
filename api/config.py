@@ -74,7 +74,7 @@ class Settings(BaseSettings):
 # Global settings instance
 # ============================================================================
 
-settings = Settings()
+settings = Settings()  # type: ignore[call-arg]  # Pydantic settings loads from env
 
 # Database settings instance (for convenience)
-db_settings = DatabaseSettings()
+db_settings = DatabaseSettings()  # type: ignore[call-arg]  # Pydantic settings loads from env

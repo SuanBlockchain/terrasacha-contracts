@@ -78,9 +78,7 @@ class TestTransactionHistoryEndpoint:
 
     def test_get_history_with_tx_type_filter(self, client: TestClient, auth_headers):
         """Test filtering by transaction type"""
-        response = client.get(
-            "/api/v1/transactions/history", headers=auth_headers, params={"tx_type": "send_ada"}
-        )
+        response = client.get("/api/v1/transactions/history", headers=auth_headers, params={"tx_type": "send_ada"})
         data = assert_successful_response(response)
 
         # All returned transactions should match the filter
@@ -145,12 +143,7 @@ class TestSendAdaEndpoint:
         response = client.post(
             "/api/v1/transactions/send-ada",
             headers=auth_headers,
-            json={
-                "from_wallet": "default",
-                "from_address_index": 0,
-                "to_address": to_address,
-                "amount_ada": -1.0,
-            },
+            json={"from_wallet": "default", "from_address_index": 0, "to_address": to_address, "amount_ada": -1.0},
         )
         assert response.status_code == 422
 
@@ -158,12 +151,7 @@ class TestSendAdaEndpoint:
         response = client.post(
             "/api/v1/transactions/send-ada",
             headers=auth_headers,
-            json={
-                "from_wallet": "default",
-                "from_address_index": 0,
-                "to_address": to_address,
-                "amount_ada": 0,
-            },
+            json={"from_wallet": "default", "from_address_index": 0, "to_address": to_address, "amount_ada": 0},
         )
         assert response.status_code == 422
 
@@ -199,12 +187,7 @@ class TestSendAdaEndpoint:
         response = client.post(
             "/api/v1/transactions/send-ada",
             headers=auth_headers,
-            json={
-                "from_wallet": "default",
-                "from_address_index": -1,
-                "to_address": to_address,
-                "amount_ada": 10.0,
-            },
+            json={"from_wallet": "default", "from_address_index": -1, "to_address": to_address, "amount_ada": 10.0},
         )
         assert response.status_code == 422
 
@@ -212,12 +195,7 @@ class TestSendAdaEndpoint:
         response = client.post(
             "/api/v1/transactions/send-ada",
             headers=auth_headers,
-            json={
-                "from_wallet": "default",
-                "from_address_index": 101,
-                "to_address": to_address,
-                "amount_ada": 10.0,
-            },
+            json={"from_wallet": "default", "from_address_index": 101, "to_address": to_address, "amount_ada": 10.0},
         )
         assert response.status_code == 422
 
@@ -246,12 +224,7 @@ class TestSendAdaEndpoint:
         response = client.post(
             "/api/v1/transactions/send-ada",
             headers=auth_headers,
-            json={
-                "from_wallet": "default",
-                "from_address_index": 0,
-                "to_address": to_address,
-                "amount_ada": 10.0,
-            },
+            json={"from_wallet": "default", "from_address_index": 0, "to_address": to_address, "amount_ada": 10.0},
         )
 
         # Will likely fail due to insufficient balance or other issues
@@ -271,12 +244,7 @@ class TestSendAdaEndpoint:
 
         response = client.post(
             "/api/v1/transactions/send-ada",
-            json={
-                "from_wallet": "default",
-                "from_address_index": 0,
-                "to_address": to_address,
-                "amount_ada": 10.0,
-            },
+            json={"from_wallet": "default", "from_address_index": 0, "to_address": to_address, "amount_ada": 10.0},
         )
         assert_error_response(response, 401)
 
@@ -386,11 +354,7 @@ class TestTransactionDatabaseIntegration:
     async def test_transaction_persisted_to_database(self, client: TestClient, auth_headers, async_session):
         """Test that transactions are persisted to database"""
         # Create a test transaction in database
-        tx_data = await DatabaseFactory.create_transaction(
-            async_session,
-            status="confirmed",
-            operation="send_ada",
-        )
+        tx_data = await DatabaseFactory.create_transaction(async_session, status="confirmed", operation="send_ada")
 
         # Query transaction history
         response = client.get("/api/v1/transactions/history", headers=auth_headers)
@@ -431,17 +395,11 @@ class TestTransactionDatabaseIntegration:
             assert tx["tx_type"] == "send_ada"
 
     @pytest.mark.asyncio
-    async def test_pagination_works_with_multiple_transactions(
-        self, client: TestClient, auth_headers, async_session
-    ):
+    async def test_pagination_works_with_multiple_transactions(self, client: TestClient, auth_headers, async_session):
         """Test pagination with multiple transactions"""
         # Create multiple transactions
         for i in range(10):
-            await DatabaseFactory.create_transaction(
-                async_session,
-                status="confirmed",
-                operation=f"test_op_{i}",
-            )
+            await DatabaseFactory.create_transaction(async_session, status="confirmed", operation=f"test_op_{i}")
 
         # Get first page
         response = client.get("/api/v1/transactions/history", headers=auth_headers, params={"limit": 5, "offset": 0})
@@ -515,12 +473,7 @@ class TestTransactionEndpointEdgeCases:
             response = client.post(
                 "/api/v1/transactions/send-ada",
                 headers=auth_headers,
-                json={
-                    "from_wallet": "default",
-                    "from_address_index": 0,
-                    "to_address": to_address,
-                    "amount_ada": 1.0,
-                },
+                json={"from_wallet": "default", "from_address_index": 0, "to_address": to_address, "amount_ada": 1.0},
             )
             responses.append(response)
 

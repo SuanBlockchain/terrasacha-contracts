@@ -72,10 +72,7 @@ class MockWalletManager:
 
     def __init__(self, network: str = "testnet"):
         self.network = network
-        self._wallets = {
-            "default": MockWallet("default", network),
-            "test": MockWallet("test", network),
-        }
+        self._wallets = {"default": MockWallet("default", network), "test": MockWallet("test", network)}
 
     def get_wallet_names(self) -> list[str]:
         """Get list of wallet names"""
@@ -129,11 +126,7 @@ class MockCardanoTransactions:
         self._submitted_txs = []
 
     def create_simple_transaction(
-        self,
-        to_address: str,
-        amount_ada: float,
-        from_address_index: int = 0,
-        wallet_name: str = "default",
+        self, to_address: str, amount_ada: float, from_address_index: int = 0, wallet_name: str = "default"
     ):
         """Mock transaction creation"""
         wallet = self.wallet_manager.get_wallet(wallet_name)
@@ -164,15 +157,11 @@ class MockCardanoTransactions:
 
         # Register transaction in mock chain
         self.chain_context.get_api().set_transaction(
-            tx_hash,
-            {"block_height": 10000, "block_time": 1640995200, "fees": "200000"},
+            tx_hash, {"block_height": 10000, "block_time": 1640995200, "fees": "200000"}
         )
 
         return tx_hash
 
     def get_transaction_info(self, tx_hash: str) -> dict:
         """Mock transaction info"""
-        return {
-            "tx_hash": tx_hash,
-            "explorer_url": self.chain_context.get_explorer_url(tx_hash),
-        }
+        return {"tx_hash": tx_hash, "explorer_url": self.chain_context.get_explorer_url(tx_hash)}
