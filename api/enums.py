@@ -20,6 +20,18 @@ class NetworkType(str, Enum):
     MAINNET = "mainnet"
 
 
+class WalletRole(str, Enum):
+    """
+    Wallet roles for access control
+
+    - USER: Regular user wallet, can perform standard operations
+    - CORE: Core/admin wallet, can compile smart contracts and promote other wallets
+    """
+
+    USER = "user"
+    CORE = "core"
+
+
 class TransactionStatus(str, Enum):
     """
     Transaction processing status

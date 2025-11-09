@@ -65,10 +65,14 @@ class WalletInfoResponse(BaseModel):
 class WalletListItem(BaseModel):
     """Wallet list item for summary responses"""
 
+    id: int | None = Field(None, description="Wallet ID (None for environment-based wallets)")
     name: str
     network: str
     enterprise_address: str
     is_default: bool = Field(default=False)
+    source: str = Field(description="Wallet source: 'database' or 'environment'")
+    role: str | None = Field(None, description="Wallet role (user/core) - only for database wallets")
+    is_locked: bool | None = Field(None, description="Lock status - only for database wallets")
 
 
 class WalletListResponse(BaseModel):
@@ -77,6 +81,208 @@ class WalletListResponse(BaseModel):
     wallets: list[WalletListItem]
     total: int = Field(description="Total number of wallets")
     default_wallet: str | None = Field(None, description="Name of the default wallet")
+
+
+# ============================================================================
+# Wallet Session Management Schemas
+# ============================================================================
+
+
+class UnlockWalletRequest(BaseModel):
+    """Request to unlock a wallet with password"""
+
+    password: str = Field(min_length=1, description="Wallet password")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "password": "MySecureP@ssw0rd"
+            }
+        }
+
+
+class UnlockWalletResponse(BaseModel):
+    """Response after successfully unlocking a wallet"""
+
+    success: bool = Field(default=True)
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
+    wallet_name: str = Field(description="Wallet name")
+    wallet_role: str = Field(description="Wallet role (user/core)")
+    access_token: str = Field(description="JWT access token (use in Authorization header)")
+    refresh_token: str = Field(description="JWT refresh token (use to get new access tokens)")
+    token_type: str = Field(default="Bearer", description="Token type")
+    expires_in: int = Field(description="Access token expiration time in seconds")
+    expires_at: datetime = Field(description="Access token expiration datetime")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "wallet_id": "abc123def456...",
+                "wallet_name": "my_wallet",
+                "wallet_role": "user",
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "Bearer",
+                "expires_in": 1800,
+                "expires_at": "2025-10-31T03:30:00Z"
+            }
+        }
+
+
+class LockWalletResponse(BaseModel):
+    """Response after locking a wallet"""
+
+    success: bool = Field(default=True)
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
+    wallet_name: str = Field(description="Wallet name")
+    message: str = Field(description="Success message")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "wallet_id": "abc123def456...",
+                "wallet_name": "my_wallet",
+                "message": "Wallet locked successfully"
+            }
+        }
+
+
+class RefreshTokenRequest(BaseModel):
+    """Request to refresh an access token"""
+
+    refresh_token: str = Field(description="Refresh token obtained from unlock")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+            }
+        }
+
+
+class RefreshTokenResponse(BaseModel):
+    """Response with new access token"""
+
+    success: bool = Field(default=True)
+    access_token: str = Field(description="New JWT access token")
+    token_type: str = Field(default="Bearer", description="Token type")
+    expires_in: int = Field(description="Access token expiration time in seconds")
+    expires_at: datetime = Field(description="Access token expiration datetime")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+                "token_type": "Bearer",
+                "expires_in": 1800,
+                "expires_at": "2025-10-31T03:30:00Z"
+            }
+        }
+
+
+# ============================================================================
+# Wallet Creation & Import Schemas
+# ============================================================================
+
+
+class CreateWalletRequest(BaseModel):
+    """Request to create a new wallet"""
+
+    name: str = Field(min_length=1, max_length=50, description="Unique wallet name")
+    password: str = Field(min_length=8, max_length=128, description="Password for wallet encryption (min 8 characters)")
+    network: str = Field(default="testnet", description="Network: 'testnet' or 'mainnet'")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "my_wallet",
+                "password": "MySecureP@ssw0rd",
+                "network": "testnet"
+            }
+        }
+
+
+class CreateWalletResponse(BaseModel):
+    """Response for wallet creation"""
+
+    success: bool = Field(default=True)
+    wallet_id: int = Field(description="Database ID of the created wallet")
+    name: str = Field(description="Wallet name")
+    network: str = Field(description="Network (testnet/mainnet)")
+    role: str = Field(description="Wallet role (user/core)")
+    enterprise_address: str = Field(description="Enterprise address (payment only)")
+    staking_address: str = Field(description="Staking address (payment + stake)")
+    mnemonic: str = Field(description="BIP39 mnemonic phrase - SAVE THIS SECURELY! Shown only once.")
+    warning: str = Field(
+        default="⚠️  IMPORTANT: Save your mnemonic phrase securely! It will not be shown again. "
+        "You need it to recover your wallet if you forget your password."
+    )
+    created_at: datetime = Field(description="Wallet creation timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "wallet_id": 1,
+                "name": "my_wallet",
+                "network": "testnet",
+                "role": "user",
+                "enterprise_address": "addr_test1vz...",
+                "staking_address": "addr_test1qz...",
+                "mnemonic": "word1 word2 ... word24",
+                "warning": "⚠️  IMPORTANT: Save your mnemonic phrase securely!",
+                "created_at": "2025-10-30T12:00:00"
+            }
+        }
+
+
+class ImportWalletRequest(BaseModel):
+    """Request to import an existing wallet"""
+
+    name: str = Field(min_length=1, max_length=50, description="Unique wallet name")
+    mnemonic: str = Field(min_length=23, description="BIP39 mnemonic phrase (12-24 words)")
+    password: str = Field(min_length=8, max_length=128, description="Password for wallet encryption")
+    network: str = Field(default="testnet", description="Network: 'testnet' or 'mainnet'")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "name": "imported_wallet",
+                "mnemonic": "word1 word2 word3 ... word24",
+                "password": "MySecureP@ssw0rd",
+                "network": "testnet"
+            }
+        }
+
+
+class ImportWalletResponse(BaseModel):
+    """Response for wallet import"""
+
+    success: bool = Field(default=True)
+    wallet_id: int = Field(description="Database ID of the imported wallet")
+    name: str = Field(description="Wallet name")
+    network: str = Field(description="Network (testnet/mainnet)")
+    role: str = Field(description="Wallet role (user)")
+    enterprise_address: str = Field(description="Enterprise address (payment only)")
+    staking_address: str = Field(description="Staking address (payment + stake)")
+    imported_at: datetime = Field(description="Import timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "wallet_id": 2,
+                "name": "imported_wallet",
+                "network": "testnet",
+                "role": "user",
+                "enterprise_address": "addr_test1vz...",
+                "staking_address": "addr_test1qz...",
+                "imported_at": "2025-10-30T12:00:00"
+            }
+        }
 
 
 # ============================================================================
@@ -96,20 +302,6 @@ class GenerateAddressesResponse(BaseModel):
     wallet_name: str
     addresses: list[DerivedAddressInfo]
     count: int = Field(description="Number of addresses generated")
-
-
-class SwitchWalletRequest(BaseModel):
-    """Request to switch the active wallet"""
-
-    wallet_name: str = Field(description="Name of the wallet to switch to")
-
-
-class SwitchWalletResponse(BaseModel):
-    """Response for wallet switch operation"""
-
-    success: bool
-    message: str
-    active_wallet: str | None = Field(None, description="Name of the now-active wallet")
 
 
 class WalletBalanceRequest(BaseModel):

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.database.connection import get_session
 from api.database.models import Transaction as DBTransaction
 from api.database.repositories.transaction import TransactionRepository
+from api.dependencies.auth import WalletAuthContext, get_wallet_from_token
 from api.enums import TransactionStatus as DBTransactionStatus
 from api.schemas.transaction import (
     SendAdaRequest,
@@ -26,35 +27,17 @@ from api.schemas.transaction import (
     TransactionStatusResponse,
 )
 from cardano_offchain.chain_context import CardanoChainContext
-from cardano_offchain.transactions import CardanoTransactions
-from cardano_offchain.wallet import WalletManager
 
 
 router = APIRouter()
 
-# Global state for transaction management
-_wallet_manager: WalletManager | None = None
+# Global state for chain context
 _chain_context: CardanoChainContext | None = None
-_tx_manager: CardanoTransactions | None = None
 
 
 # ============================================================================
 # Dependencies
 # ============================================================================
-
-
-def get_wallet_manager() -> WalletManager:
-    """Get or initialize the wallet manager"""
-    global _wallet_manager
-    if _wallet_manager is None:
-        network = os.getenv("network", "testnet")
-        _wallet_manager = WalletManager.from_environment(network)
-        if not _wallet_manager.get_wallet_names():
-            raise HTTPException(
-                status_code=500,
-                detail="No wallets configured. Set wallet_mnemonic or wallet_mnemonic_<role> environment variables",
-            )
-    return _wallet_manager
 
 
 def get_chain_context() -> CardanoChainContext:
@@ -69,17 +52,6 @@ def get_chain_context() -> CardanoChainContext:
     return _chain_context
 
 
-def get_transaction_manager(
-    wallet_manager: WalletManager = Depends(get_wallet_manager),
-    chain_context: CardanoChainContext = Depends(get_chain_context),
-) -> CardanoTransactions:
-    """Get or initialize the transaction manager"""
-    global _tx_manager
-    if _tx_manager is None:
-        _tx_manager = CardanoTransactions(wallet_manager, chain_context)
-    return _tx_manager
-
-
 # ============================================================================
 # Send ADA Endpoint
 # ============================================================================
@@ -89,39 +61,42 @@ def get_transaction_manager(
     "/send-ada",
     response_model=SendAdaResponse,
     summary="Send ADA",
-    description="Send ADA from one address to another",
+    description="Send ADA from authenticated wallet to another address. Requires wallet to be unlocked first.",
     responses={
         400: {"model": TransactionErrorResponse, "description": "Invalid request"},
-        404: {"model": TransactionErrorResponse, "description": "Wallet not found"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required - unlock wallet first"},
         500: {"model": TransactionErrorResponse, "description": "Transaction failed"},
     },
 )
 async def send_ada(
     request: SendAdaRequest,
-    tx_manager: CardanoTransactions = Depends(get_transaction_manager),
-    wallet_manager: WalletManager = Depends(get_wallet_manager),
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
     session: AsyncSession = Depends(get_session),
 ) -> SendAdaResponse:
     """
-    Send ADA to another address.
+    Send ADA to another address from an authenticated wallet.
 
     This endpoint:
-    1. Validates the source wallet exists
-    2. Checks the source address has sufficient balance
+    1. Uses the authenticated wallet from JWT token
+    2. Gets the CardanoWallet instance from SessionManager
     3. Creates and signs the transaction
     4. Submits it to the blockchain
     5. Returns the transaction ID and explorer URL
 
+    **Authentication Required:**
+    - First unlock the wallet: POST /wallets/{wallet_id}/unlock
+    - Get access_token from response
+    - Include in header: Authorization: Bearer <access_token>
+
     **Note:** Transaction will be pending until confirmed on-chain (usually 20 seconds).
     """
     try:
-        # Validate wallet exists
-        wallet = wallet_manager.get_wallet(request.from_wallet)
-        if not wallet:
-            raise HTTPException(status_code=404, detail=f"Wallet '{request.from_wallet}' not found")
+        # Get authenticated wallet's CardanoWallet instance
+        cardano_wallet = wallet.cardano_wallet
 
         # Get source address
-        from_address = wallet.get_address(request.from_address_index)
+        from_address = cardano_wallet.get_address(request.from_address_index)
         from_address_str = str(from_address)
 
         # Validate amount
@@ -140,13 +115,17 @@ async def send_ada(
         except Exception:
             raise HTTPException(status_code=400, detail=f"Invalid destination address format: {request.to_address}")
 
-        # Create the transaction
+        # Create the transaction directly using the authenticated CardanoWallet
         try:
-            signed_tx = tx_manager.create_simple_transaction(
+            # Get API for blockchain interaction
+            api = chain_context.get_api()
+
+            # Build and sign transaction
+            signed_tx = cardano_wallet.create_simple_transaction(
                 to_address=request.to_address,
                 amount_ada=request.amount_ada,
                 from_address_index=request.from_address_index,
-                wallet_name=request.from_wallet,
+                api=api
             )
 
             if not signed_tx:
@@ -159,55 +138,104 @@ async def send_ada(
                 raise HTTPException(status_code=400, detail=f"Insufficient balance: {error_msg}")
             raise HTTPException(status_code=500, detail=f"Failed to create transaction: {error_msg}")
 
-        # Submit the transaction
+        # Get transaction ID (available before submission)
+        if not signed_tx.id:
+            raise HTTPException(status_code=500, detail="Failed to generate transaction ID")
+
+        tx_id = str(signed_tx.id.payload.hex())
+
+        # Calculate amounts
+        amount_lovelace = int(request.amount_ada * 1_000_000)
+        fee_lovelace = signed_tx.transaction_body.fee
+        fee_ada = fee_lovelace / 1_000_000 if fee_lovelace else None
+
+        # Create database record FIRST with PENDING status (before blockchain submission)
+        tx_repo = TransactionRepository(session)
+        db_transaction = DBTransaction(
+            tx_hash=tx_id,
+            wallet_id=wallet.wallet_id,  # Link transaction to authenticated wallet
+            status=DBTransactionStatus.PENDING,  # PENDING status before submission
+            operation="send_ada",
+            description=f"Sent {request.amount_ada} ADA from {wallet.wallet_name} to {request.to_address[:20]}...",
+            fee_lovelace=fee_lovelace,
+            total_output_lovelace=amount_lovelace,
+            outputs=[{"address": request.to_address, "amount": amount_lovelace}],
+            inputs=[{"address": from_address_str}],
+            submitted_at=None,  # Not submitted yet
+        )
+
         try:
-            tx_id = tx_manager.submit_transaction(signed_tx)
-
-            if not tx_id:
-                raise HTTPException(status_code=500, detail="Transaction submission failed - no transaction ID")
-
-            # Get transaction info
-            tx_info = tx_manager.get_transaction_info(tx_id)
-
-            # Calculate amounts
-            amount_lovelace = int(request.amount_ada * 1_000_000)
-            fee_lovelace = signed_tx.transaction_body.fee
-            fee_ada = fee_lovelace / 1_000_000 if fee_lovelace else None
-
-            # Log transaction to database
-            tx_repo = TransactionRepository(session)
-            db_transaction = DBTransaction(
-                tx_hash=tx_id,
-                status=DBTransactionStatus.SUBMITTED,
-                operation="send_ada",
-                description=f"Sent {request.amount_ada} ADA from {from_address_str[:20]}... to {request.to_address[:20]}...",
-                fee_lovelace=fee_lovelace,
-                total_output_lovelace=amount_lovelace,
-                outputs=[{"address": request.to_address, "amount": amount_lovelace}],
-                inputs=[{"address": from_address_str}],
-                submitted_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            )
             await tx_repo.create(db_transaction)
+        except Exception as e:
+            error_msg = str(e)
+            raise HTTPException(status_code=500, detail=f"Failed to create transaction record in database: {error_msg}")
 
-            return SendAdaResponse(
-                success=True,
-                tx_hash=tx_id,
-                explorer_url=tx_info["explorer_url"],
-                from_address=from_address_str,
-                to_address=request.to_address,
-                amount_lovelace=amount_lovelace,
-                amount_ada=request.amount_ada,
-                fee_lovelace=fee_lovelace,
-                fee_ada=fee_ada,
-                submitted_at=datetime.now(timezone.utc),
-                error=None,
-            )
+        # Submit the transaction to blockchain
+        try:
+            # Submit using the chain context API
+            api = chain_context.get_api()
+            submitted_tx_id = api.transaction_submit(signed_tx.to_cbor())
+
+            if not submitted_tx_id or submitted_tx_id != tx_id:
+                # Transaction submission failed - update database status to FAILED
+                await tx_repo.update(
+                    db_transaction.id,
+                    status=DBTransactionStatus.FAILED,
+                    error_message="Transaction submission failed - no transaction ID returned"
+                )
+                raise HTTPException(status_code=500, detail="Transaction submission failed - no transaction ID")
 
         except HTTPException:
             raise
         except Exception as e:
+            # Blockchain submission failed - update database status to FAILED
             error_msg = str(e)
-            raise HTTPException(status_code=500, detail=f"Failed to submit transaction: {error_msg}")
+            try:
+                await tx_repo.update(
+                    db_transaction.id,
+                    status=DBTransactionStatus.FAILED,
+                    error_message=f"Blockchain submission failed: {error_msg}"
+                )
+            except Exception as db_error:
+                # Log that we couldn't update the database, but prioritize the original error
+                print(f"Warning: Failed to update transaction status in database: {db_error}")
+
+            raise HTTPException(status_code=500, detail=f"Failed to submit transaction to blockchain: {error_msg}")
+
+        # Transaction submitted successfully - update database status to SUBMITTED
+        try:
+            await tx_repo.update(
+                db_transaction.id,
+                status=DBTransactionStatus.SUBMITTED,
+                submitted_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            )
+        except Exception as e:
+            # Transaction was submitted to blockchain but database update failed
+            # This is a non-critical error - transaction is on blockchain
+            error_msg = str(e)
+            print(f"Warning: Transaction {tx_id} submitted to blockchain but failed to update database status: {error_msg}")
+            # Continue anyway since blockchain submission succeeded
+
+        # Get explorer URL for the transaction
+        try:
+            explorer_url = chain_context.get_explorer_url(tx_id)
+        except Exception:
+            # Fallback if we can't get explorer URL
+            explorer_url = f"https://{'preview.' if 'testnet' in os.getenv('network', 'testnet') else ''}cardanoscan.io/transaction/{tx_id}"
+
+        return SendAdaResponse(
+            success=True,
+            tx_hash=tx_id,
+            explorer_url=explorer_url,
+            from_address=from_address_str,
+            to_address=request.to_address,
+            amount_lovelace=amount_lovelace,
+            amount_ada=request.amount_ada,
+            fee_lovelace=fee_lovelace,
+            fee_ada=fee_ada,
+            submitted_at=datetime.now(timezone.utc),
+            error=None,
+        )
 
     except HTTPException:
         raise

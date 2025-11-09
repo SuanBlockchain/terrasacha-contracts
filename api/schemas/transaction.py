@@ -17,9 +17,13 @@ from api.enums import TransactionStatus
 
 
 class SendAdaRequest(BaseModel):
-    """Request to send ADA to an address"""
+    """
+    Request to send ADA to an address.
 
-    from_wallet: str = Field(description="Source wallet name")
+    The source wallet is determined from the JWT token in the Authorization header.
+    Use the /wallets/{wallet_id}/unlock endpoint to get a token first.
+    """
+
     from_address_index: int = Field(default=0, ge=0, le=100, description="Source address index (0 = main address)")
     to_address: str = Field(description="Destination Cardano address")
     amount_ada: float = Field(gt=0, description="Amount in ADA to send (must be > 0)")
