@@ -1182,6 +1182,7 @@ class TokenOperations:
         price: int | None = None,
         precision: int | None = None,
         min_purchase: int | None = None,
+        stakeholder_name: bytes | None = None,
     ) -> dict[str, Any]:
         """
         Create a minting transaction for grey tokens
@@ -1197,6 +1198,7 @@ class TokenOperations:
             price: Price per token as integer (free mode only)
             precision: Price precision/decimals (free mode only)
             min_purchase: Minimum purchase amount (free mode only)
+            stakeholder_name: Stakeholder name as bytes to mark as claimed (authorized mode only, required)
 
         Returns:
             A dictionary containing the transaction details or an error message
@@ -1371,6 +1373,13 @@ class TokenOperations:
 
             else:
                 # Authorized mode: Keep state unchanged, mark stakeholder as claimed
+                # Validate that stakeholder_name is provided
+                if stakeholder_name is None:
+                    return {
+                        "success": False,
+                        "error": "stakeholder_name is required for authorized minting mode",
+                    }
+
                 new_params = DatumProjectParams(
                     project_id=project_datum.params.project_id,
                     project_metadata=project_datum.params.project_metadata,
@@ -1381,10 +1390,13 @@ class TokenOperations:
                 payment_vkey_hash = self.wallet.get_payment_verification_key_hash()
 
                 # Update stakeholders: mark the authorized one as claimed
+                # Match on BOTH PKH and stakeholder name to avoid marking multiple stakeholders
                 new_stakeholders = []
+                stakeholder_found = False
                 for stakeholder in project_datum.stakeholders:
-                    if stakeholder.pkh == payment_vkey_hash:
-                        # This is the authorized stakeholder - mark as claimed
+                    if stakeholder.pkh == payment_vkey_hash and stakeholder.stakeholder == stakeholder_name:
+                        # This is the specific authorized stakeholder - mark as claimed
+                        stakeholder_found = True
                         new_stakeholders.append(
                             StakeHolderParticipation(
                                 stakeholder=stakeholder.stakeholder,
@@ -1396,6 +1408,13 @@ class TokenOperations:
                     else:
                         # Keep other stakeholders unchanged
                         new_stakeholders.append(stakeholder)
+
+                # Verify that the stakeholder was found
+                if not stakeholder_found:
+                    return {
+                        "success": False,
+                        "error": f"Stakeholder '{stakeholder_name.decode('utf-8', errors='replace')}' with matching PKH not found in project",
+                    }
 
                 # Authorized mode: No datum for wallet
                 datum_to_use = None

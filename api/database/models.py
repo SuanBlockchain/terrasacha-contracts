@@ -5,54 +5,11 @@ SQLModel models for storing contract information, transaction history,
 and wallet management in PostgreSQL.
 """
 
-from datetime import datetime
-from enum import Enum
+from datetime import datetime, timezone
 
 from sqlmodel import JSON, Column, Field, Relationship, SQLModel
 
-
-# ============================================================================
-# Enums
-# ============================================================================
-
-
-class NetworkType(str, Enum):
-    """Blockchain network types"""
-
-    TESTNET = "testnet"
-    MAINNET = "mainnet"
-
-
-class ContractType(str, Enum):
-    """Smart contract types"""
-
-    MINTING_POLICY = "minting_policy"
-    SPENDING_VALIDATOR = "spending_validator"
-
-
-class ContractStorageType(str, Enum):
-    """How contract scripts are stored"""
-
-    LOCAL = "local"
-    REFERENCE_SCRIPT = "reference_script"
-
-
-class TransactionStatus(str, Enum):
-    """Transaction processing status"""
-
-    PENDING = "pending"
-    SUBMITTED = "submitted"
-    CONFIRMED = "confirmed"
-    FAILED = "failed"
-
-
-class ProjectState(int, Enum):
-    """Project contract states"""
-
-    INITIALIZED = 0
-    DISTRIBUTED = 1
-    CERTIFIED = 2
-    CLOSED = 3
+from api.enums import ContractStorageType, ContractType, NetworkType, ProjectState, TransactionStatus, WalletRole
 
 
 # ============================================================================
@@ -63,8 +20,12 @@ class ProjectState(int, Enum):
 class TimestampMixin(SQLModel):
     """Mixin for timestamp fields"""
 
-    created_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
-    updated_at: datetime = Field(default_factory=datetime.utcnow, nullable=False)
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
+    )
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None), nullable=False
+    )
 
 
 # ============================================================================
@@ -77,23 +38,71 @@ class Wallet(TimestampMixin, table=True):
     Wallet management table
 
     Stores wallet information with encrypted mnemonics and role-based organization.
+    Supports password-based encryption for security.
     """
 
     __tablename__ = "wallets"
 
-    id: int | None = Field(default=None, primary_key=True)
+    payment_key_hash: str = Field(primary_key=True, index=True, nullable=False)
     name: str = Field(index=True, unique=True, nullable=False)
     network: NetworkType = Field(nullable=False)
-    mnemonic_encrypted: str = Field(nullable=False)  # Encrypted BIP39 mnemonic
+
+    # Encryption and security
+    mnemonic_encrypted: str = Field(nullable=False)  # Encrypted BIP39 mnemonic (Fernet encrypted)
+    encryption_salt: str = Field(nullable=False)  # Salt for key derivation (base64 encoded)
+    password_hash: str = Field(nullable=False)  # Argon2 password hash
+
+    # Wallet addresses and keys
     enterprise_address: str = Field(index=True, nullable=False)
     staking_address: str = Field(index=True, nullable=False)
-    payment_key_hash: str = Field(nullable=False)
+
+    # Wallet role and status
+    wallet_role: WalletRole = Field(default=WalletRole.USER, index=True, nullable=False)
+    is_locked: bool = Field(default=True, index=True, nullable=False)  # Locked by default
     is_default: bool = Field(default=False, nullable=False)
+
+    # Session tracking
+    last_unlocked_at: datetime | None = Field(default=None)
+
+    # Additional metadata
     extra_data: dict = Field(default={}, sa_column=Column(JSON))
 
     # Relationships
     transactions: list["Transaction"] = Relationship(back_populates="wallet")
     protocols: list["Protocol"] = Relationship(back_populates="wallet")
+    wallet_sessions: list["WalletSession"] = Relationship(back_populates="wallet", cascade_delete=True)
+
+
+class WalletSession(TimestampMixin, table=True):
+    """
+    Wallet session management table
+
+    Tracks active wallet sessions for token-based authentication.
+    Used for session revocation and security auditing.
+    """
+
+    __tablename__ = "wallet_sessions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    wallet_id: str = Field(foreign_key="wallets.payment_key_hash", index=True, nullable=False)
+
+    # JWT token identification
+    jti: str = Field(index=True, unique=True, nullable=False)  # JWT ID (jti claim) for access token
+    refresh_jti: str = Field(index=True, unique=True, nullable=False)  # JWT ID for refresh token
+
+    # Session metadata
+    expires_at: datetime = Field(nullable=False)  # Access token expiration
+    refresh_expires_at: datetime = Field(nullable=False)  # Refresh token expiration
+    revoked: bool = Field(default=False, index=True, nullable=False)  # Session revoked flag
+    revoked_at: datetime | None = Field(default=None)  # When session was revoked
+    last_used_at: datetime | None = Field(default=None)  # Last time session was used
+
+    # Session tracking
+    ip_address: str | None = Field(default=None)
+    user_agent: str | None = Field(default=None)
+
+    # Relationships
+    wallet: "Wallet" = Relationship(back_populates="wallet_sessions")
 
 
 # ============================================================================
@@ -159,7 +168,7 @@ class Protocol(TimestampMixin, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     contract_id: int = Field(foreign_key="contracts.id", nullable=False)
-    wallet_id: int = Field(foreign_key="wallets.id", nullable=False)
+    wallet_id: str = Field(foreign_key="wallets.payment_key_hash", nullable=False)
 
     # Protocol NFT information
     protocol_nft_policy_id: str = Field(index=True, nullable=False)
@@ -382,12 +391,11 @@ class Transaction(TimestampMixin, table=True):
     __tablename__ = "transactions"
 
     id: int | None = Field(default=None, primary_key=True)
-    wallet_id: int | None = Field(default=None, foreign_key="wallets.id")
+    wallet_id: str | None = Field(default=None, foreign_key="wallets.payment_key_hash")
     contract_id: int | None = Field(default=None, foreign_key="contracts.id")
 
     # Transaction identification
-    tx_id: str = Field(index=True, unique=True, nullable=False)
-    tx_hash: str = Field(index=True, nullable=False)
+    tx_hash: str = Field(index=True, unique=True, nullable=False)
 
     # Transaction details
     status: TransactionStatus = Field(default=TransactionStatus.PENDING, nullable=False, index=True)

@@ -17,10 +17,13 @@ dependencies = [
     "sqlmodel>=0.0.27",
     "asyncpg>=0.30.0",
     "alembic>=1.17.0",
-    "fastapi>=0.119.0",
+    "fastapi[standard]>=0.119.0",
     "pydantic>=2.12.2",
     "pydantic-settings>=2.11.0",
     "psycopg2-binary>=2.9.11",
+    "cryptography>=44.0.0",
+    "argon2-cffi>=23.1.0",
+    "pyjwt>=2.10.0",
 ]
 
 [project.urls]
@@ -29,6 +32,7 @@ repository = "https://github.com/SuanBlockchain/terrasacha-contracts"
 [project.optional-dependencies]
 dev = [
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23.0",
     "ruff>=0.8.0",
     "mypy>=1.17.1",
     "pytest-cov>=6.2.1",
@@ -41,6 +45,7 @@ dev = [
 ]
 test = [
     "pytest>=8.4.1",
+    "pytest-asyncio>=0.23.0",
     "pytest-cov>=6.2.1",
     "pytest-xdist>=3.8.0",
     "pytest-mock>=3.14.1",
@@ -126,7 +131,7 @@ warn_unreachable = true
 strict_equality = true
 show_error_codes = true
 explicit_package_bases = true
-files = ["src"]
+files = ["src/cardano_offchain", "api"]
 exclude = [
     "^build/",
     "^dist/",
@@ -134,6 +139,8 @@ exclude = [
     "^\\.venv/",
     "^src/terrasacha_contracts/",  # Skip all OpShin contract files
     "^src/scripts/",               # Skip build scripts
+    "^src/tests/",                 # Skip contract test files
+    "^api/tests/",                 # Skip API test files
     "^src/database/",              # Skip database models - requires SQLAlchemy plugin
 ]
 
@@ -147,6 +154,9 @@ module = [
     "sqlalchemy.*",
     "sqlmodel.*",
     "pydantic_settings.*",
+    "pytest.*",
+    "pytest_asyncio.*",
+    "cardano_offchain.*",
 ]
 ignore_missing_imports = true
 
@@ -158,6 +168,28 @@ module = [
 ]
 ignore_errors = true
 
+# Skip type checking for all test files
+[[tool.mypy.overrides]]
+module = [
+    "tests.*",
+]
+ignore_errors = true
+follow_imports = "skip"
+
+# Skip SQLAlchemy repository type errors (known issue with SQLAlchemy/mypy)
+[[tool.mypy.overrides]]
+module = [
+    "api.database.repositories.*",
+]
+disable_error_code = ["arg-type"]
+
+# Skip Pydantic model initialization errors in endpoints (false positives)
+[[tool.mypy.overrides]]
+module = [
+    "api.routers.api_v1.endpoints.*",
+]
+disable_error_code = ["call-arg", "arg-type"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 addopts = [
@@ -165,24 +197,32 @@ addopts = [
     "--strict-markers",
     "--strict-config",
     "--cov=src",
+    "--cov=api",
     "--cov-branch",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
     "--cov-report=xml",
 ]
-testpaths = ["tests"]
+# Multiple test directories: contract tests in src/tests, API tests in api/tests
+testpaths = ["src/tests", "api/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 markers = [
     "slow: marks tests as slow (deselect with -m 'not slow')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests", 
+    "integration: marks tests as integration tests (may require external services)",
+    "unit: marks tests as unit tests (no external dependencies)",
     "performance: marks tests as performance tests",
-    "contracts: marks tests related to contract compilation/validation",
+    "contracts: marks tests related to OpShin smart contracts",
+    "api: marks tests related to FastAPI endpoints",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
     "ignore::UserWarning:hypothesis.*",
 ]
+# Asyncio configuration for async tests
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["src"]

@@ -7,8 +7,8 @@ Manages wallet data access operations.
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.database.models import Wallet
-from src.database.repositories.base import BaseRepository
+from api.database.models import Wallet
+from api.database.repositories.base import BaseRepository
 
 
 class WalletRepository(BaseRepository[Wallet]):
@@ -17,6 +17,59 @@ class WalletRepository(BaseRepository[Wallet]):
     def __init__(self, session: AsyncSession):
         """Initialize wallet repository"""
         super().__init__(Wallet, session)
+
+    async def get(self, payment_key_hash: str) -> Wallet | None:
+        """
+        Get wallet by payment key hash (primary key)
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            Wallet instance or None
+        """
+        return await self.session.get(Wallet, payment_key_hash)
+
+    async def update(self, payment_key_hash: str, **kwargs) -> Wallet | None:
+        """
+        Update wallet by payment key hash
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+            **kwargs: Fields to update
+
+        Returns:
+            Updated wallet instance or None
+        """
+        wallet = await self.get(payment_key_hash)
+        if wallet is None:
+            return None
+
+        for key, value in kwargs.items():
+            setattr(wallet, key, value)
+
+        self.session.add(wallet)
+        await self.session.commit()
+        await self.session.refresh(wallet)
+        return wallet
+
+    async def delete(self, payment_key_hash: str) -> bool:
+        """
+        Delete wallet by payment key hash
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            True if deleted, False if not found
+        """
+        wallet = await self.get(payment_key_hash)
+        if wallet is None:
+            return False
+
+        await self.session.delete(wallet)
+        await self.session.commit()
+        return True
 
     async def get_by_name(self, name: str) -> Wallet | None:
         """
@@ -57,18 +110,18 @@ class WalletRepository(BaseRepository[Wallet]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def set_default(self, wallet_id: int) -> bool:
+    async def set_default(self, payment_key_hash: str) -> bool:
         """
         Set wallet as default (unsets all others)
 
         Args:
-            wallet_id: Wallet ID to set as default
+            payment_key_hash: Payment key hash (wallet ID) to set as default
 
         Returns:
             True if successful, False if wallet not found
         """
         # Get the wallet to set as default
-        wallet = await self.get(wallet_id)
+        wallet = await self.get(payment_key_hash)
         if wallet is None:
             return False
 

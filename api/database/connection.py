@@ -7,19 +7,24 @@ All schema changes should be managed through Alembic migrations.
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import create_engine
 
 
+# Get the project root directory (two levels up from api/database/)
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
 class DatabaseSettings(BaseSettings):
     """Database configuration from environment variables"""
 
-    # PostgreSQL connection - all values loaded from .env file
-    postgres_host: str  # No default - must be set in .env
-    postgres_port: int  # No default - must be set in .env
+    # PostgreSQL connection - loaded from .env file with sensible defaults
+    postgres_host: str = "localhost"  # Default to localhost for local development
+    postgres_port: int = 5432  # Standard PostgreSQL port
     postgres_user: str  # No default - must be set in .env
     postgres_password: str  # No default - must be set in .env
     postgres_db: str  # No default - must be set in .env
@@ -33,10 +38,9 @@ class DatabaseSettings(BaseSettings):
     # SSL settings
     postgres_ssl: bool = False
 
-    class Config:
-        env_file = "src/cardano_offchain/menu/.env"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra fields from .env file
+    model_config = SettingsConfigDict(
+        env_file=str(PROJECT_ROOT / ".env"), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
+    )
 
     @property
     def database_url(self) -> str:
@@ -70,7 +74,7 @@ class DatabaseManager:
         Args:
             settings: Database settings (loads from environment if not provided)
         """
-        self.settings = settings or DatabaseSettings()
+        self.settings = settings or DatabaseSettings()  # type: ignore[call-arg]  # Pydantic settings loads from env
         self._engine: AsyncEngine | None = None
         self._sync_engine: Engine | None = None
         self._async_session_factory: async_sessionmaker[AsyncSession] | None = None

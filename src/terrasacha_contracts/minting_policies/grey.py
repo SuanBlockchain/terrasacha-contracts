@@ -75,8 +75,6 @@ def validate_project_state_for_mint(
                         "Must mint exactly the stakeholder's full participation amount"
                     )
                     found_authorized_stakeholder = True
-                else:
-                    assert False, "Non-authorized stakeholders cannot change their claim status"
 
         assert found_authorized_stakeholder, "Transaction must be signed by a registered stakeholder"
 

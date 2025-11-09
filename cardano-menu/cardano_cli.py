@@ -1609,6 +1609,105 @@ class CardanoCLI:
                     input("Press Enter to continue...")
                     return
 
+        # For authorized mode, get stakeholder selection
+        stakeholder_name_bytes = None
+        if minting_mode != "free":
+            try:
+                # Get project contract and address
+                project_contract = self.contract_manager.get_project_contract(selected_project)
+                if not project_contract:
+                    self.menu.print_error("Project contract not found")
+                    input("Press Enter to continue...")
+                    return
+
+                project_contract_name = self.contract_manager.get_project_name_from_contract(project_contract)
+                project_nfts_contract = self.contract_manager.get_project_nfts_contract(project_contract_name)
+                if not project_nfts_contract:
+                    self.menu.print_error("Project NFTs contract not found")
+                    input("Press Enter to continue...")
+                    return
+
+                project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+                project_address = project_contract.testnet_addr
+
+                # Find project UTXO with datum
+                project_utxos = self.context.utxos(project_address)
+                if not project_utxos:
+                    self.menu.print_error("No project UTXOs found")
+                    input("Press Enter to continue...")
+                    return
+
+                project_utxo = self.transactions.find_utxo_by_policy_id(project_utxos, project_minting_policy_id)
+                if not project_utxo:
+                    self.menu.print_error("No project UTXO found with specified policy ID")
+                    input("Press Enter to continue...")
+                    return
+
+                # Get project datum
+                from terrasacha_contracts.util import DatumProject
+
+                project_datum = DatumProject.from_cbor(project_utxo.output.datum.cbor)
+
+                # Get current wallet's PKH
+                current_wallet_obj = self.wallet_manager.get_wallet()
+                if not current_wallet_obj:
+                    self.menu.print_error("No default wallet found")
+                    input("Press Enter to continue...")
+                    return
+                wallet_pkh = current_wallet_obj.get_payment_verification_key_hash()
+
+                # Filter stakeholders that match wallet's PKH
+                matching_stakeholders = [
+                    stakeholder
+                    for stakeholder in project_datum.stakeholders
+                    if stakeholder.pkh == wallet_pkh
+                ]
+
+                if not matching_stakeholders:
+                    self.menu.print_error(
+                        "No stakeholders found matching your wallet's PKH. You are not authorized to mint grey tokens."
+                    )
+                    input("Press Enter to continue...")
+                    return
+
+                # If only one stakeholder matches, use it automatically
+                if len(matching_stakeholders) == 1:
+                    stakeholder_name_bytes = matching_stakeholders[0].stakeholder
+                    stakeholder_display = matching_stakeholders[0].stakeholder.decode("utf-8", errors="replace")
+                    self.menu.print_info(f"Auto-selected stakeholder: {stakeholder_display}")
+                else:
+                    # Multiple stakeholders with same PKH - let user choose
+                    self.menu.print_section("SELECT STAKEHOLDER")
+                    print("│ Multiple stakeholders found for your wallet. Please select one:")
+                    print()
+
+                    for idx, stakeholder in enumerate(matching_stakeholders, 1):
+                        stakeholder_display = stakeholder.stakeholder.decode("utf-8", errors="replace")
+                        participation = stakeholder.participation
+                        claimed_status = "CLAIMED" if str(stakeholder.claimed) == "TrueData()" else "UNCLAIMED"
+                        print(f"│ {idx}. {stakeholder_display} - {participation:,} tokens ({claimed_status})")
+
+                    print()
+                    choice = self.menu.get_input(f"Select stakeholder (1-{len(matching_stakeholders)})")
+
+                    try:
+                        choice_idx = int(choice) - 1
+                        if 0 <= choice_idx < len(matching_stakeholders):
+                            stakeholder_name_bytes = matching_stakeholders[choice_idx].stakeholder
+                        else:
+                            self.menu.print_error("Invalid selection")
+                            input("Press Enter to continue...")
+                            return
+                    except ValueError:
+                        self.menu.print_error("Invalid input. Please enter a number.")
+                        input("Press Enter to continue...")
+                        return
+
+            except Exception as e:
+                self.menu.print_error(f"Failed to fetch stakeholder data: {e}")
+                input("Press Enter to continue...")
+                return
+
         # Show transaction preview
         self.menu.print_section("TRANSACTION PREVIEW")
         current_wallet = self.wallet_manager.get_default_wallet_name()
@@ -1648,7 +1747,10 @@ class CardanoCLI:
                 )
             else:
                 result = self.token_operations.create_grey_minting_transaction(
-                    project_name=selected_project, grey_token_quantity=grey_token_quantity, minting_mode=minting_mode
+                    project_name=selected_project,
+                    grey_token_quantity=grey_token_quantity,
+                    minting_mode=minting_mode,
+                    stakeholder_name=stakeholder_name_bytes,
                 )
 
             if result["success"]:
