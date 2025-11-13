@@ -21,3 +21,20 @@ table {
   border-radius: 0.2rem;
   overflow: hidden;
 }
+
+/* SVG workflow diagrams - make them larger and responsive */
+figure img[src$=".svg"],
+figure img[src*="/workflows/"] {
+  max-width: 100%;
+  width: 100%;
+  height: auto;
+  min-width: 800px;
+}
+
+/* On smaller screens, allow SVG to shrink */
+@media (max-width: 1200px) {
+  figure img[src$=".svg"],
+  figure img[src*="/workflows/"] {
+    min-width: 100%;
+  }
+}

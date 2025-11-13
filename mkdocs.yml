@@ -36,6 +36,23 @@ theme:
 
 nav:
   - Home: index.md
+  - Business Process:
+      - English:
+          - Overview: business-process/en/index.md
+          - Phase 1 - Pre-Blockchain: business-process/en/phase1-pre-blockchain.md
+          - Phase 2 - Certification: business-process/en/phase2-certification.md
+          - Phase 3 - Grey Tokens: business-process/en/phase3-grey-tokens.md
+          - Phase 4 - Green Tokens: business-process/en/phase4-green-tokens.md
+      - Español:
+          - Vista General: business-process/es/index.md
+          - Fase 1 - Pre-Blockchain: business-process/es/fase1-pre-blockchain.md
+          - Fase 2 - Certificación: business-process/es/fase2-certificacion.md
+          - Fase 3 - Tokens Grises: business-process/es/fase3-tokens-grises.md
+          - Fase 4 - Tokens Verdes: business-process/es/fase4-tokens-verdes.md
+  - Reference:
+      - Glossary: reference/glossary.md
+      - Stakeholders: reference/stakeholders.md
+      - Timeline: reference/timeline.md
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quickstart.md
@@ -71,7 +88,11 @@ markdown_extensions:
       pygments_lang_class: true
   - pymdownx.inlinehilite
   - pymdownx.snippets
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - admonition
