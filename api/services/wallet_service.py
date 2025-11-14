@@ -126,7 +126,7 @@ class WalletService:
             password_hash=password_hash_str,
             enterprise_address=str(cardano_wallet.enterprise_address),
             staking_address=str(cardano_wallet.staking_address),
-            payment_key_hash=payment_key_hash,
+            id=payment_key_hash,  # Payment key hash is the wallet ID
             wallet_role=role,
             is_locked=True,  # Locked by default
             is_default=False,
@@ -196,7 +196,7 @@ class WalletService:
             password_hash=password_hash_str,
             enterprise_address=str(cardano_wallet.enterprise_address),
             staking_address=str(cardano_wallet.staking_address),
-            payment_key_hash=payment_key_hash,
+            id=payment_key_hash,  # Payment key hash is the wallet ID
             wallet_role=wallet_role,  # Use provided role (defaults to USER)
             is_locked=True,
             is_default=False,

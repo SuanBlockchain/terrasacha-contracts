@@ -54,25 +54,27 @@ class WalletBalances(BaseModel):
 class WalletInfoResponse(BaseModel):
     """Detailed wallet information response"""
 
-    name: str = Field(description="Wallet name/role")
+    id: str = Field(description="Wallet ID (payment key hash)")
+    name: str = Field(description="Wallet name")
     network: str = Field(description="Network (testnet/mainnet)")
-    main_addresses: WalletAddressInfo = Field(description="Main addresses")
-    derived_addresses: list[DerivedAddressInfo] = Field(default_factory=list, description="Derived addresses")
+    enterprise_address: str = Field(description="Enterprise address (payment only)")
+    staking_address: str = Field(description="Staking address (payment + stake)")
+    role: str = Field(description="Wallet role (user/core)")
+    is_locked: bool = Field(description="Lock status")
     is_default: bool = Field(default=False, description="Whether this is the default/active wallet")
-    created_at: datetime | None = Field(None, description="Wallet creation timestamp")
+    created_at: datetime = Field(description="Wallet creation timestamp")
 
 
 class WalletListItem(BaseModel):
     """Wallet list item for summary responses"""
 
-    id: int | None = Field(None, description="Wallet ID (None for environment-based wallets)")
+    id: str = Field(description="Wallet ID (payment key hash)")
     name: str
     network: str
     enterprise_address: str
     is_default: bool = Field(default=False)
-    source: str = Field(description="Wallet source: 'database' or 'environment'")
-    role: str | None = Field(None, description="Wallet role (user/core) - only for database wallets")
-    is_locked: bool | None = Field(None, description="Lock status - only for database wallets")
+    role: str = Field(description="Wallet role (user/core)")
+    is_locked: bool = Field(description="Lock status")
 
 
 class WalletListResponse(BaseModel):
@@ -209,7 +211,7 @@ class CreateWalletResponse(BaseModel):
     """Response for wallet creation"""
 
     success: bool = Field(default=True)
-    wallet_id: int = Field(description="Database ID of the created wallet")
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
     name: str = Field(description="Wallet name")
     network: str = Field(description="Network (testnet/mainnet)")
     role: str = Field(description="Wallet role (user/core)")
@@ -226,7 +228,7 @@ class CreateWalletResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "success": True,
-                "wallet_id": 1,
+                "wallet_id": "a1b2c3d4e5f6...",
                 "name": "my_wallet",
                 "network": "testnet",
                 "role": "user",
@@ -262,7 +264,7 @@ class ImportWalletResponse(BaseModel):
     """Response for wallet import"""
 
     success: bool = Field(default=True)
-    wallet_id: int = Field(description="Database ID of the imported wallet")
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
     name: str = Field(description="Wallet name")
     network: str = Field(description="Network (testnet/mainnet)")
     role: str = Field(description="Wallet role (user)")
@@ -274,7 +276,7 @@ class ImportWalletResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "success": True,
-                "wallet_id": 2,
+                "wallet_id": "b2c3d4e5f6a7...",
                 "name": "imported_wallet",
                 "network": "testnet",
                 "role": "user",
@@ -334,6 +336,20 @@ class WalletExportResponse(BaseModel):
     export_timestamp: datetime = Field(default_factory=datetime.utcnow)
     wallets: list[WalletExportData]
     total_wallets: int
+
+
+class DeleteWalletRequest(BaseModel):
+    """Request to delete a wallet"""
+
+    password: str = Field(min_length=8, description="Wallet password for confirmation")
+
+
+class DeleteWalletResponse(BaseModel):
+    """Response for wallet deletion"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    wallet_id: str = Field(description="ID of the deleted wallet")
 
 
 # ============================================================================

@@ -43,7 +43,7 @@ class Wallet(TimestampMixin, table=True):
 
     __tablename__ = "wallets"
 
-    payment_key_hash: str = Field(primary_key=True, index=True, nullable=False)
+    id: str = Field(primary_key=True, index=True, nullable=False)  # Payment key hash (PKH)
     name: str = Field(index=True, unique=True, nullable=False)
     network: NetworkType = Field(nullable=False)
 
@@ -84,7 +84,7 @@ class WalletSession(TimestampMixin, table=True):
     __tablename__ = "wallet_sessions"
 
     id: int | None = Field(default=None, primary_key=True)
-    wallet_id: str = Field(foreign_key="wallets.payment_key_hash", index=True, nullable=False)
+    wallet_id: str = Field(foreign_key="wallets.id", index=True, nullable=False)
 
     # JWT token identification
     jti: str = Field(index=True, unique=True, nullable=False)  # JWT ID (jti claim) for access token
@@ -168,7 +168,7 @@ class Protocol(TimestampMixin, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     contract_id: int = Field(foreign_key="contracts.id", nullable=False)
-    wallet_id: str = Field(foreign_key="wallets.payment_key_hash", nullable=False)
+    wallet_id: str = Field(foreign_key="wallets.id", nullable=False)
 
     # Protocol NFT information
     protocol_nft_policy_id: str = Field(index=True, nullable=False)
@@ -391,7 +391,7 @@ class Transaction(TimestampMixin, table=True):
     __tablename__ = "transactions"
 
     id: int | None = Field(default=None, primary_key=True)
-    wallet_id: str | None = Field(default=None, foreign_key="wallets.payment_key_hash")
+    wallet_id: str | None = Field(default=None, foreign_key="wallets.id")
     contract_id: int | None = Field(default=None, foreign_key="contracts.id")
 
     # Transaction identification
