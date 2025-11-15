@@ -9,22 +9,36 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database.connection import get_session
-from api.database.models import Transaction as DBTransaction
+from api.database.models import Transaction as DBTransaction, Wallet
 from api.database.repositories.transaction import TransactionRepository
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token
 from api.enums import TransactionStatus as DBTransactionStatus
 from api.schemas.transaction import (
-    SendAdaRequest,
-    SendAdaResponse,
+    BuildTransactionRequest,
+    BuildTransactionResponse,
+    SignAndSubmitTransactionRequest,
+    SignAndSubmitTransactionResponse,
+    SignTransactionRequest,
+    SignTransactionResponse,
+    SubmitTransactionRequest,
+    SubmitTransactionResponse,
     TransactionDetailResponse,
     TransactionErrorResponse,
     TransactionHistoryItem,
     TransactionHistoryResponse,
     TransactionStatus,
     TransactionStatusResponse,
+)
+from api.services.transaction_service import (
+    InsufficientFundsError,
+    InvalidTransactionStateError,
+    TransactionNotFoundError,
+    TransactionNotOwnedError,
+    TransactionService,
 )
 from cardano_offchain.chain_context import CardanoChainContext
 
@@ -51,198 +65,343 @@ def get_chain_context() -> CardanoChainContext:
         _chain_context = CardanoChainContext(network, blockfrost_api_key)
     return _chain_context
 
-
 # ============================================================================
-# Send ADA Endpoint
+# Two-Stage Transaction Flow Endpoints
 # ============================================================================
 
 
 @router.post(
-    "/send-ada",
-    response_model=SendAdaResponse,
-    summary="Send ADA",
-    description="Send ADA from authenticated wallet to another address. Requires wallet to be unlocked first.",
+    "/build",
+    response_model=BuildTransactionResponse,
+    summary="Build unsigned transaction",
+    description="Build an unsigned transaction (offchain). No password required. Returns transaction ID for signing.",
     responses={
-        400: {"model": TransactionErrorResponse, "description": "Invalid request"},
-        401: {"model": TransactionErrorResponse, "description": "Authentication required - unlock wallet first"},
-        500: {"model": TransactionErrorResponse, "description": "Transaction failed"},
+        400: {"model": TransactionErrorResponse, "description": "Invalid request or insufficient funds"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to build transaction"},
     },
 )
-async def send_ada(
-    request: SendAdaRequest,
+async def build_transaction(
+    request: BuildTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    chain_context: CardanoChainContext = Depends(get_chain_context),
     session: AsyncSession = Depends(get_session),
-) -> SendAdaResponse:
+) -> BuildTransactionResponse:
     """
-    Send ADA to another address from an authenticated wallet.
+    Build an unsigned transaction (Stage 1: Offchain).
 
     This endpoint:
-    1. Uses the authenticated wallet from JWT token
-    2. Gets the CardanoWallet instance from SessionManager
-    3. Creates and signs the transaction
-    4. Submits it to the blockchain
-    5. Returns the transaction ID and explorer URL
+    1. Queries the blockchain for UTXOs
+    2. Builds the transaction structure
+    3. Calculates fees
+    4. Stores unsigned transaction in database
+    5. Returns transaction ID for signing
 
     **Authentication Required:**
-    - First unlock the wallet: POST /wallets/{wallet_id}/unlock
-    - Get access_token from response
-    - Include in header: Authorization: Bearer <access_token>
+    - JWT token from unlocked wallet
+    - Any wallet (USER or CORE) can build transactions
 
-    **Note:** Transaction will be pending until confirmed on-chain (usually 20 seconds).
+    **No password required** - just queries chain state
+
+    **Next Step:**
+    - Use transaction_id to sign: POST /transactions/sign
+    - Or sign and submit: POST /transactions/sign-and-submit
     """
     try:
-        # Get authenticated wallet's CardanoWallet instance
-        cardano_wallet = wallet.cardano_wallet
+        # Get wallet's network from database
+        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
+        result = await session.execute(stmt)
+        db_wallet = result.scalar_one_or_none()
 
-        # Get source address
-        from_address = cardano_wallet.get_address(request.from_address_index)
-        from_address_str = str(from_address)
+        if not db_wallet:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
-        # Validate amount
-        if request.amount_ada <= 0:
-            raise HTTPException(status_code=400, detail="Amount must be greater than 0")
+        # Create transaction service
+        tx_service = TransactionService(session)
 
-        # Validate destination address format
-        try:
-            # Basic validation - Cardano addresses start with addr or addr_test
-            if not (
-                request.to_address.startswith("addr")
-                or request.to_address.startswith("addr_test")
-                or request.to_address.startswith("stake")
-            ):
-                raise ValueError("Invalid Cardano address format")
-        except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid destination address format: {request.to_address}")
-
-        # Create the transaction directly using the authenticated CardanoWallet
-        try:
-            # Get API for blockchain interaction
-            api = chain_context.get_api()
-
-            # Build and sign transaction
-            signed_tx = cardano_wallet.create_simple_transaction(
-                to_address=request.to_address,
-                amount_ada=request.amount_ada,
-                from_address_index=request.from_address_index,
-                api=api
-            )
-
-            if not signed_tx:
-                raise HTTPException(status_code=500, detail="Failed to create transaction")
-
-        except Exception as e:
-            error_msg = str(e)
-            # Check for common errors
-            if "insufficient" in error_msg.lower() or "balance" in error_msg.lower():
-                raise HTTPException(status_code=400, detail=f"Insufficient balance: {error_msg}")
-            raise HTTPException(status_code=500, detail=f"Failed to create transaction: {error_msg}")
-
-        # Get transaction ID (available before submission)
-        if not signed_tx.id:
-            raise HTTPException(status_code=500, detail="Failed to generate transaction ID")
-
-        tx_id = str(signed_tx.id.payload.hex())
-
-        # Calculate amounts
-        amount_lovelace = int(request.amount_ada * 1_000_000)
-        fee_lovelace = signed_tx.transaction_body.fee
-        fee_ada = fee_lovelace / 1_000_000 if fee_lovelace else None
-
-        # Create database record FIRST with PENDING status (before blockchain submission)
-        tx_repo = TransactionRepository(session)
-        db_transaction = DBTransaction(
-            tx_hash=tx_id,
-            wallet_id=wallet.wallet_id,  # Link transaction to authenticated wallet
-            status=DBTransactionStatus.PENDING,  # PENDING status before submission
-            operation="send_ada",
-            description=f"Sent {request.amount_ada} ADA from {wallet.wallet_name} to {request.to_address[:20]}...",
-            fee_lovelace=fee_lovelace,
-            total_output_lovelace=amount_lovelace,
-            outputs=[{"address": request.to_address, "amount": amount_lovelace}],
-            inputs=[{"address": from_address_str}],
-            submitted_at=None,  # Not submitted yet
-        )
-
-        try:
-            await tx_repo.create(db_transaction)
-        except Exception as e:
-            error_msg = str(e)
-            raise HTTPException(status_code=500, detail=f"Failed to create transaction record in database: {error_msg}")
-
-        # Submit the transaction to blockchain
-        try:
-            # Submit using the chain context API
-            api = chain_context.get_api()
-            submitted_tx_id = api.transaction_submit(signed_tx.to_cbor())
-
-            if not submitted_tx_id or submitted_tx_id != tx_id:
-                # Transaction submission failed - update database status to FAILED
-                await tx_repo.update(
-                    db_transaction.id,
-                    status=DBTransactionStatus.FAILED,
-                    error_message="Transaction submission failed - no transaction ID returned"
-                )
-                raise HTTPException(status_code=500, detail="Transaction submission failed - no transaction ID")
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            # Blockchain submission failed - update database status to FAILED
-            error_msg = str(e)
-            try:
-                await tx_repo.update(
-                    db_transaction.id,
-                    status=DBTransactionStatus.FAILED,
-                    error_message=f"Blockchain submission failed: {error_msg}"
-                )
-            except Exception as db_error:
-                # Log that we couldn't update the database, but prioritize the original error
-                print(f"Warning: Failed to update transaction status in database: {db_error}")
-
-            raise HTTPException(status_code=500, detail=f"Failed to submit transaction to blockchain: {error_msg}")
-
-        # Transaction submitted successfully - update database status to SUBMITTED
-        try:
-            await tx_repo.update(
-                db_transaction.id,
-                status=DBTransactionStatus.SUBMITTED,
-                submitted_at=datetime.now(timezone.utc).replace(tzinfo=None)
-            )
-        except Exception as e:
-            # Transaction was submitted to blockchain but database update failed
-            # This is a non-critical error - transaction is on blockchain
-            error_msg = str(e)
-            print(f"Warning: Transaction {tx_id} submitted to blockchain but failed to update database status: {error_msg}")
-            # Continue anyway since blockchain submission succeeded
-
-        # Get explorer URL for the transaction
-        try:
-            explorer_url = chain_context.get_explorer_url(tx_id)
-        except Exception:
-            # Fallback if we can't get explorer URL
-            explorer_url = f"https://{'preview.' if 'testnet' in os.getenv('network', 'testnet') else ''}cardanoscan.io/transaction/{tx_id}"
-
-        return SendAdaResponse(
-            success=True,
-            tx_hash=tx_id,
-            explorer_url=explorer_url,
-            from_address=from_address_str,
+        # Build the transaction
+        transaction = await tx_service.build_transaction(
+            wallet_id=wallet.wallet_id,
+            from_address_index=request.from_address_index,
             to_address=request.to_address,
-            amount_lovelace=amount_lovelace,
             amount_ada=request.amount_ada,
-            fee_lovelace=fee_lovelace,
-            fee_ada=fee_ada,
-            submitted_at=datetime.now(timezone.utc),
-            error=None,
+            network=db_wallet.network
         )
 
-    except HTTPException:
-        raise
+        # Get explorer URL
+        network_name = "preview" if db_wallet.network.value == "testnet" else "mainnet"
+        explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}" if transaction.tx_hash else None
+
+        return BuildTransactionResponse(
+            success=True,
+            transaction_id=transaction.tx_hash,
+            tx_hash=transaction.tx_hash,
+            tx_cbor=transaction.unsigned_cbor,
+            from_address=transaction.from_address,
+            to_address=transaction.to_address,
+            amount_lovelace=transaction.amount_lovelace,
+            amount_ada=transaction.amount_lovelace / 1_000_000,
+            estimated_fee_lovelace=transaction.estimated_fee,
+            estimated_fee_ada=transaction.estimated_fee / 1_000_000,
+            status=transaction.status.value,
+        )
+
+    except InsufficientFundsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except NotImplementedError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        return SendAdaResponse(success=False, error=f"Transaction failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to build transaction: {str(e)}")
 
 
+@router.post(
+    "/sign",
+    response_model=SignTransactionResponse,
+    summary="Sign transaction with password",
+    description="Sign a built transaction using wallet password (Stage 2). Returns signed transaction.",
+    responses={
+        400: {"model": TransactionErrorResponse, "description": "Invalid transaction state"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required or incorrect password"},
+        403: {"model": TransactionErrorResponse, "description": "Not authorized to sign this transaction"},
+        404: {"model": TransactionErrorResponse, "description": "Transaction not found"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to sign transaction"},
+    },
+)
+async def sign_transaction(
+    request: SignTransactionRequest,
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    session: AsyncSession = Depends(get_session),
+) -> SignTransactionResponse:
+    """
+    Sign a built transaction with wallet password (Stage 2).
+
+    This endpoint:
+    1. Verifies you own the transaction
+    2. Verifies the password
+    3. Decrypts mnemonic temporarily
+    4. Signs the transaction
+    5. Discards keys immediately
+    6. Updates database with signed transaction
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet
+    - Must own the transaction being signed
+
+    **Password Required:**
+    - Wallet password to decrypt mnemonic for signing
+
+    **Next Step:**
+    - Submit the signed transaction: POST /transactions/submit
+    """
+    try:
+        # Get wallet's network from database
+        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
+        result = await session.execute(stmt)
+        db_wallet = result.scalar_one_or_none()
+
+        if not db_wallet:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
+
+        # Create transaction service
+        tx_service = TransactionService(session)
+
+        # Sign the transaction
+        transaction = await tx_service.sign_transaction(
+            transaction_id=request.transaction_id,
+            wallet_id=wallet.wallet_id,
+            password=request.password,
+            network=db_wallet.network
+        )
+
+        return SignTransactionResponse(
+            success=True,
+            transaction_id=transaction.tx_hash,
+            signed_tx_cbor=transaction.signed_cbor,
+            tx_hash=transaction.tx_hash,
+            status=transaction.status.value,
+        )
+
+    except TransactionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except TransactionNotOwnedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except InvalidTransactionStateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Check for password error
+        if "password" in str(e).lower() or "incorrect" in str(e).lower():
+            raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to sign transaction: {str(e)}")
+
+
+@router.post(
+    "/submit",
+    response_model=SubmitTransactionResponse,
+    summary="Submit signed transaction",
+    description="Submit a signed transaction to the blockchain (Stage 3). No password required.",
+    responses={
+        400: {"model": TransactionErrorResponse, "description": "Invalid transaction state"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required"},
+        403: {"model": TransactionErrorResponse, "description": "Not authorized to submit this transaction"},
+        404: {"model": TransactionErrorResponse, "description": "Transaction not found"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to submit transaction"},
+    },
+)
+async def submit_transaction(
+    request: SubmitTransactionRequest,
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    session: AsyncSession = Depends(get_session),
+) -> SubmitTransactionResponse:
+    """
+    Submit a signed transaction to the blockchain (Stage 3).
+
+    This endpoint:
+    1. Verifies you own the transaction
+    2. Verifies transaction is signed
+    3. Submits to blockchain
+    4. Updates database status
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet
+    - Must own the transaction being submitted
+
+    **No password required** - transaction must already be signed
+
+    **Result:**
+    - Transaction submitted to mempool
+    - Will be confirmed in ~20 seconds
+    - Use explorer URL to track confirmation
+    """
+    try:
+        # Get wallet's network from database
+        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
+        result = await session.execute(stmt)
+        db_wallet = result.scalar_one_or_none()
+
+        if not db_wallet:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
+
+        # Create transaction service
+        tx_service = TransactionService(session)
+
+        # Submit the transaction
+        transaction = await tx_service.submit_transaction(
+            transaction_id=request.transaction_id,
+            wallet_id=wallet.wallet_id,
+            network=db_wallet.network
+        )
+
+        # Get explorer URL
+        network_name = "preview" if db_wallet.network.value == "testnet" else "mainnet"
+        explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}"
+
+        return SubmitTransactionResponse(
+            success=True,
+            transaction_id=transaction.tx_hash,
+            tx_hash=transaction.tx_hash,
+            status=transaction.status.value,
+            submitted_at=transaction.submitted_at,
+            explorer_url=explorer_url,
+        )
+
+    except TransactionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except TransactionNotOwnedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except InvalidTransactionStateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to submit transaction: {str(e)}")
+
+
+@router.post(
+    "/sign-and-submit",
+    response_model=SignAndSubmitTransactionResponse,
+    summary="Sign and submit transaction (convenience)",
+    description="Sign with password AND submit to blockchain in one call. Convenience endpoint combining /sign and /submit.",
+    responses={
+        400: {"model": TransactionErrorResponse, "description": "Invalid transaction state"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required or incorrect password"},
+        403: {"model": TransactionErrorResponse, "description": "Not authorized"},
+        404: {"model": TransactionErrorResponse, "description": "Transaction not found"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to sign or submit transaction"},
+    },
+)
+async def sign_and_submit_transaction(
+    request: SignAndSubmitTransactionRequest,
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    session: AsyncSession = Depends(get_session),
+) -> SignAndSubmitTransactionResponse:
+    """
+    Sign and submit a transaction in one operation (Convenience endpoint).
+
+    This endpoint combines /sign and /submit:
+    1. Verifies you own the transaction
+    2. Signs with your password
+    3. Immediately submits to blockchain
+    4. Returns confirmation
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet
+    - Must own the transaction
+
+    **Password Required:**
+    - Wallet password to decrypt mnemonic for signing
+
+    **Benefit:**
+    - One API call instead of two
+    - Faster workflow for trusted transactions
+
+    **Use Cases:**
+    - Quick sends when you trust the built transaction
+    - Automated operations
+    - Simple user flows
+    """
+    try:
+        # Get wallet's network from database
+        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
+        result = await session.execute(stmt)
+        db_wallet = result.scalar_one_or_none()
+
+        if not db_wallet:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
+
+        # Create transaction service
+        tx_service = TransactionService(session)
+
+        # Sign and submit
+        transaction = await tx_service.sign_and_submit_transaction(
+            transaction_id=request.transaction_id,
+            wallet_id=wallet.wallet_id,
+            password=request.password,
+            network=db_wallet.network
+        )
+
+        # Get explorer URL
+        network_name = "preview" if db_wallet.network.value == "testnet" else "testnet"
+        explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}"
+
+        return SignAndSubmitTransactionResponse(
+            success=True,
+            transaction_id=transaction.tx_hash,
+            tx_hash=transaction.tx_hash,
+            status=transaction.status.value,
+            signed_at=transaction.updated_at,  # Updated when signed
+            submitted_at=transaction.submitted_at,
+            explorer_url=explorer_url,
+        )
+
+    except TransactionNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except TransactionNotOwnedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except InvalidTransactionStateError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Check for password error
+        if "password" in str(e).lower() or "incorrect" in str(e).lower():
+            raise HTTPException(status_code=401, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to sign and submit transaction: {str(e)}")
+    
 # ============================================================================
 # Transaction Status Endpoint
 # ============================================================================
@@ -557,3 +716,5 @@ async def get_transaction_detail(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get transaction details: {str(e)}")
+
+

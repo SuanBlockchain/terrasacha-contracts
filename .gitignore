@@ -125,3 +125,6 @@ CLAUDE.md
 # IDE settings (already covered above at line 61, but being explicit)
 # .vscode/ already ignored
 # settings.json covered by .vscode/ pattern
+PROJECT_STATUS.md
+.claude.md
+scripts/test_transaction_complete.sh

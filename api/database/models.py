@@ -386,27 +386,35 @@ class Transaction(TimestampMixin, table=True):
     Transaction history
 
     Comprehensive tracking of all blockchain transactions.
+    Supports two-stage flow: BUILD → SIGN → SUBMIT
     """
 
     __tablename__ = "transactions"
 
-    id: int | None = Field(default=None, primary_key=True)
+    # Transaction identification - tx_hash is the primary key
+    tx_hash: str = Field(primary_key=True)  # 64-character hex transaction hash
     wallet_id: str | None = Field(default=None, foreign_key="wallets.id")
     contract_id: int | None = Field(default=None, foreign_key="contracts.id")
 
-    # Transaction identification
-    tx_hash: str = Field(index=True, unique=True, nullable=False)
-
     # Transaction details
-    status: TransactionStatus = Field(default=TransactionStatus.PENDING, nullable=False, index=True)
-    operation: str = Field(nullable=False)  # "mint_protocol", "create_project", "buy_grey", etc.
+    status: TransactionStatus = Field(default=TransactionStatus.BUILT, nullable=False, index=True)
+    operation: str = Field(nullable=False)  # "send_ada", "mint_protocol", "create_project", etc.
     description: str | None = Field(default=None)
 
-    # Amounts
+    # Two-stage transaction support
+    unsigned_cbor: str | None = Field(default=None)  # Unsigned transaction CBOR (after BUILD)
+    signed_cbor: str | None = Field(default=None)    # Signed transaction CBOR (after SIGN)
+    from_address_index: int | None = Field(default=None)  # Source address derivation index
+    from_address: str | None = Field(default=None)    # Source address
+    to_address: str | None = Field(default=None)      # Destination address (for simple sends)
+    amount_lovelace: int | None = Field(default=None) # Amount being sent (for simple sends)
+    estimated_fee: int | None = Field(default=None)   # Estimated fee in lovelace
+
+    # Amounts (legacy support)
     fee_lovelace: int | None = Field(default=None)
     total_output_lovelace: int | None = Field(default=None)
 
-    # Inputs/Outputs
+    # Inputs/Outputs (legacy support)
     inputs: list[dict] = Field(default=[], sa_column=Column(JSON))
     outputs: list[dict] = Field(default=[], sa_column=Column(JSON))
 

@@ -158,6 +158,191 @@ class TransactionDetailResponse(BaseModel):
 
 
 # ============================================================================
+# Two-Stage Transaction Flow Schemas
+# ============================================================================
+
+
+class BuildTransactionRequest(BaseModel):
+    """
+    Request to build an unsigned transaction.
+
+    The source wallet is determined from the JWT token.
+    No password required for building - just queries chain state.
+    """
+
+    from_address_index: int = Field(default=0, ge=0, le=100, description="Source address index (0 = main address)")
+    to_address: str = Field(description="Destination Cardano address")
+    amount_ada: float = Field(gt=0, description="Amount in ADA to send (must be > 0)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "from_address_index": 0,
+                "to_address": "addr_test1qz...",
+                "amount_ada": 10.5
+            }
+        }
+
+
+class BuildTransactionResponse(BaseModel):
+    """Response after building an unsigned transaction"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Unique transaction ID for signing/submitting")
+    tx_hash: str | None = Field(description="Transaction hash (calculated from unsigned tx)")
+    tx_cbor: str = Field(description="Unsigned transaction CBOR hex")
+    from_address: str = Field(description="Source address used")
+    to_address: str = Field(description="Destination address")
+    amount_lovelace: int = Field(description="Amount being sent in lovelace")
+    amount_ada: float = Field(description="Amount being sent in ADA")
+    estimated_fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    estimated_fee_ada: float = Field(description="Estimated transaction fee in ADA")
+    status: str = Field(default="BUILT", description="Transaction status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "tx_hash": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "tx_cbor": "84a4...",
+                "from_address": "addr_test1vz...",
+                "to_address": "addr_test1qz...",
+                "amount_lovelace": 10500000,
+                "amount_ada": 10.5,
+                "estimated_fee_lovelace": 170000,
+                "estimated_fee_ada": 0.17,
+                "status": "BUILT"
+            }
+        }
+
+
+class SignTransactionRequest(BaseModel):
+    """
+    Request to sign a built transaction.
+
+    Requires the wallet password to decrypt the mnemonic and sign.
+    """
+
+    transaction_id: str = Field(description="Transaction ID from build endpoint")
+    password: str = Field(min_length=1, description="Wallet password")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "password": "MySecureP@ssw0rd"
+            }
+        }
+
+
+class SignTransactionResponse(BaseModel):
+    """Response after signing a transaction"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction ID")
+    signed_tx_cbor: str = Field(description="Signed transaction CBOR hex")
+    tx_hash: str = Field(description="Transaction hash")
+    status: str = Field(default="SIGNED", description="Transaction status")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "signed_tx_cbor": "84a5...",
+                "tx_hash": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "status": "SIGNED"
+            }
+        }
+
+
+class SubmitTransactionRequest(BaseModel):
+    """
+    Request to submit a signed transaction to the blockchain.
+
+    No password required - transaction must already be signed.
+    """
+
+    transaction_id: str = Field(description="Transaction ID from sign endpoint")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transaction_id": "123e4567-e89b-12d3-a456-426614174000"
+            }
+        }
+
+
+class SubmitTransactionResponse(BaseModel):
+    """Response after submitting a transaction"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction ID")
+    tx_hash: str = Field(description="Transaction hash")
+    status: str = Field(default="SUBMITTED", description="Transaction status")
+    submitted_at: datetime = Field(description="When the transaction was submitted")
+    explorer_url: str | None = Field(None, description="Blockchain explorer URL")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "tx_hash": "abc123def456...",
+                "status": "SUBMITTED",
+                "submitted_at": "2025-11-14T12:00:00Z",
+                "explorer_url": "https://preview.cardanoscan.io/transaction/abc123..."
+            }
+        }
+
+
+class SignAndSubmitTransactionRequest(BaseModel):
+    """
+    Request to sign AND submit a transaction in one operation (convenience endpoint).
+
+    Requires the wallet password to decrypt the mnemonic and sign.
+    After signing, immediately submits to blockchain.
+    """
+
+    transaction_id: str = Field(description="Transaction ID from build endpoint")
+    password: str = Field(min_length=1, description="Wallet password")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "password": "MySecureP@ssw0rd"
+            }
+        }
+
+
+class SignAndSubmitTransactionResponse(BaseModel):
+    """Response after signing and submitting a transaction"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction ID")
+    tx_hash: str = Field(description="Transaction hash")
+    status: str = Field(default="SUBMITTED", description="Transaction status")
+    signed_at: datetime = Field(description="When the transaction was signed")
+    submitted_at: datetime = Field(description="When the transaction was submitted")
+    explorer_url: str | None = Field(None, description="Blockchain explorer URL")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "6994b691d6c64fd141eee2d4380251730b44c99da599b82f14c3d29514ede38f",
+                "tx_hash": "abc123def456...",
+                "status": "SUBMITTED",
+                "signed_at": "2025-11-14T12:00:00Z",
+                "submitted_at": "2025-11-14T12:00:01Z",
+                "explorer_url": "https://preview.cardanoscan.io/transaction/abc123..."
+            }
+        }
+
+
+# ============================================================================
 # Error Response Schema
 # ============================================================================
 

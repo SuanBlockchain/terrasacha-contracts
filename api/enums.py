@@ -37,16 +37,20 @@ class TransactionStatus(str, Enum):
     Transaction processing status
 
     Lifecycle:
-    - PENDING: Created but not yet submitted to blockchain
+    - BUILT: Transaction built (unsigned), ready for signing
+    - SIGNED: Transaction signed, ready for submission
+    - PENDING: Created but not yet submitted to blockchain (legacy)
     - SUBMITTED: Submitted to blockchain mempool
     - CONFIRMED: Included in a block on-chain
     - FAILED: Transaction rejected or failed
     """
 
-    PENDING = "pending"
-    SUBMITTED = "submitted"
-    CONFIRMED = "confirmed"
-    FAILED = "failed"
+    BUILT = "BUILT"
+    SIGNED = "SIGNED"
+    PENDING = "PENDING"
+    SUBMITTED = "SUBMITTED"
+    CONFIRMED = "CONFIRMED"
+    FAILED = "FAILED"
 
 
 # ============================================================================
