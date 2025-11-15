@@ -8,7 +8,8 @@ Provides middleware to protect endpoints and retrieve unlocked wallets.
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Header
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database.connection import get_session
@@ -19,6 +20,10 @@ from api.services.token_service import InvalidTokenError, TokenService
 from api.services.wallet_service import WalletService
 from cardano_offchain.wallet import CardanoWallet
 from sqlalchemy import select
+
+
+# HTTP Bearer security scheme for Swagger UI
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class WalletAuthContext:
@@ -61,7 +66,7 @@ class WalletAuthContext:
 
 
 async def get_wallet_from_token(
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
     session: AsyncSession = Depends(get_session)
 ) -> WalletAuthContext:
     """
@@ -79,7 +84,7 @@ async def get_wallet_from_token(
             ...
 
     Args:
-        authorization: Authorization header (Bearer <token>)
+        credentials: HTTP Bearer credentials from Authorization header
         session: Database session
 
     Returns:
@@ -94,22 +99,14 @@ async def get_wallet_from_token(
         >>> cardano_wallet = wallet_context.cardano_wallet
         >>> # Use cardano_wallet to sign transactions
     """
-    # Check authorization header
-    if not authorization:
+    # Check for bearer token
+    if not credentials:
         raise HTTPException(
             status_code=401,
             detail="Missing authorization header. Use 'Authorization: Bearer <token>'"
         )
 
-    # Parse Bearer token
-    parts = authorization.split()
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid authorization header format. Use 'Authorization: Bearer <token>'"
-        )
-
-    token = parts[1]
+    token = credentials.credentials
 
     # Verify token
     try:
@@ -157,7 +154,7 @@ async def get_wallet_from_token(
     session_id = None
     if db_session:
         # Check if session expired in database
-        if db_session.expires_at < datetime.now(timezone.utc):
+        if db_session.expires_at < datetime.now(timezone.utc).replace(tzinfo=None):
             # Clean up expired session
             session_manager.remove_session(jti)
             db_session.revoked = True
@@ -169,7 +166,7 @@ async def get_wallet_from_token(
             )
 
         # Update last used timestamp
-        db_session.last_used_at = datetime.now(timezone.utc)
+        db_session.last_used_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await session.commit()
         session_id = db_session.id
     else:

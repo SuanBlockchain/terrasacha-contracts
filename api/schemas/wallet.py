@@ -185,6 +185,23 @@ class RefreshTokenResponse(BaseModel):
         }
 
 
+class RevokeTokenResponse(BaseModel):
+    """Response after revoking a token (logout)"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    jti: str = Field(description="Revoked token ID")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Token revoked successfully. Session terminated.",
+                "jti": "abc123xyz..."
+            }
+        }
+
+
 # ============================================================================
 # Wallet Creation & Import Schemas
 # ============================================================================
@@ -352,6 +369,63 @@ class DeleteWalletResponse(BaseModel):
     wallet_id: str = Field(description="ID of the deleted wallet")
 
 
+class ChangePasswordRequest(BaseModel):
+    """Request to change wallet password"""
+
+    old_password: str = Field(min_length=1, description="Current wallet password")
+    new_password: str = Field(min_length=8, max_length=128, description="New password (min 8 characters)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "old_password": "MyOldP@ssw0rd",
+                "new_password": "MyNewSecureP@ssw0rd123"
+            }
+        }
+
+
+class ChangePasswordResponse(BaseModel):
+    """Response after changing password"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    wallet_id: str = Field(description="Wallet ID")
+    wallet_name: str = Field(description="Wallet name")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Password changed successfully. Wallet has been locked for security.",
+                "wallet_id": "abc123def456...",
+                "wallet_name": "my_wallet"
+            }
+        }
+
+
+class PromoteWalletResponse(BaseModel):
+    """Response after promoting a wallet to CORE role"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    wallet_id: str = Field(description="Promoted wallet ID")
+    wallet_name: str = Field(description="Promoted wallet name")
+    new_role: str = Field(description="New wallet role (core)")
+    promoted_by: str = Field(description="Wallet ID of the CORE wallet that performed the promotion")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Wallet 'user_wallet' successfully promoted to CORE role",
+                "wallet_id": "abc123def456...",
+                "wallet_name": "user_wallet",
+                "new_role": "core",
+                "promoted_by": "xyz789abc123..."
+            }
+        }
+
+
 # ============================================================================
 # Error Response Schemas
 # ============================================================================
@@ -371,3 +445,75 @@ class ErrorResponse(BaseModel):
     success: bool = Field(default=False)
     error: str = Field(description="Error message")
     details: list[ErrorDetail] | None = Field(None, description="Additional error details")
+
+
+# ============================================================================
+# Admin Schemas
+# ============================================================================
+
+
+class SessionMetadata(BaseModel):
+    """Session metadata for admin monitoring"""
+
+    id: int = Field(description="Database session ID")
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
+    wallet_name: str | None = Field(None, description="Wallet name")
+    jti: str = Field(description="JWT ID (access token)")
+    refresh_jti: str = Field(description="Refresh JWT ID")
+    created_at: datetime = Field(description="Session creation time")
+    expires_at: datetime = Field(description="Access token expiration")
+    refresh_expires_at: datetime = Field(description="Refresh token expiration")
+    last_used_at: datetime | None = Field(None, description="Last activity time")
+    revoked: bool = Field(description="Whether session is revoked")
+    revoked_at: datetime | None = Field(None, description="When session was revoked")
+    in_memory: bool = Field(description="Whether session exists in memory")
+    ip_address: str | None = Field(None, description="IP address")
+    user_agent: str | None = Field(None, description="User agent")
+
+
+class AdminSessionListResponse(BaseModel):
+    """Response for listing all sessions"""
+
+    sessions: list[SessionMetadata]
+    total: int = Field(description="Total number of sessions")
+    active: int = Field(description="Number of active (non-revoked) sessions")
+    in_memory: int = Field(description="Number of sessions in memory")
+
+
+class AdminSessionCountResponse(BaseModel):
+    """Response for session count"""
+
+    total_sessions: int = Field(description="Total sessions in database")
+    active_sessions: int = Field(description="Active (non-revoked) sessions")
+    in_memory_sessions: int = Field(description="Sessions in memory")
+    expired_sessions: int = Field(description="Expired but not cleaned up")
+
+
+class AdminCleanupResponse(BaseModel):
+    """Response for cleanup operation"""
+
+    success: bool = Field(default=True)
+    cleaned_memory: int = Field(description="Sessions removed from memory")
+    cleaned_database: int = Field(description="Sessions marked as revoked in database")
+    message: str = Field(description="Operation summary")
+
+
+class AdminRevokeSessionResponse(BaseModel):
+    """Response for revoking a specific session"""
+
+    success: bool = Field(default=True)
+    jti: str = Field(description="Revoked session JTI")
+    message: str = Field(description="Success message")
+
+
+class AdminClearAllResponse(BaseModel):
+    """Response for clearing all sessions"""
+
+    success: bool = Field(default=True)
+    cleared_memory: int = Field(description="Sessions removed from memory")
+    revoked_database: int = Field(description="Sessions revoked in database")
+    message: str = Field(description="Operation summary")
+    warning: str = Field(
+        default="⚠️  All users have been logged out. They must unlock their wallets again.",
+        description="Warning message"
+    )

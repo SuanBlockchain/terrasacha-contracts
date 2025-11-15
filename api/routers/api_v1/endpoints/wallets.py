@@ -11,8 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.database.connection import get_session
+from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.enums import NetworkType
 from api.schemas.wallet import (
+    ChangePasswordRequest,
+    ChangePasswordResponse,
     CreateWalletRequest,
     CreateWalletResponse,
     DeleteWalletRequest,
@@ -21,8 +24,10 @@ from api.schemas.wallet import (
     ImportWalletRequest,
     ImportWalletResponse,
     LockWalletResponse,
+    PromoteWalletResponse,
     RefreshTokenRequest,
     RefreshTokenResponse,
+    RevokeTokenResponse,
     UnlockWalletRequest,
     UnlockWalletResponse,
     WalletInfoResponse,
@@ -34,6 +39,7 @@ from api.services.token_service import InvalidTokenError, TokenService
 from api.services.wallet_service import (
     InvalidMnemonicError,
     InvalidPasswordError,
+    PermissionDeniedError,
     WalletAlreadyExistsError,
     WalletNotFoundError,
     WalletService,
@@ -201,7 +207,7 @@ async def import_wallet(
 
 
 @router.post(
-    "/{payment_key_hash}/unlock",
+    "/{wallet_id}/unlock",
     response_model=UnlockWalletResponse,
     summary="Unlock a wallet",
     description="Unlock a wallet with password to create an authenticated session for signing transactions",
@@ -213,7 +219,7 @@ async def import_wallet(
     },
 )
 async def unlock_wallet(
-    payment_key_hash: str = Path(..., description="Payment key hash (wallet ID) to unlock"),
+    wallet_id: str = Path(..., description="Wallet ID to unlock"),
     request: UnlockWalletRequest = ...,
     session: AsyncSession = Depends(get_session),
 ) -> UnlockWalletResponse:
@@ -243,7 +249,7 @@ async def unlock_wallet(
         wallet_service = WalletService(session)
 
         # Unlock wallet and get CardanoWallet instance
-        wallet, cardano_wallet = await wallet_service.unlock_wallet(payment_key_hash, request.password)
+        wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, request.password)
 
         # Generate tokens
         access_token, access_jti, access_expires_at = TokenService.create_wallet_token(
@@ -307,7 +313,7 @@ async def unlock_wallet(
 
 
 @router.post(
-    "/{payment_key_hash}/lock",
+    "/{wallet_id}/lock",
     response_model=LockWalletResponse,
     summary="Lock a wallet",
     description="Lock a wallet and revoke all active sessions",
@@ -317,7 +323,7 @@ async def unlock_wallet(
     },
 )
 async def lock_wallet(
-    payment_key_hash: str = Path(..., description="Payment key hash (wallet ID) to lock"),
+    wallet_id: str = Path(..., description="Wallet ID to lock"),
     session: AsyncSession = Depends(get_session),
 ) -> LockWalletResponse:
     """
@@ -337,7 +343,7 @@ async def lock_wallet(
         wallet_service = WalletService(session)
 
         # Lock wallet in database
-        wallet = await wallet_service.lock_wallet(payment_key_hash)
+        wallet = await wallet_service.lock_wallet(wallet_id)
 
         # Revoke all sessions in database
         from sqlalchemy import update
@@ -346,7 +352,7 @@ async def lock_wallet(
 
         stmt = (
             update(WalletSession)
-            .where(WalletSession.wallet_id == payment_key_hash, WalletSession.revoked == False)  # noqa: E712
+            .where(WalletSession.wallet_id == wallet_id, WalletSession.revoked == False)  # noqa: E712
             .values(revoked=True)
         )
         await session.execute(stmt)
@@ -357,7 +363,7 @@ async def lock_wallet(
         # maintain a wallet_id -> [jti] mapping for efficiency
         from sqlalchemy import select
 
-        stmt_select = select(WalletSession.jti).where(WalletSession.wallet_id == payment_key_hash)
+        stmt_select = select(WalletSession.jti).where(WalletSession.wallet_id == wallet_id)
         result = await session.execute(stmt_select)
         jtis = [row[0] for row in result.fetchall()]
 
@@ -504,6 +510,192 @@ async def refresh_access_token(
         raise HTTPException(status_code=500, detail=f"Failed to refresh token: {str(e)}")
 
 
+@router.post(
+    "/token/revoke",
+    response_model=RevokeTokenResponse,
+    summary="Revoke access token (logout)",
+    description="Revoke the current access token and terminate the session",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid or missing token"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def revoke_token(
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    session: AsyncSession = Depends(get_session),
+) -> RevokeTokenResponse:
+    """
+    Revoke the current access token (logout).
+
+    This endpoint:
+    1. Extracts the JTI from the authenticated token
+    2. Marks the session as revoked in the database
+    3. Removes the session from in-memory storage
+    4. Invalidates the access token
+
+    **Security:**
+    - The token used for this request becomes immediately invalid
+    - The associated refresh token is also invalidated
+    - User must unlock the wallet again to get new tokens
+
+    **Usage:**
+    - Call this endpoint when user wants to logout
+    - Include the access token in Authorization header
+    - Token becomes invalid immediately after this call
+    """
+    try:
+        jti = wallet.jti
+        wallet_id = wallet.wallet_id
+
+        # Revoke session in database
+        from sqlalchemy import update
+        from api.database.models import WalletSession
+
+        stmt = (
+            update(WalletSession)
+            .where(WalletSession.jti == jti)
+            .values(
+                revoked=True,
+                revoked_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            )
+        )
+        result = await session.execute(stmt)
+        await session.commit()
+
+        # Remove from in-memory session manager
+        session_manager = get_session_manager()
+        session_manager.remove_session(jti)
+
+        return RevokeTokenResponse(
+            success=True,
+            message="Token revoked successfully. Session terminated.",
+            jti=jti,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to revoke token: {str(e)}"
+        )
+
+
+@router.post(
+    "/{wallet_id}/change-password",
+    response_model=ChangePasswordResponse,
+    summary="Change wallet password",
+    description="Change the password for a wallet. Requires authentication and old password verification.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid request (weak password, etc.)"},
+        401: {"model": ErrorResponse, "description": "Incorrect old password or not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to change this wallet's password"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def change_password(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    request: ChangePasswordRequest = ...,
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    session: AsyncSession = Depends(get_session),
+) -> ChangePasswordResponse:
+    """
+    Change wallet password.
+
+    This endpoint:
+    1. Verifies the user is authenticated and owns the wallet
+    2. Verifies the old password is correct
+    3. Validates the new password meets strength requirements
+    4. Re-encrypts the mnemonic with the new password
+    5. Locks the wallet and revokes all active sessions
+    6. User must unlock with new password to continue
+
+    **Security:**
+    - Requires valid access token (must be unlocked)
+    - Only the wallet owner can change their password
+    - All sessions are revoked after password change
+    - Wallet is automatically locked after password change
+    - New password must meet strength requirements
+
+    **Password Requirements:**
+    - Minimum 8 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one digit
+    - At least one special character (!@#$%^&*...)
+    """
+    try:
+        # Verify the authenticated user owns this wallet
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Not authorized to change password for wallet '{wallet_id}'. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}'"
+            )
+
+        # Change password using wallet service
+        wallet_service = WalletService(session)
+        updated_wallet = await wallet_service.change_password(
+            payment_key_hash=wallet_id,
+            old_password=request.old_password,
+            new_password=request.new_password
+        )
+
+        # Revoke all sessions for this wallet (security measure)
+        from sqlalchemy import update, select
+        from api.database.models import WalletSession
+
+        # Get all JTIs for this wallet
+        stmt_select = select(WalletSession.jti).where(
+            WalletSession.wallet_id == wallet_id,
+            WalletSession.revoked == False  # noqa: E712
+        )
+        result = await session.execute(stmt_select)
+        jtis = [row[0] for row in result.fetchall()]
+
+        # Revoke all sessions in database
+        stmt_update = (
+            update(WalletSession)
+            .where(
+                WalletSession.wallet_id == wallet_id,
+                WalletSession.revoked == False  # noqa: E712
+            )
+            .values(
+                revoked=True,
+                revoked_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            )
+        )
+        await session.execute(stmt_update)
+        await session.commit()
+
+        # Remove all sessions from memory
+        session_manager = get_session_manager()
+        for jti in jtis:
+            session_manager.remove_session(jti)
+
+        return ChangePasswordResponse(
+            success=True,
+            message="Password changed successfully. Wallet has been locked and all sessions revoked for security. "
+                    "Please unlock with your new password.",
+            wallet_id=updated_wallet.id,
+            wallet_name=updated_wallet.name,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidPasswordError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except ValueError as e:
+        # Password strength validation error
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to change password: {str(e)}"
+        )
+
+
 # ============================================================================
 # Wallet List & Info Endpoints
 # ============================================================================
@@ -563,3 +755,185 @@ async def list_wallets(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list wallets: {str(e)}")
+
+
+@router.get(
+    "/{wallet_id}",
+    response_model=WalletInfoResponse,
+    summary="Get wallet details",
+    description="Get detailed information about a specific wallet by ID (payment key hash)",
+    responses={
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def get_wallet(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    session: AsyncSession = Depends(get_session),
+) -> WalletInfoResponse:
+    """
+    Get detailed wallet information by ID.
+
+    Returns comprehensive wallet information including:
+    - Wallet ID (payment key hash)
+    - Wallet name and network
+    - Enterprise and staking addresses
+    - Role (USER/CORE)
+    - Lock status
+    - Default wallet status
+    - Creation timestamp
+    """
+    try:
+        wallet_service = WalletService(session)
+        wallet = await wallet_service.get_wallet(wallet_id)
+
+        return WalletInfoResponse(
+            id=wallet.id,
+            name=wallet.name,
+            network=wallet.network.value,
+            enterprise_address=wallet.enterprise_address,
+            staking_address=wallet.staking_address,
+            role=wallet.wallet_role.value,
+            is_locked=wallet.is_locked,
+            is_default=wallet.is_default,
+            created_at=wallet.created_at,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get wallet: {str(e)}")
+
+
+@router.delete(
+    "/{wallet_id}",
+    response_model=DeleteWalletResponse,
+    summary="Delete a wallet",
+    description="Delete a wallet by ID with password confirmation. CORE wallets require at least one other CORE wallet to exist.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid request or cannot delete last CORE wallet"},
+        401: {"model": ErrorResponse, "description": "Incorrect password"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def delete_wallet(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    request: DeleteWalletRequest = ...,
+    session: AsyncSession = Depends(get_session),
+) -> DeleteWalletResponse:
+    """
+    Delete a wallet with password confirmation.
+
+    **Security:**
+    - Requires the wallet password for confirmation
+    - Cannot delete the last CORE wallet (system protection)
+    - Cascades to delete all associated sessions
+
+    **Warning:**
+    - This action is PERMANENT and cannot be undone
+    - Make sure you have backed up your mnemonic phrase
+    - All active sessions for this wallet will be terminated
+    """
+    try:
+        wallet_service = WalletService(session)
+
+        # Get wallet info before deletion for response
+        wallet = await wallet_service.get_wallet(wallet_id)
+        wallet_name = wallet.name
+
+        # Delete wallet (includes password verification)
+        await wallet_service.delete_wallet(wallet_id, request.password)
+
+        # Remove any active sessions from memory
+        from sqlalchemy import select
+
+        from api.database.models import WalletSession
+
+        stmt = select(WalletSession.jti).where(WalletSession.wallet_id == wallet_id)
+        result = await session.execute(stmt)
+        jtis = [row[0] for row in result.fetchall()]
+
+        session_manager = get_session_manager()
+        for jti in jtis:
+            session_manager.remove_session(jti)
+
+        return DeleteWalletResponse(
+            success=True,
+            message=f"Wallet '{wallet_name}' deleted successfully",
+            wallet_id=wallet_id,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidPasswordError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except Exception as e:
+        # Check if it's a PermissionDeniedError (last CORE wallet)
+        if "last CORE wallet" in str(e):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to delete wallet: {str(e)}")
+
+
+@router.put(
+    "/{wallet_id}/promote",
+    response_model=PromoteWalletResponse,
+    summary="Promote wallet to CORE role",
+    description="Promote a wallet to CORE role, granting administrative privileges. Only CORE wallets can promote other wallets.",
+    responses={
+        403: {"model": ErrorResponse, "description": "Not authorized (requires CORE wallet)"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def promote_wallet(
+    wallet_id: str = Path(..., description="Wallet ID to promote"),
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    session: AsyncSession = Depends(get_session),
+) -> PromoteWalletResponse:
+    """
+    Promote a wallet to CORE role.
+
+    This endpoint:
+    1. Verifies the authenticated user is a CORE wallet
+    2. Promotes the target wallet to CORE role
+    3. Grants the wallet administrative privileges
+
+    **Security:**
+    - Requires authentication with a CORE wallet
+    - Only CORE wallets can promote other wallets
+    - Promoted wallets can then promote others
+
+    **CORE Wallet Privileges:**
+    - Compile smart contracts
+    - Promote other wallets to CORE role
+    - Administrative operations
+
+    **Usage:**
+    - First CORE wallet should be set manually in the database
+    - That wallet can then promote others via this endpoint
+    """
+    try:
+        wallet_service = WalletService(session)
+
+        # Promote the wallet
+        promoted_wallet = await wallet_service.promote_to_core(
+            payment_key_hash=wallet_id,
+            promoted_by_pkh=core_wallet.wallet_id
+        )
+
+        return PromoteWalletResponse(
+            success=True,
+            message=f"Wallet '{promoted_wallet.name}' successfully promoted to CORE role",
+            wallet_id=promoted_wallet.id,
+            wallet_name=promoted_wallet.name,
+            new_role=promoted_wallet.wallet_role.value,
+            promoted_by=core_wallet.wallet_id,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionDeniedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to promote wallet: {str(e)}")
