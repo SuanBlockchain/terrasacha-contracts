@@ -1,0 +1,19 @@
+# Dockerfile for PostgreSQL - Local Testing Only
+# For production, use AWS RDS or managed database service
+FROM postgres:16-alpine
+
+# Set default environment variables (can be overridden)
+ENV POSTGRES_USER=${POSTGRES_USER:-terrasacha} \
+    POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme} \
+    POSTGRES_DB=${POSTGRES_DB:-terrasacha_db} \
+    PGDATA=/var/lib/postgresql/data/pgdata
+
+# Expose PostgreSQL port
+EXPOSE 5432
+
+# Optional: Add custom initialization scripts
+# COPY ./init-scripts/ /docker-entrypoint-initdb.d/
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+    CMD pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}

@@ -1,0 +1,76 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info
+dist
+build
+eggs
+.eggs
+*.egg
+.venv
+venv
+ENV
+env
+
+# Testing and Coverage
+.pytest_cache
+.coverage
+htmlcov
+coverage.xml
+.benchmarks
+*.cover
+.hypothesis
+.tox
+
+# IDEs and Editors
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+
+# MyPy and Ruff
+.mypy_cache
+.ruff_cache
+
+# Documentation
+*.md
+!README.md
+docs/
+site/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+artifacts
+build/
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Other
+.claude
+.claude.md
+scripts/
+uv.lock
+docker-compose.yml
+Dockerfile
+.dockerignore
+makefile
