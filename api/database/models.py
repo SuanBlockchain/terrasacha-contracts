@@ -115,23 +115,46 @@ class Contract(TimestampMixin, table=True):
     Generic contract registry
 
     Stores all compiled contracts with metadata about compilation and deployment.
+    Supports both API-compiled contracts (with source) and CLI-deployed contracts.
+
+    Fields explanation:
+    - policy_id: Unique contract identifier (PRIMARY KEY)
+    - storage_type: LOCAL = stored in DB, REFERENCE_SCRIPT = on-chain reference
+    - source_hash: SHA256 hash of source code (for deduplication/versioning)
+    - version: Auto-incremented when same contract name is recompiled
     """
 
     __tablename__ = "contracts"
 
-    id: int | None = Field(default=None, primary_key=True)
+    # Use policy_id as primary key (unique to each compiled contract)
+    policy_id: str = Field(primary_key=True, nullable=False)
+
     name: str = Field(index=True, nullable=False)
     network: NetworkType = Field(nullable=False)
     contract_type: ContractType = Field(nullable=False)
-    storage_type: ContractStorageType = Field(default=ContractStorageType.LOCAL, nullable=False)
 
-    # Contract identifiers
-    policy_id: str = Field(index=True, unique=True, nullable=False)
+    # Storage type: LOCAL (in database) or REFERENCE_SCRIPT (on-chain)
+    storage_type: ContractStorageType = Field(default=ContractStorageType.LOCAL, nullable=False)
     testnet_address: str | None = Field(default=None)
     mainnet_address: str | None = Field(default=None)
 
+    # Aliases for compatibility (use same names as PyCardano)
+    @property
+    def testnet_addr(self) -> str:
+        return self.testnet_address or ""
+
+    @property
+    def mainnet_addr(self) -> str:
+        return self.mainnet_address or ""
+
     # Script storage
     cbor_hex: str | None = Field(default=None)  # For local contracts
+
+    # Source code (for API-compiled contracts)
+    source_code: str | None = Field(default=None)  # Original Opshin source
+    source_hash: str | None = Field(default=None, index=True)  # SHA256 of source
+    version: int = Field(default=1, nullable=False)  # Compilation version
+    compilation_params: list = Field(default=[], sa_column=Column(JSON))  # Compilation parameters
 
     # Reference script info (if storage_type == REFERENCE_SCRIPT)
     reference_tx_id: str | None = Field(default=None)
@@ -140,6 +163,7 @@ class Contract(TimestampMixin, table=True):
 
     # Compilation metadata
     compilation_timestamp: datetime | None = Field(default=None)
+    compiled_at: datetime | None = Field(default=None)  # Alias for compilation_timestamp
     compilation_utxo_tx_id: str | None = Field(default=None)
     compilation_utxo_index: int | None = Field(default=None)
 
@@ -167,7 +191,7 @@ class Protocol(TimestampMixin, table=True):
     __tablename__ = "protocols"
 
     id: int | None = Field(default=None, primary_key=True)
-    contract_id: int = Field(foreign_key="contracts.id", nullable=False)
+    contract_policy_id: str = Field(foreign_key="contracts.policy_id", nullable=False)
     wallet_id: str = Field(foreign_key="wallets.id", nullable=False)
 
     # Protocol NFT information
@@ -210,7 +234,7 @@ class Project(TimestampMixin, table=True):
     __tablename__ = "projects"
 
     id: int | None = Field(default=None, primary_key=True)
-    contract_id: int = Field(foreign_key="contracts.id", nullable=False)
+    contract_policy_id: str = Field(foreign_key="contracts.policy_id", nullable=False)
     protocol_id: int = Field(foreign_key="protocols.id", nullable=False)
 
     # Project identification
@@ -369,7 +393,7 @@ class UTXO(TimestampMixin, table=True):
     spent_at: datetime | None = Field(default=None)
 
     # References
-    contract_id: int | None = Field(default=None, foreign_key="contracts.id")
+    contract_policy_id: str | None = Field(default=None, foreign_key="contracts.policy_id")
     project_id: int | None = Field(default=None, foreign_key="projects.id")
 
     # UTXO metadata
@@ -394,7 +418,7 @@ class Transaction(TimestampMixin, table=True):
     # Transaction identification - tx_hash is the primary key
     tx_hash: str = Field(primary_key=True)  # 64-character hex transaction hash
     wallet_id: str | None = Field(default=None, foreign_key="wallets.id")
-    contract_id: int | None = Field(default=None, foreign_key="contracts.id")
+    contract_policy_id: str | None = Field(default=None, foreign_key="contracts.policy_id")
 
     # Transaction details
     status: TransactionStatus = Field(default=TransactionStatus.BUILT, nullable=False, index=True)

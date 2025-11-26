@@ -124,7 +124,8 @@ async def build_transaction(
             from_address_index=request.from_address_index,
             to_address=request.to_address,
             amount_ada=request.amount_ada,
-            network=db_wallet.network
+            network=db_wallet.network,
+            metadata=request.metadata
         )
 
         # Get explorer URL
@@ -142,6 +143,7 @@ async def build_transaction(
             amount_ada=transaction.amount_lovelace / 1_000_000,
             estimated_fee_lovelace=transaction.estimated_fee,
             estimated_fee_ada=transaction.estimated_fee / 1_000_000,
+            metadata=transaction.tx_metadata if transaction.tx_metadata else None,
             status=transaction.status.value,
         )
 

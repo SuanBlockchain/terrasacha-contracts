@@ -168,18 +168,31 @@ class BuildTransactionRequest(BaseModel):
 
     The source wallet is determined from the JWT token.
     No password required for building - just queries chain state.
+
+    Metadata formats supported:
+    - CIP-20: {"msg": "Your message here"} or {"msg": ["chunk1", "chunk2"]}
+    - Custom: {"1337": {"app": "MyApp", "data": {...}}}
     """
 
     from_address_index: int = Field(default=0, ge=0, le=100, description="Source address index (0 = main address)")
     to_address: str = Field(description="Destination Cardano address")
     amount_ada: float = Field(gt=0, description="Amount in ADA to send (must be > 0)")
+    metadata: dict | None = Field(
+        None,
+        description="Optional transaction metadata (CIP-20 or custom format). "
+                    "CIP-20 example: {'msg': 'Hello'}. "
+                    "Custom example: {'1337': {'app': 'Terrasacha', 'data': {...}}}"
+    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "from_address_index": 0,
                 "to_address": "addr_test1qz...",
-                "amount_ada": 10.5
+                "amount_ada": 10.5,
+                "metadata": {
+                    "msg": "Carbon credit transaction for Project XYZ"
+                }
             }
         }
 
@@ -197,6 +210,7 @@ class BuildTransactionResponse(BaseModel):
     amount_ada: float = Field(description="Amount being sent in ADA")
     estimated_fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
     estimated_fee_ada: float = Field(description="Estimated transaction fee in ADA")
+    metadata: dict | None = Field(None, description="Transaction metadata (if provided)")
     status: str = Field(default="BUILT", description="Transaction status")
 
     class Config:

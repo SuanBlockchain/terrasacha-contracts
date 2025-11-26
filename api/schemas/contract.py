@@ -34,6 +34,85 @@ class ContractStorageType(str, Enum):
 # ============================================================================
 
 
+class AvailableContractInfo(BaseModel):
+    """Information about an available contract"""
+
+    name: str = Field(description="Contract name")
+    file_path: str = Field(description="File path relative to src/terrasacha_contracts/")
+    description: str = Field(description="Human-readable description")
+    requires_params: bool = Field(description="Whether compilation requires parameters")
+    param_description: str | None = Field(None, description="Description of required parameters")
+
+
+class AvailableContractsResponse(BaseModel):
+    """Response with available contracts for compilation"""
+
+    minting: list[AvailableContractInfo] = Field(description="Available minting policy contracts")
+    spending: list[AvailableContractInfo] = Field(description="Available spending validator contracts")
+    total: int = Field(description="Total number of available contracts")
+
+
+class CompileContractRequest(BaseModel):
+    """
+    Request to compile an Opshin smart contract.
+
+    Use contract_name from the available contracts list, or provide custom source_code.
+    """
+
+    contract_name: str = Field(description="Name of the contract (from available contracts) or custom name")
+    contract_type: str = Field(
+        description="Contract type: 'spending' for validators or 'minting' for policies"
+    )
+    source_code: str | None = Field(
+        None,
+        description="Custom Opshin source code (if not using a registered contract)"
+    )
+    compilation_params: list | None = Field(
+        None,
+        description="Optional compilation parameters (for parameterized contracts)"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "contract_name": "protocol",
+                "contract_type": "spending",
+                "compilation_params": None
+            }
+        }
+
+
+class CompileContractResponse(BaseModel):
+    """Response after contract compilation"""
+
+    success: bool = Field(default=True)
+    policy_id: str = Field(description="Contract policy ID (primary key / script hash)")
+    contract_name: str = Field(description="Contract name")
+    cbor_hex: str = Field(description="Compiled CBOR hex string")
+    testnet_address: str = Field(description="Testnet address")
+    mainnet_address: str = Field(description="Mainnet address")
+    contract_type: str = Field(description="Contract type (spending/minting)")
+    source_hash: str = Field(description="SHA256 hash of source code (for versioning)")
+    version: int = Field(description="Contract version (auto-increments on recompile)")
+    compiled_at: datetime = Field(description="Compilation timestamp")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "policy_id": "a1b2c3d4e5f6...",
+                "contract_name": "my_validator",
+                "cbor_hex": "590abc...",
+                "testnet_address": "addr_test1wz...",
+                "mainnet_address": "addr1w9...",
+                "contract_type": "spending",
+                "source_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "version": 1,
+                "compiled_at": "2025-11-16T12:00:00Z"
+            }
+        }
+
+
 class CompileProtocolRequest(BaseModel):
     """Request to compile protocol contracts"""
 
@@ -124,7 +203,7 @@ class CompileInvestorResponse(BaseModel):
 
 
 class ContractListItem(BaseModel):
-    """Single contract in list"""
+    """Single contract in list (for ContractManager - JSON-based system)"""
 
     name: str = Field(description="Contract name")
     policy_id: str = Field(description="Contract policy ID or script hash")
@@ -135,11 +214,32 @@ class ContractListItem(BaseModel):
 
 
 class ContractListResponse(BaseModel):
-    """Response with list of contracts"""
+    """Response with list of contracts (for ContractManager - JSON-based system)"""
 
     contracts: list[ContractListItem] = Field(description="List of compiled contracts")
     total: int = Field(description="Total number of contracts")
     compilation_utxo: dict | None = Field(None, description="Protocol compilation UTXO info")
+
+
+class DbContractListItem(BaseModel):
+    """Single contract in list (for database-backed system)"""
+
+    policy_id: str = Field(description="Contract policy ID (primary key)")
+    name: str = Field(description="Contract name")
+    contract_type: str = Field(description="Type of contract (spending/minting)")
+    testnet_address: str = Field(description="Testnet address")
+    mainnet_address: str = Field(description="Mainnet address")
+    version: int = Field(description="Contract version (increments on recompile)")
+    source_hash: str = Field(description="SHA256 hash of source code")
+    compiled_at: datetime = Field(description="Compilation timestamp")
+    network: str = Field(description="Network (testnet/mainnet)")
+
+
+class DbContractListResponse(BaseModel):
+    """Response with list of contracts (for database-backed system)"""
+
+    contracts: list[DbContractListItem] = Field(description="List of compiled contracts")
+    total: int = Field(description="Total number of contracts")
 
 
 class ContractDetailResponse(BaseModel):

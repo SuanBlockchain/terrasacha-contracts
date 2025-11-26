@@ -17,6 +17,7 @@ from api.database.repositories.transaction import TransactionRepository
 from api.enums import TransactionStatus, NetworkType
 from api.utils.encryption import decrypt_mnemonic
 from api.utils.password import verify_password
+from api.utils.metadata import prepare_metadata, validate_metadata_size
 from cardano_offchain.wallet import CardanoWallet
 from cardano_offchain.chain_context import CardanoChainContext
 import pycardano as pc
@@ -56,7 +57,8 @@ class TransactionService:
         from_address_index: int,
         to_address: str,
         amount_ada: float,
-        network: NetworkType
+        network: NetworkType,
+        metadata: dict | None = None
     ) -> Transaction:
         """
         Build an unsigned transaction.
@@ -67,6 +69,7 @@ class TransactionService:
             to_address: Destination Cardano address
             amount_ada: Amount to send in ADA
             network: testnet or mainnet
+            metadata: Optional transaction metadata (CIP-20 or custom format)
 
         Returns:
             Transaction record with unsigned CBOR
@@ -127,6 +130,18 @@ class TransactionService:
         # Set fee buffer (will be calculated properly during build)
         builder.fee_buffer = 1_000_000  # 1 ADA fee buffer
 
+        # Add metadata if provided
+        if metadata:
+            # Validate metadata size
+            is_valid, error_message = validate_metadata_size(metadata)
+            if not is_valid:
+                raise Exception(f"Invalid metadata: {error_message}")
+
+            # Prepare and attach metadata
+            auxiliary_data = prepare_metadata(metadata)
+            if auxiliary_data:
+                builder.auxiliary_data = auxiliary_data
+
         # Build the transaction (WITHOUT signing)
         try:
             tx_body = builder.build(change_address=pc.Address.from_primitive(from_address))
@@ -182,6 +197,7 @@ class TransactionService:
             failed_tx.inputs = inputs
             failed_tx.outputs = outputs
             failed_tx.estimated_fee = estimated_fee
+            failed_tx.tx_metadata = metadata if metadata else {}
             failed_tx.error_message = None
             failed_tx.signed_cbor = None
             failed_tx.submitted_at = None
@@ -221,6 +237,7 @@ class TransactionService:
             estimated_fee=estimated_fee,
             inputs=inputs,
             outputs=outputs,
+            tx_metadata=metadata if metadata else {},
         )
 
         self.session.add(transaction)
@@ -304,8 +321,15 @@ class TransactionService:
         # Create witness set with the signature
         witness_set = pc.TransactionWitnessSet(vkey_witnesses=[vkey_witness])
 
-        # Create signed transaction
-        signed_tx = pc.Transaction(unsigned_tx_body, witness_set)
+        # Reconstruct auxiliary data if transaction has metadata
+        auxiliary_data = None
+        if transaction.tx_metadata:
+            # Prepare auxiliary data from stored metadata
+            auxiliary_data = prepare_metadata(transaction.tx_metadata)
+
+        # Create signed transaction (including auxiliary data if present)
+        # PyCardano Transaction signature: Transaction(body, witness_set, valid=True, auxiliary_data=None)
+        signed_tx = pc.Transaction(unsigned_tx_body, witness_set, True, auxiliary_data)
 
         # Get signed CBOR and hash
         signed_cbor = signed_tx.to_cbor_hex()

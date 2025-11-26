@@ -173,7 +173,12 @@ class CardanoTransactions:
         return self.wallet_manager.check_all_balances(self.api, limit_addresses)
 
     def create_simple_transaction(
-        self, to_address: str, amount_ada: float, from_address_index: int = 0, wallet_name: str | None = None
+        self,
+        to_address: str,
+        amount_ada: float,
+        from_address_index: int = 0,
+        wallet_name: str | None = None,
+        metadata: dict | None = None
     ) -> pc.Transaction | None:
         """
         Create a simple ADA transfer transaction
@@ -183,6 +188,7 @@ class CardanoTransactions:
             amount_ada: Amount in ADA to send
             from_address_index: Source address index (0 = main address)
             wallet_name: Name of wallet to use (None for active wallet)
+            metadata: Optional transaction metadata (CIP-20 or custom format)
 
         Returns:
             Signed transaction or None if failed
@@ -216,6 +222,25 @@ class CardanoTransactions:
             builder.add_output(pc.TransactionOutput(to_address, pc.Value(amount_lovelace)))
 
             builder.fee_buffer = 1_000_000
+
+            # Add metadata if provided
+            if metadata:
+                # Prepare metadata for PyCardano
+                # Convert string keys to integers where applicable
+                def convert_keys(d):
+                    if isinstance(d, dict):
+                        return {
+                            (int(k) if isinstance(k, str) and k.isdigit() else k): convert_keys(v)
+                            for k, v in d.items()
+                        }
+                    elif isinstance(d, list):
+                        return [convert_keys(item) for item in d]
+                    return d
+
+                converted_metadata = convert_keys(metadata)
+                metadata_obj = pc.Metadata(converted_metadata)
+                alonzo_metadata = pc.AlonzoMetadata(metadata=metadata_obj)
+                builder.auxiliary_data = pc.AuxiliaryData(alonzo_metadata)
 
             # Build and sign transaction
             signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
