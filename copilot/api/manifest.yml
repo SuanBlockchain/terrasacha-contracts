@@ -1,0 +1,77 @@
+# The manifest for the "api" service.
+# Read the full specification for the "Request-Driven Web Service" type at:
+# https://aws.github.io/copilot-cli/docs/manifest/rd-web-service/
+
+# Your service name will be used in naming your resources like log groups, App Runner services, etc.
+name: api
+# The "architecture" of the service you're running.
+type: Request-Driven Web Service
+
+image:
+  # Docker build arguments.
+  # For additional overrides: https://aws.github.io/copilot-cli/docs/manifest/rd-web-service/#image-build
+  build: Dockerfile
+  # Port exposed through your container to route traffic to it.
+  port: 8000
+
+http:
+  healthcheck:
+    path: /
+    healthy_threshold: 1
+    unhealthy_threshold: 3
+    interval: 10s
+    timeout: 5s
+
+# Number of CPU units for the task.
+cpu: 1024
+# Amount of memory in MiB used by the task.
+memory: 2048
+
+# Environment variables (non-sensitive configuration)
+variables:
+  # Application Environment
+  ENVIRONMENT: production
+  API_PORT: "8000"
+
+  # Cardano Network Configuration
+  network: testnet  # Change to 'mainnet' for production
+
+  # JWT Configuration
+  JWT_ALGORITHM: HS256
+  WALLET_SESSION_TIMEOUT_MINUTES: "30"
+  WALLET_REFRESH_TOKEN_DAYS: "7"
+
+  # Database Configuration
+  # Using a placeholder - database connection will fail gracefully on startup
+  # TODO: Replace with actual RDS endpoint when database is set up
+  POSTGRES_HOST: "placeholder-db-host"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: terrasacha_db
+
+# Sensitive values stored in AWS Secrets Manager
+secrets:
+  # API Security
+  API_KEY_DEV: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/api_key_dev
+  JWT_SECRET_KEY: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/jwt_secret_key
+
+  # Cardano Blockfrost API
+  blockfrost_api_key: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/blockfrost_api_key
+
+  # Database Credentials
+  POSTGRES_USER: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/postgres_user
+  POSTGRES_PASSWORD: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/postgres_password
+
+# Connect your App Runner service to your environment's VPC (if using RDS).
+# network:
+#   vpc:
+#     placement: private
+
+# Enable tracing for the service.
+# observability:
+#   tracing: awsxray
+
+# You can override any of the values defined above by environment.
+# environments:
+#   test:
+#     variables:
+#       LOG_LEVEL: debug        # Log level for the "test" environment.
