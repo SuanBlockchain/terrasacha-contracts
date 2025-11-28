@@ -42,10 +42,8 @@ variables:
   WALLET_REFRESH_TOKEN_DAYS: "7"
 
   # Database Configuration
-  # Using a placeholder - database connection will fail gracefully on startup
-  # TODO: Replace with actual RDS endpoint when database is set up
-  POSTGRES_HOST: "placeholder-db-host"
-  POSTGRES_PORT: "5432"
+  # Note: DB_SECRET contains host, username, password, port, and dbname
+  # Your application should parse the DB_SECRET JSON to get connection details
   POSTGRES_DB: terrasacha_db
 
 # Sensitive values stored in AWS Secrets Manager
@@ -57,14 +55,14 @@ secrets:
   # Cardano Blockfrost API
   blockfrost_api_key: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/blockfrost_api_key
 
-  # Database Credentials
-  POSTGRES_USER: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/postgres_user
-  POSTGRES_PASSWORD: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/postgres_password
+  # Aurora Database Credentials
+  DB_SECRET:
+    from_cfn: ${COPILOT_APPLICATION_NAME}-${COPILOT_ENVIRONMENT_NAME}-apiclusterAuroraSecret
 
-# Connect your App Runner service to your environment's VPC (if using RDS).
-# network:
-#   vpc:
-#     placement: private
+# Connect your App Runner service to your environment's VPC (required for Aurora).
+network:
+  vpc:
+    placement: private
 
 # Enable tracing for the service.
 # observability:

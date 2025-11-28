@@ -3,8 +3,10 @@ from contextlib import asynccontextmanager
 import asyncio
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, FastAPI, Depends
+from fastapi.responses import HTMLResponse, JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import text
 
 
 # Load environment variables from .env file
@@ -13,7 +15,7 @@ ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(ENV_FILE)
 
 from api.config import settings
-from api.database.connection import get_db_manager
+from api.database.connection import get_db_manager, get_session
 from api.routers.api_v1.api import api_router
 from api.utils.security import generate_api_key
 from api.services.session_manager import get_session_manager
@@ -145,6 +147,46 @@ async def get_new_api_key():
     api_key = generate_api_key()
 
     return {"api_key": api_key}
+
+
+@app.get("/health")
+async def health_check(session: AsyncSession = Depends(get_session)):
+    """
+    Health check endpoint that tests database connectivity.
+
+    Returns:
+        - status: "healthy" if database is accessible
+        - database: connection status and details
+        - version: API version
+    """
+    from api.config import db_settings
+
+    health_status = {
+        "status": "healthy",
+        "api_version": settings.api_version,
+        "environment": settings.environment,
+        "database": {
+            "connected": False,
+            "host": db_settings.postgres_host,
+            "database": db_settings.postgres_db,
+        }
+    }
+
+    try:
+        # Test database connection with a simple query
+        result = await session.execute(text("SELECT version()"))
+        db_version = result.scalar()
+
+        health_status["database"]["connected"] = True
+        health_status["database"]["version"] = db_version
+
+        return JSONResponse(content=health_status, status_code=200)
+
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["database"]["error"] = str(e)
+
+        return JSONResponse(content=health_status, status_code=503)
 
 
 app.include_router(root_router)

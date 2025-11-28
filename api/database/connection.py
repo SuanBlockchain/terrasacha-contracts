@@ -5,10 +5,13 @@ Handles async database connections, session management, and engine configuration
 All schema changes should be managed through Alembic migrations.
 """
 
+import json
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -20,14 +23,23 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 
 
 class DatabaseSettings(BaseSettings):
-    """Database configuration from environment variables"""
+    """
+    Database configuration from environment variables
+
+    Supports two modes:
+    1. AWS Copilot: Reads from DB_SECRET (JSON with host, port, username, password, dbname)
+    2. Local dev: Reads from individual POSTGRES_* environment variables
+    """
 
     # PostgreSQL connection - loaded from .env file with sensible defaults
     postgres_host: str = "localhost"  # Default to localhost for local development
     postgres_port: int = 5432  # Standard PostgreSQL port
-    postgres_user: str  # No default - must be set in .env
-    postgres_password: str  # No default - must be set in .env
-    postgres_db: str  # No default - must be set in .env
+    postgres_user: str = ""  # Optional - can be set via DB_SECRET
+    postgres_password: str = ""  # Optional - can be set via DB_SECRET
+    postgres_db: str = ""  # Optional - can be set via DB_SECRET
+
+    # AWS Copilot Aurora secret (JSON string)
+    db_secret: str | None = None
 
     # Connection pool settings
     pool_size: int = 5
@@ -41,6 +53,47 @@ class DatabaseSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"
     )
+
+    @field_validator("db_secret", mode="before")
+    @classmethod
+    def parse_db_secret(cls, v: str | None) -> str | None:
+        """Keep DB_SECRET as string for later parsing"""
+        return v
+
+    def model_post_init(self, __context) -> None:
+        """
+        Override credentials with DB_SECRET if available
+
+        DB_SECRET format from AWS Copilot Aurora:
+        {
+            "host": "...",
+            "port": 5432,
+            "username": "...",
+            "password": "...",
+            "dbname": "...",
+            "engine": "postgres"
+        }
+        """
+        if self.db_secret:
+            try:
+                secret = json.loads(self.db_secret)
+                # Override with Aurora credentials
+                self.postgres_host = secret.get("host", self.postgres_host)
+                self.postgres_port = secret.get("port", self.postgres_port)
+                self.postgres_user = secret.get("username", self.postgres_user)
+                self.postgres_password = secret.get("password", self.postgres_password)
+                # Use dbname from secret, fall back to postgres_db env var
+                if secret.get("dbname"):
+                    self.postgres_db = secret["dbname"]
+            except json.JSONDecodeError as e:
+                raise ValueError(f"Invalid DB_SECRET JSON format: {e}") from e
+
+        # Validate required fields are set
+        if not self.postgres_user or not self.postgres_password or not self.postgres_db:
+            raise ValueError(
+                "Database credentials not fully configured. "
+                "Set either DB_SECRET or all of POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB"
+            )
 
     @property
     def database_url(self) -> str:

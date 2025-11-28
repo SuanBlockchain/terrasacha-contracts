@@ -1,0 +1,129 @@
+Parameters:
+  App:
+    Type: String
+    Description: Your application's name.
+  Env:
+    Type: String
+    Description: The name of the environment being deployed.
+  # Customize your Aurora Serverless cluster by setting the default value of the following parameters.
+  apiclusterDBName:
+    Type: String
+    Description: The name of the initial database to be created in the Aurora Serverless v2 cluster.
+    Default: terrasacha_db
+    # Cannot have special characters
+    # Naming constraints: https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/CHAP_Limits.html#RDS_Limits.Constraints
+  VPCID:
+    Type: String
+    Description: The ID of the VPC in which to create the Aurora Serverless v2 cluster.
+    Default: ""
+  PrivateSubnets:
+    Type: String
+    Description: The IDs of the private subnets in which to create the Aurora Serverless v2 cluster.
+    Default: ""
+
+Mappings:
+  apiclusterEnvScalingConfigurationMap: 
+    internal:
+      "DBMinCapacity": 0.5 # AllowedValues: from 0.5 through 128
+      "DBMaxCapacity": 8   # AllowedValues: from 0.5 through 128
+    
+    All:
+      "DBMinCapacity": 0.5 # AllowedValues: from 0.5 through 128
+      "DBMaxCapacity": 8   # AllowedValues: from 0.5 through 128
+
+Resources:
+  apiclusterDBSubnetGroup:
+    Type: 'AWS::RDS::DBSubnetGroup'
+    Properties:
+      DBSubnetGroupDescription: Group of private subnets for Aurora Serverless v2 cluster.
+      SubnetIds:
+        !Split [',', !Ref PrivateSubnets]
+
+  apiclusterDBClusterSecurityGroup:
+    Metadata:
+      'aws:copilot:description': 'A security group for your Aurora Serverless v2 cluster apicluster'
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: The Security Group for the Aurora Serverless v2 cluster.
+      VpcId: !Ref VPCID
+      Tags:
+        - Key: Name
+          Value: !Sub 'copilot-${App}-${Env}-Aurora'
+  
+  apiclusterAuroraSecret:
+    Metadata:
+      'aws:copilot:description': 'A Secrets Manager secret to store your DB credentials'
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: !Sub Aurora main user secret for ${AWS::StackName}
+      GenerateSecretString:
+        SecretStringTemplate: '{"username": "postgres"}'
+        GenerateStringKey: "password"
+        ExcludePunctuation: true
+        IncludeSpace: false
+        PasswordLength: 16
+  apiclusterDBClusterParameterGroup:
+    Metadata:
+      'aws:copilot:description': 'A DB parameter group for engine configuration values'
+    Type: 'AWS::RDS::DBClusterParameterGroup'
+    Properties:
+      Description: !Ref 'AWS::StackName'
+      Family: 'aurora-postgresql15'
+      Parameters:
+        client_encoding: 'UTF8'
+
+  apiclusterDBCluster:
+    Metadata:
+      'aws:copilot:description': 'The apicluster Aurora Serverless v2 database cluster'
+    Type: 'AWS::RDS::DBCluster'
+    Properties:
+      MasterUsername:
+        !Join [ "",  [ '{{resolve:secretsmanager:', !Ref apiclusterAuroraSecret, ":SecretString:username}}" ]]
+      MasterUserPassword:
+        !Join [ "",  [ '{{resolve:secretsmanager:', !Ref apiclusterAuroraSecret, ":SecretString:password}}" ]]
+      DatabaseName: !Ref apiclusterDBName
+      Engine: 'aurora-postgresql'
+      EngineVersion: '15.13'
+      DBClusterParameterGroupName: !Ref apiclusterDBClusterParameterGroup
+      DBSubnetGroupName: !Ref apiclusterDBSubnetGroup
+      Port: 5432
+      StorageEncrypted: true
+      VpcSecurityGroupIds:
+        - !Ref apiclusterDBClusterSecurityGroup
+      ServerlessV2ScalingConfiguration:
+        # Replace "All" below with "!Ref Env" to set different autoscaling limits per environment.
+        MinCapacity: !FindInMap [apiclusterEnvScalingConfigurationMap, All, DBMinCapacity]
+        MaxCapacity: !FindInMap [apiclusterEnvScalingConfigurationMap, All, DBMaxCapacity]
+  
+  apiclusterDBWriterInstance:
+    Metadata:
+      'aws:copilot:description': 'The apicluster Aurora Serverless v2 writer instance'
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBClusterIdentifier: !Ref apiclusterDBCluster
+      DBInstanceClass: db.serverless
+      Engine: 'aurora-postgresql'
+      PromotionTier: 1
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: AWS::Region
+
+  apiclusterSecretAuroraClusterAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref apiclusterAuroraSecret
+      TargetId: !Ref apiclusterDBCluster
+      TargetType: AWS::RDS::DBCluster
+
+Outputs:
+  apiclusterSecret:
+    Description: "The JSON secret that holds the database username and password. Fields are 'host', 'port', 'dbname', 'username', 'password', 'dbClusterIdentifier' and 'engine'"
+    Value: !Ref apiclusterAuroraSecret
+    Export:
+      Name: !Sub ${App}-${Env}-apiclusterAuroraSecret
+  apiclusterClusterSecurityGroup:
+    Description: "The security group attached to the Aurora Serverless v2 cluster."
+    Value: !Ref apiclusterDBClusterSecurityGroup
+    Export:
+      Name: !Sub ${App}-${Env}-apiclusterDBClusterSecurityGroup
