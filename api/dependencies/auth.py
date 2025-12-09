@@ -10,16 +10,12 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.database.connection import get_session
-from api.database.models import WalletSession
+from api.database.models import WalletSessionMongo
 from api.enums import WalletRole
 from api.services.session_manager import get_session_manager
 from api.services.token_service import InvalidTokenError, TokenService
-from api.services.wallet_service import WalletService
 from cardano_offchain.wallet import CardanoWallet
-from sqlalchemy import select
 
 
 # HTTP Bearer security scheme for Swagger UI
@@ -66,8 +62,7 @@ class WalletAuthContext:
 
 
 async def get_wallet_from_token(
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None,
-    session: AsyncSession = Depends(get_session)
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)] = None
 ) -> WalletAuthContext:
     """
     FastAPI dependency to authenticate wallet from JWT token.
@@ -85,7 +80,6 @@ async def get_wallet_from_token(
 
     Args:
         credentials: HTTP Bearer credentials from Authorization header
-        session: Database session
 
     Returns:
         WalletAuthContext with wallet info and CardanoWallet instance
@@ -142,14 +136,12 @@ async def get_wallet_from_token(
             detail="Session expired or wallet locked. Please unlock the wallet again."
         )
 
-    # Optional: Verify session in database (for audit trail)
-    stmt = select(WalletSession).where(
-        WalletSession.jti == jti,
-        WalletSession.wallet_id == wallet_id,
-        WalletSession.revoked == False  # noqa: E712
+    # Verify session in MongoDB database (for audit trail)
+    db_session = await WalletSessionMongo.find_one(
+        WalletSessionMongo.jti == jti,
+        WalletSessionMongo.wallet_id == wallet_id,
+        WalletSessionMongo.revoked == False  # noqa: E712
     )
-    result = await session.execute(stmt)
-    db_session = result.scalar_one_or_none()
 
     session_id = None
     if db_session:
@@ -158,7 +150,7 @@ async def get_wallet_from_token(
             # Clean up expired session
             session_manager.remove_session(jti)
             db_session.revoked = True
-            await session.commit()
+            await db_session.save()
 
             raise HTTPException(
                 status_code=401,
@@ -167,8 +159,8 @@ async def get_wallet_from_token(
 
         # Update last used timestamp
         db_session.last_used_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await session.commit()
-        session_id = db_session.id
+        await db_session.save()
+        session_id = str(db_session.id)  # MongoDB ObjectId to string
     else:
         # Session not in database - might have been revoked
         # Remove from memory as well

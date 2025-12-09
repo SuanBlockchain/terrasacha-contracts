@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     environment: str = "development"  # development, staging, production
     api_port: int = 8000
 
-    api_key_dev: str  # No default - must be set in .env
+    admin_api_key: str  # Admin API key for tenant management (required)
 
     model_config = SettingsConfigDict(
         env_file=str(PROJECT_ROOT / ".env"), env_file_encoding="utf-8", case_sensitive=False, extra="ignore"

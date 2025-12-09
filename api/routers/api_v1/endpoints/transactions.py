@@ -9,13 +9,11 @@ import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.database.connection import get_session
-from api.database.models import Transaction as DBTransaction, Wallet
-from api.database.repositories.transaction import TransactionRepository
+from api.database.models import TransactionMongo, WalletMongo
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token
+from api.dependencies.tenant import require_tenant_context
+from api.services.transaction_service_mongo import MongoTransactionService
 from api.enums import TransactionStatus as DBTransactionStatus
 from api.schemas.transaction import (
     BuildTransactionRequest,
@@ -33,12 +31,11 @@ from api.schemas.transaction import (
     TransactionStatus,
     TransactionStatusResponse,
 )
-from api.services.transaction_service import (
+from api.services.transaction_service_mongo import (
     InsufficientFundsError,
     InvalidTransactionStateError,
     TransactionNotFoundError,
     TransactionNotOwnedError,
-    TransactionService,
 )
 from cardano_offchain.chain_context import CardanoChainContext
 
@@ -84,7 +81,7 @@ def get_chain_context() -> CardanoChainContext:
 async def build_transaction(
     request: BuildTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> BuildTransactionResponse:
     """
     Build an unsigned transaction (Stage 1: Offchain).
@@ -107,16 +104,14 @@ async def build_transaction(
     - Or sign and submit: POST /transactions/sign-and-submit
     """
     try:
-        # Get wallet's network from database
-        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
-        result = await session.execute(stmt)
-        db_wallet = result.scalar_one_or_none()
+        # Get wallet's network from MongoDB
+        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
         # Create transaction service
-        tx_service = TransactionService(session)
+        tx_service = MongoTransactionService()
 
         # Build the transaction
         transaction = await tx_service.build_transaction(
@@ -128,8 +123,8 @@ async def build_transaction(
             metadata=request.metadata
         )
 
-        # Get explorer URL
-        network_name = "preview" if db_wallet.network.value == "testnet" else "mainnet"
+        # Get explorer URL (network is stored as string in MongoDB)
+        network_name = "preview" if db_wallet.network == "testnet" else "mainnet"
         explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}" if transaction.tx_hash else None
 
         return BuildTransactionResponse(
@@ -144,7 +139,7 @@ async def build_transaction(
             estimated_fee_lovelace=transaction.estimated_fee,
             estimated_fee_ada=transaction.estimated_fee / 1_000_000,
             metadata=transaction.tx_metadata if transaction.tx_metadata else None,
-            status=transaction.status.value,
+            status=transaction.status,  # Already a string in MongoDB
         )
 
     except InsufficientFundsError as e:
@@ -171,7 +166,7 @@ async def build_transaction(
 async def sign_transaction(
     request: SignTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> SignTransactionResponse:
     """
     Sign a built transaction with wallet password (Stage 2).
@@ -195,16 +190,14 @@ async def sign_transaction(
     - Submit the signed transaction: POST /transactions/submit
     """
     try:
-        # Get wallet's network from database
-        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
-        result = await session.execute(stmt)
-        db_wallet = result.scalar_one_or_none()
+        # Get wallet's network from MongoDB
+        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
         # Create transaction service
-        tx_service = TransactionService(session)
+        tx_service = MongoTransactionService()
 
         # Sign the transaction
         transaction = await tx_service.sign_transaction(
@@ -219,7 +212,7 @@ async def sign_transaction(
             transaction_id=transaction.tx_hash,
             signed_tx_cbor=transaction.signed_cbor,
             tx_hash=transaction.tx_hash,
-            status=transaction.status.value,
+            status=transaction.status,
         )
 
     except TransactionNotFoundError as e:
@@ -251,7 +244,7 @@ async def sign_transaction(
 async def submit_transaction(
     request: SubmitTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> SubmitTransactionResponse:
     """
     Submit a signed transaction to the blockchain (Stage 3).
@@ -274,16 +267,14 @@ async def submit_transaction(
     - Use explorer URL to track confirmation
     """
     try:
-        # Get wallet's network from database
-        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
-        result = await session.execute(stmt)
-        db_wallet = result.scalar_one_or_none()
+        # Get wallet's network from MongoDB
+        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
         # Create transaction service
-        tx_service = TransactionService(session)
+        tx_service = MongoTransactionService()
 
         # Submit the transaction
         transaction = await tx_service.submit_transaction(
@@ -292,15 +283,15 @@ async def submit_transaction(
             network=db_wallet.network
         )
 
-        # Get explorer URL
-        network_name = "preview" if db_wallet.network.value == "testnet" else "mainnet"
+        # Get explorer URL (network is stored as string in MongoDB)
+        network_name = "preview" if db_wallet.network == "testnet" else "mainnet"
         explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}"
 
         return SubmitTransactionResponse(
             success=True,
             transaction_id=transaction.tx_hash,
             tx_hash=transaction.tx_hash,
-            status=transaction.status.value,
+            status=transaction.status,
             submitted_at=transaction.submitted_at,
             explorer_url=explorer_url,
         )
@@ -331,7 +322,7 @@ async def submit_transaction(
 async def sign_and_submit_transaction(
     request: SignAndSubmitTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> SignAndSubmitTransactionResponse:
     """
     Sign and submit a transaction in one operation (Convenience endpoint).
@@ -359,16 +350,14 @@ async def sign_and_submit_transaction(
     - Simple user flows
     """
     try:
-        # Get wallet's network from database
-        stmt = select(Wallet).where(Wallet.id == wallet.wallet_id)
-        result = await session.execute(stmt)
-        db_wallet = result.scalar_one_or_none()
+        # Get wallet's network from MongoDB
+        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
         # Create transaction service
-        tx_service = TransactionService(session)
+        tx_service = MongoTransactionService()
 
         # Sign and submit
         transaction = await tx_service.sign_and_submit_transaction(
@@ -378,15 +367,15 @@ async def sign_and_submit_transaction(
             network=db_wallet.network
         )
 
-        # Get explorer URL
-        network_name = "preview" if db_wallet.network.value == "testnet" else "testnet"
+        # Get explorer URL (network is stored as string in MongoDB)
+        network_name = "preview" if db_wallet.network == "testnet" else "mainnet"
         explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}"
 
         return SignAndSubmitTransactionResponse(
             success=True,
             transaction_id=transaction.tx_hash,
             tx_hash=transaction.tx_hash,
-            status=transaction.status.value,
+            status=transaction.status,
             signed_at=transaction.updated_at,  # Updated when signed
             submitted_at=transaction.submitted_at,
             explorer_url=explorer_url,
@@ -512,71 +501,50 @@ async def get_transaction_status(
     description="Get paginated transaction history with optional filters",
 )
 async def get_transaction_history(
-    wallet_name: str | None = Query(None, description="Filter by wallet name"),
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
     tx_type: str | None = Query(None, description="Filter by transaction type"),
     status: str | None = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=500, description="Number of results (1-500)"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
     chain_context: CardanoChainContext = Depends(get_chain_context),
 ) -> TransactionHistoryResponse:
     """
     Get transaction history with filtering and pagination.
 
     Filters:
-    - `wallet_name`: Show only transactions from specific wallet
     - `tx_type`: Filter by transaction type (send_ada, mint_token, etc.)
     - `status`: Filter by status (pending, submitted, confirmed, failed)
 
     Pagination:
     - `limit`: Number of results to return (max 500)
     - `offset`: Skip this many results (for pagination)
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet
+    - Returns only transactions for the authenticated wallet
     """
     try:
-        from sqlalchemy import desc, func, select
-
-        from api.database.models import Wallet
-
-        tx_repo = TransactionRepository(session)
-
-        # Build query with filters
-        query = select(DBTransaction)
-
-        # Filter by wallet if provided
-        if wallet_name:
-            wallet_query = select(Wallet).where(Wallet.name == wallet_name)
-            wallet_result = await session.execute(wallet_query)
-            wallet = wallet_result.scalar_one_or_none()
-            if wallet:
-                query = query.where(DBTransaction.wallet_id == wallet.id)
-            else:
-                # Wallet not found, return empty results
-                return TransactionHistoryResponse(transactions=[], total=0, limit=limit, offset=offset, has_more=False)
+        # Build query filters for the authenticated wallet
+        filters = [TransactionMongo.wallet_id == wallet.wallet_id]
 
         # Filter by operation type if provided
         if tx_type:
-            query = query.where(DBTransaction.operation == tx_type)
+            filters.append(TransactionMongo.operation == tx_type)
 
         # Filter by status if provided
         if status:
-            try:
-                status_enum = DBTransactionStatus(status.lower())
-                query = query.where(DBTransaction.status == status_enum)
-            except ValueError:
-                # Invalid status, ignore filter
-                pass
+            filters.append(TransactionMongo.status == status.upper())
 
         # Get total count
-        count_query = select(func.count()).select_from(query.subquery())
-        count_result = await session.execute(count_query)
-        total = count_result.scalar() or 0
+        total = await TransactionMongo.find(*filters).count()
 
-        # Add ordering, pagination
-        query = query.order_by(desc(DBTransaction.created_at)).offset(offset).limit(limit)
-
-        # Execute query
-        result = await session.execute(query)
-        db_transactions = result.scalars().all()
+        # Execute query with pagination
+        db_transactions = await TransactionMongo.find(*filters)\
+            .sort([("created_at", -1)])\
+            .skip(offset)\
+            .limit(limit)\
+            .to_list()
 
         # Convert to response models
         transactions = []
@@ -598,10 +566,10 @@ async def get_transaction_history(
 
             transactions.append(
                 TransactionHistoryItem(
-                    id=db_tx.id,
+                    id=str(db_tx.id),
                     tx_hash=db_tx.tx_hash,
                     tx_type=db_tx.operation,
-                    status=TransactionStatus(db_tx.status.value),
+                    status=TransactionStatus(db_tx.status),
                     from_address=from_address,
                     to_address=to_address,
                     amount_lovelace=amount_lovelace,

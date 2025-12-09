@@ -455,7 +455,7 @@ class ErrorResponse(BaseModel):
 class SessionMetadata(BaseModel):
     """Session metadata for admin monitoring"""
 
-    id: int = Field(description="Database session ID")
+    id: str = Field(description="Database session ID (MongoDB ObjectId)")
     wallet_id: str = Field(description="Wallet ID (payment key hash)")
     wallet_name: str | None = Field(None, description="Wallet name")
     jti: str = Field(description="JWT ID (access token)")

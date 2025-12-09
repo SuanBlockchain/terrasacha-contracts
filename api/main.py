@@ -61,17 +61,32 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
     print(f"Environment: {settings.environment}")
     print(f"Network: {os.getenv('network', 'NOT SET')}")
-    print(f"API Key configured: {'Yes' if settings.api_key_dev else 'No'}")
+    print(f"Admin API Key configured: {'Yes' if settings.admin_api_key else 'No'}")
 
     # Initialize database connection
-    try:
-        from api.config import db_settings
-        db_manager = get_db_manager()
-        db_manager.get_async_engine()
-        print(f"✅ Database connected: {db_settings.postgres_db}@{db_settings.postgres_host}")
-    except Exception as e:
-        print(f"⚠️  Database connection failed: {str(e)}")
-        print("   API will start but database operations will fail")
+    # Try multi-tenant MongoDB first, fall back to PostgreSQL if not configured
+    multi_tenant_enabled = os.getenv("MONGODB_ADMIN_URI") is not None
+
+    if multi_tenant_enabled:
+        try:
+            from api.database.multi_tenant_manager import get_multi_tenant_db_manager
+            db_manager = get_multi_tenant_db_manager()
+            await db_manager.initialize()
+            print(f"✅ Multi-tenant database manager initialized")
+            print(f"   Admin database: terrasacha_admin")
+        except Exception as e:
+            print(f"⚠️  Multi-tenant database initialization failed: {str(e)}")
+            print("   API will start but multi-tenant operations will fail")
+    else:
+        # Fall back to single PostgreSQL database
+        try:
+            from api.config import db_settings
+            db_manager = get_db_manager()
+            db_manager.get_async_engine()
+            print(f"✅ Database connected: {db_settings.postgres_db}@{db_settings.postgres_host}")
+        except Exception as e:
+            print(f"⚠️  Database connection failed: {str(e)}")
+            print("   API will start but database operations will fail")
 
     # Check for wallet mnemonics
     wallet_mnemonics = [k for k in os.environ.keys() if "wallet_mnemonic" in k]
@@ -105,9 +120,15 @@ async def lifespan(app: FastAPI):
 
     # Close database connections
     try:
-        db_manager = get_db_manager()
-        await db_manager.close()
-        print("✅ Database connections closed")
+        if multi_tenant_enabled:
+            from api.database.multi_tenant_manager import get_multi_tenant_db_manager
+            db_manager = get_multi_tenant_db_manager()
+            await db_manager.close()
+            print("✅ Multi-tenant database connections closed")
+        else:
+            db_manager = get_db_manager()
+            await db_manager.close()
+            print("✅ Database connections closed")
     except Exception as e:
         print(f"⚠️  Error closing database: {str(e)}")
 

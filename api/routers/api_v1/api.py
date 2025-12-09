@@ -1,18 +1,24 @@
 from fastapi import APIRouter, Security
 
 from api.routers.api_v1.endpoints import admin, contracts, transactions, wallets
+from api.routers.admin import tenants as admin_tenants
 from api.utils.security import get_api_key
 
 
 api_router = APIRouter()
 
-api_router.include_router(wallets.router, prefix="/wallets", tags=["Wallets"], dependencies=[Security(get_api_key)])
+api_router.include_router(wallets.router, prefix="/wallets", tags=["Wallets"])
 api_router.include_router(
-    transactions.router, prefix="/transactions", tags=["Transactions"], dependencies=[Security(get_api_key)]
+    transactions.router, prefix="/transactions", tags=["Transactions"]
 )
 api_router.include_router(
     contracts.router, prefix="/contracts", tags=["Contracts"], dependencies=[Security(get_api_key)]
 )
+
+# Tenant admin endpoints: sessions + API keys (tenant API key + CORE wallet)
 api_router.include_router(
-    admin.router, prefix="/admin", tags=["Admin"], dependencies=[Security(get_api_key)]
+    admin.router, prefix="/admin", tags=["Tenant Admin"]
 )
+
+# Platform admin endpoints: tenant management (admin API key only)
+api_router.include_router(admin_tenants.router)

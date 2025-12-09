@@ -46,6 +46,9 @@ variables:
   # Your application should parse the DB_SECRET JSON to get connection details
   POSTGRES_DB: terrasacha_db
 
+  # Multi-Tenant Configuration
+  USE_MULTI_TENANT: "true"
+
 # Sensitive values stored in AWS Secrets Manager
 secrets:
   # API Security
@@ -55,9 +58,20 @@ secrets:
   # Cardano Blockfrost API
   blockfrost_api_key: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/blockfrost_api_key
 
-  # Aurora Database Credentials
+  # Aurora Database Credentials (legacy - for PostgreSQL)
   DB_SECRET:
     from_cfn: ${COPILOT_APPLICATION_NAME}-${COPILOT_ENVIRONMENT_NAME}-apiclusterAuroraSecret
+
+  # MongoDB Multi-Tenant Configuration
+  # Admin database (stores tenant registry and API key mappings)
+  MONGODB_ADMIN_URI: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_admin_uri
+
+  # Tenant-specific MongoDB URIs
+  # Add one secret per tenant: MONGODB_URI_<TENANT_ID>
+  MONGODB_URI_DEFAULT: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_uri_default
+  # MONGODB_URI_CLIENT_A: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_uri_client_a
+  # MONGODB_URI_CLIENT_B: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_uri_client_b
+  # Add more tenant URIs as needed...
 
 # Connect your App Runner service to your environment's VPC (required for Aurora).
 network:

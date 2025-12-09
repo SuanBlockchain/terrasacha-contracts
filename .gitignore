@@ -127,4 +127,5 @@ CLAUDE.md
 # settings.json covered by .vscode/ pattern
 PROJECT_STATUS.md
 .claude.md
-scripts/test_transaction_complete.sh
+scripts/
+postman/

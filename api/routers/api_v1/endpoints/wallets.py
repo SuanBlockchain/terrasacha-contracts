@@ -8,10 +8,9 @@ Provides wallet information, balance checking, address generation, and switching
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Path
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.database.connection import get_session
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
+from api.dependencies.tenant import require_tenant_context
 from api.enums import NetworkType
 from api.schemas.wallet import (
     ChangePasswordRequest,
@@ -36,13 +35,13 @@ from api.schemas.wallet import (
 )
 from api.services.session_manager import get_session_manager
 from api.services.token_service import InvalidTokenError, TokenService
-from api.services.wallet_service import (
+from api.services.wallet_service_mongo import (
     InvalidMnemonicError,
     InvalidPasswordError,
     PermissionDeniedError,
     WalletAlreadyExistsError,
     WalletNotFoundError,
-    WalletService,
+    MongoWalletService,
 )
 
 
@@ -66,7 +65,7 @@ router = APIRouter()
 )
 async def create_wallet(
     request: CreateWalletRequest,
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> CreateWalletResponse:
     """
     Create a new wallet with generated mnemonic.
@@ -96,8 +95,8 @@ async def create_wallet(
                 detail=f"Invalid network '{request.network}'. Must be 'testnet' or 'mainnet'"
             )
 
-        # Create wallet service
-        wallet_service = WalletService(session)
+        # Create wallet service (MongoDB version)
+        wallet_service = MongoWalletService()
 
         # Create wallet (returns wallet and mnemonic)
         wallet, mnemonic = await wallet_service.create_wallet(
@@ -111,8 +110,8 @@ async def create_wallet(
             success=True,
             wallet_id=wallet.id,
             name=wallet.name,
-            network=wallet.network.value,
-            role=wallet.wallet_role.value,
+            network=wallet.network,
+            role=wallet.wallet_role,
             enterprise_address=wallet.enterprise_address,
             staking_address=wallet.staking_address,
             mnemonic=mnemonic,
@@ -140,7 +139,7 @@ async def create_wallet(
 )
 async def import_wallet(
     request: ImportWalletRequest,
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> ImportWalletResponse:
     """
     Import an existing wallet from a mnemonic phrase.
@@ -168,7 +167,7 @@ async def import_wallet(
             )
 
         # Create wallet service
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
 
         # Import wallet
         wallet = await wallet_service.import_wallet(
@@ -183,8 +182,8 @@ async def import_wallet(
             success=True,
             wallet_id=wallet.id,
             name=wallet.name,
-            network=wallet.network.value,
-            role=wallet.wallet_role.value,
+            network=wallet.network,
+            role=wallet.wallet_role,
             enterprise_address=wallet.enterprise_address,
             staking_address=wallet.staking_address,
             imported_at=wallet.created_at,
@@ -221,7 +220,7 @@ async def import_wallet(
 async def unlock_wallet(
     wallet_id: str = Path(..., description="Wallet ID to unlock"),
     request: UnlockWalletRequest = ...,
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> UnlockWalletResponse:
     """
     Unlock a wallet with password.
@@ -246,16 +245,19 @@ async def unlock_wallet(
     - Lock wallet when done to clear the session
     """
     try:
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
 
         # Unlock wallet and get CardanoWallet instance
         wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, request.password)
 
         # Generate tokens
+        from api.enums import WalletRole
+        wallet_role_enum = WalletRole(wallet.wallet_role) if isinstance(wallet.wallet_role, str) else wallet.wallet_role
+
         access_token, access_jti, access_expires_at = TokenService.create_wallet_token(
             payment_key_hash=wallet.id,
             wallet_name=wallet.name,
-            wallet_role=wallet.wallet_role,
+            wallet_role=wallet_role_enum,
         )
 
         refresh_token, refresh_jti, refresh_expires_at = TokenService.create_refresh_token(
@@ -272,9 +274,9 @@ async def unlock_wallet(
         )
 
         # Store session in database (for audit trail and revocation)
-        from api.database.models import WalletSession
+        from api.database.models import WalletSessionMongo
 
-        db_session = WalletSession(
+        db_session = WalletSessionMongo(
             wallet_id=wallet.id,
             jti=access_jti,
             refresh_jti=refresh_jti,
@@ -284,8 +286,7 @@ async def unlock_wallet(
             last_used_at=datetime.now(timezone.utc).replace(tzinfo=None),
             revoked=False,
         )
-        session.add(db_session)
-        await session.commit()
+        await db_session.insert()
 
         # Calculate expires_in (seconds)
         now = datetime.now(timezone.utc)
@@ -295,7 +296,7 @@ async def unlock_wallet(
             success=True,
             wallet_id=wallet.id,
             wallet_name=wallet.name,
-            wallet_role=wallet.wallet_role.value,
+            wallet_role=wallet.wallet_role,
             access_token=access_token,
             refresh_token=refresh_token,
             expires_in=expires_in,
@@ -324,7 +325,7 @@ async def unlock_wallet(
 )
 async def lock_wallet(
     wallet_id: str = Path(..., description="Wallet ID to lock"),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> LockWalletResponse:
     """
     Lock a wallet and revoke all sessions.
@@ -340,32 +341,27 @@ async def lock_wallet(
     - Recommended when done using the wallet
     """
     try:
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
 
         # Lock wallet in database
         wallet = await wallet_service.lock_wallet(wallet_id)
 
-        # Revoke all sessions in database
-        from sqlalchemy import update
+        # Revoke all sessions in MongoDB
+        from api.database.models import WalletSessionMongo
 
-        from api.database.models import WalletSession
+        # Find all active sessions for this wallet
+        sessions = await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == wallet_id,
+            WalletSessionMongo.revoked == False
+        ).to_list()
 
-        stmt = (
-            update(WalletSession)
-            .where(WalletSession.wallet_id == wallet_id, WalletSession.revoked == False)  # noqa: E712
-            .values(revoked=True)
-        )
-        await session.execute(stmt)
-        await session.commit()
-
-        # Get all JTIs for this wallet to remove from memory
-        # Note: This is a simplified approach. In production, you might want to
-        # maintain a wallet_id -> [jti] mapping for efficiency
-        from sqlalchemy import select
-
-        stmt_select = select(WalletSession.jti).where(WalletSession.wallet_id == wallet_id)
-        result = await session.execute(stmt_select)
-        jtis = [row[0] for row in result.fetchall()]
+        jtis = []
+        for session_doc in sessions:
+            # Mark as revoked
+            session_doc.revoked = True
+            session_doc.revoked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session_doc.save()
+            jtis.append(session_doc.jti)
 
         # Remove sessions from memory
         session_manager = get_session_manager()
@@ -397,7 +393,7 @@ async def lock_wallet(
 )
 async def refresh_access_token(
     request: RefreshTokenRequest,
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> RefreshTokenResponse:
     """
     Refresh an access token using a refresh token.
@@ -431,18 +427,14 @@ async def refresh_access_token(
         wallet_name = payload["wallet_name"]
         refresh_jti = payload["jti"]
 
-        # Check if session is still valid in database
-        from sqlalchemy import select
+        # Check if session is still valid in MongoDB
+        from api.database.models import WalletSessionMongo
 
-        from api.database.models import WalletSession
-
-        stmt = select(WalletSession).where(
-            WalletSession.refresh_jti == refresh_jti,
-            WalletSession.wallet_id == wallet_id,
-            WalletSession.revoked == False,  # noqa: E712
+        db_session = await WalletSessionMongo.find_one(
+            WalletSessionMongo.refresh_jti == refresh_jti,
+            WalletSessionMongo.wallet_id == wallet_id,
+            WalletSessionMongo.revoked == False,
         )
-        result = await session.execute(stmt)
-        db_session = result.scalar_one_or_none()
 
         if not db_session:
             raise HTTPException(
@@ -457,7 +449,7 @@ async def refresh_access_token(
             )
 
         # Get wallet to get role
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
         wallet = await wallet_service.get_wallet(wallet_id)
 
         # Generate new access token
@@ -485,11 +477,11 @@ async def refresh_access_token(
             expires_at=new_access_expires_at,
         )
 
-        # Update database session with new JTI
+        # Update database session with new JTI (MongoDB version)
         db_session.jti = new_access_jti
         db_session.expires_at = new_access_expires_at.replace(tzinfo=None)
         db_session.last_used_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await session.commit()
+        await db_session.save()
 
         # Calculate expires_in
         now = datetime.now(timezone.utc)
@@ -522,7 +514,7 @@ async def refresh_access_token(
 )
 async def revoke_token(
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> RevokeTokenResponse:
     """
     Revoke the current access token (logout).
@@ -548,19 +540,16 @@ async def revoke_token(
         wallet_id = wallet.wallet_id
 
         # Revoke session in database
-        from sqlalchemy import update
-        from api.database.models import WalletSession
+        from api.database.models import WalletSessionMongo
 
-        stmt = (
-            update(WalletSession)
-            .where(WalletSession.jti == jti)
-            .values(
-                revoked=True,
-                revoked_at=datetime.now(timezone.utc).replace(tzinfo=None)
-            )
+        session_doc = await WalletSessionMongo.find_one(
+            WalletSessionMongo.jti == jti
         )
-        result = await session.execute(stmt)
-        await session.commit()
+
+        if session_doc:
+            session_doc.revoked = True
+            session_doc.revoked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await session_doc.save()
 
         # Remove from in-memory session manager
         session_manager = get_session_manager()
@@ -596,7 +585,7 @@ async def change_password(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
     request: ChangePasswordRequest = ...,
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> ChangePasswordResponse:
     """
     Change wallet password.
@@ -633,7 +622,7 @@ async def change_password(
             )
 
         # Change password using wallet service
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
         updated_wallet = await wallet_service.change_password(
             payment_key_hash=wallet_id,
             old_password=request.old_password,
@@ -641,31 +630,23 @@ async def change_password(
         )
 
         # Revoke all sessions for this wallet (security measure)
-        from sqlalchemy import update, select
-        from api.database.models import WalletSession
+        from api.database.models import WalletSessionMongo
 
-        # Get all JTIs for this wallet
-        stmt_select = select(WalletSession.jti).where(
-            WalletSession.wallet_id == wallet_id,
-            WalletSession.revoked == False  # noqa: E712
-        )
-        result = await session.execute(stmt_select)
-        jtis = [row[0] for row in result.fetchall()]
+        # Get all active sessions for this wallet
+        active_sessions = await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == wallet_id,
+            WalletSessionMongo.revoked == False
+        ).to_list()
+
+        jtis = []
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Revoke all sessions in database
-        stmt_update = (
-            update(WalletSession)
-            .where(
-                WalletSession.wallet_id == wallet_id,
-                WalletSession.revoked == False  # noqa: E712
-            )
-            .values(
-                revoked=True,
-                revoked_at=datetime.now(timezone.utc).replace(tzinfo=None)
-            )
-        )
-        await session.execute(stmt_update)
-        await session.commit()
+        for session_doc in active_sessions:
+            jtis.append(session_doc.jti)
+            session_doc.revoked = True
+            session_doc.revoked_at = now
+            await session_doc.save()
 
         # Remove all sessions from memory
         session_manager = get_session_manager()
@@ -708,7 +689,7 @@ async def change_password(
     description="Get a list of all database wallets with basic information",
 )
 async def list_wallets(
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> WalletListResponse:
     """
     List all database wallets.
@@ -724,7 +705,7 @@ async def list_wallets(
     """
     try:
         # Get database wallets only
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
         db_wallets = await wallet_service.list_wallets(skip=0, limit=100)
 
         wallets = []
@@ -735,10 +716,10 @@ async def list_wallets(
                 WalletListItem(
                     id=db_wallet.id,
                     name=db_wallet.name,
-                    network=db_wallet.network.value,
+                    network=db_wallet.network,
                     enterprise_address=db_wallet.enterprise_address,
                     is_default=db_wallet.is_default,
-                    role=db_wallet.wallet_role.value,
+                    role=db_wallet.wallet_role,
                     is_locked=db_wallet.is_locked,
                 )
             )
@@ -769,7 +750,7 @@ async def list_wallets(
 )
 async def get_wallet(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> WalletInfoResponse:
     """
     Get detailed wallet information by ID.
@@ -784,16 +765,16 @@ async def get_wallet(
     - Creation timestamp
     """
     try:
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
         wallet = await wallet_service.get_wallet(wallet_id)
 
         return WalletInfoResponse(
             id=wallet.id,
             name=wallet.name,
-            network=wallet.network.value,
+            network=wallet.network,
             enterprise_address=wallet.enterprise_address,
             staking_address=wallet.staking_address,
-            role=wallet.wallet_role.value,
+            role=wallet.wallet_role,
             is_locked=wallet.is_locked,
             is_default=wallet.is_default,
             created_at=wallet.created_at,
@@ -820,7 +801,7 @@ async def get_wallet(
 async def delete_wallet(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
     request: DeleteWalletRequest = ...,
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> DeleteWalletResponse:
     """
     Delete a wallet with password confirmation.
@@ -836,7 +817,7 @@ async def delete_wallet(
     - All active sessions for this wallet will be terminated
     """
     try:
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
 
         # Get wallet info before deletion for response
         wallet = await wallet_service.get_wallet(wallet_id)
@@ -846,13 +827,13 @@ async def delete_wallet(
         await wallet_service.delete_wallet(wallet_id, request.password)
 
         # Remove any active sessions from memory
-        from sqlalchemy import select
+        from api.database.models import WalletSessionMongo
 
-        from api.database.models import WalletSession
+        sessions = await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == wallet_id
+        ).to_list()
 
-        stmt = select(WalletSession.jti).where(WalletSession.wallet_id == wallet_id)
-        result = await session.execute(stmt)
-        jtis = [row[0] for row in result.fetchall()]
+        jtis = [session_doc.jti for session_doc in sessions]
 
         session_manager = get_session_manager()
         for jti in jtis:
@@ -889,7 +870,7 @@ async def delete_wallet(
 async def promote_wallet(
     wallet_id: str = Path(..., description="Wallet ID to promote"),
     core_wallet: WalletAuthContext = Depends(require_core_wallet),
-    session: AsyncSession = Depends(get_session),
+    tenant_id: str = Depends(require_tenant_context),
 ) -> PromoteWalletResponse:
     """
     Promote a wallet to CORE role.
@@ -914,7 +895,7 @@ async def promote_wallet(
     - That wallet can then promote others via this endpoint
     """
     try:
-        wallet_service = WalletService(session)
+        wallet_service = MongoWalletService()
 
         # Promote the wallet
         promoted_wallet = await wallet_service.promote_to_core(
@@ -927,7 +908,7 @@ async def promote_wallet(
             message=f"Wallet '{promoted_wallet.name}' successfully promoted to CORE role",
             wallet_id=promoted_wallet.id,
             wallet_name=promoted_wallet.name,
-            new_role=promoted_wallet.wallet_role.value,
+            new_role=promoted_wallet.wallet_role,
             promoted_by=core_wallet.wallet_id,
         )
 
