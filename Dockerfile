@@ -9,30 +9,26 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
-    libpq-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency files
 COPY pyproject.toml ./
 
-# Install Python dependencies from pyproject.toml
-# Extract and install only the runtime dependencies, not the package itself
+# Install Python dependencies (MongoDB-only, no PostgreSQL)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
     "opshin>=0.26.0" \
     "python-dotenv>=1.1.1,<2.0.0" \
     "requests>=2.32.5,<3.0.0" \
-    "sqlmodel>=0.0.27" \
-    "asyncpg>=0.30.0" \
-    "alembic>=1.17.0" \
     "fastapi[standard]>=0.119.0" \
     "pydantic>=2.12.2" \
     "pydantic-settings>=2.11.0" \
-    "psycopg2-binary>=2.9.11" \
     "cryptography>=44.0.0" \
     "argon2-cffi>=23.1.0" \
-    "pyjwt>=2.10.0"
+    "pyjwt>=2.10.0" \
+    "motor>=3.6.0" \
+    "beanie>=1.27.0"
 
 # Stage 2: Runtime - Create minimal production image
 FROM python:3.11-slim
@@ -44,10 +40,8 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PYTHONPATH=/app/src:$PYTHONPATH
 
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y \
-    libpq5 \
-    && rm -rf /var/lib/apt/lists/*
+# No runtime dependencies needed for MongoDB (motor is pure Python)
+# Keeping minimal base image
 
 # Create non-root user for security
 RUN useradd -m -u 1000 -s /bin/bash appuser
@@ -72,10 +66,10 @@ USER appuser
 # Expose port
 EXPOSE 8000
 
-# Health check (increased start-period to allow for migrations)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"
 
-# Default command - runs migrations then starts server
+# Default command - starts server (MongoDB-only, no migrations needed)
 # For development, override this in docker-compose.yml
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

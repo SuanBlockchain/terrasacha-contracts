@@ -5,8 +5,6 @@ import asyncio
 from dotenv import load_dotenv
 from fastapi import APIRouter, FastAPI, Depends
 from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import text
 
 
 # Load environment variables from .env file
@@ -15,7 +13,6 @@ ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(ENV_FILE)
 
 from api.config import settings
-from api.database.connection import get_db_manager, get_session
 from api.routers.api_v1.api import api_router
 from api.utils.security import generate_api_key
 from api.services.session_manager import get_session_manager
@@ -23,27 +20,6 @@ from api.services.session_manager import get_session_manager
 
 # from db.dblib import engine
 # from db.models.models import Hero, HeroCreate, HeroPublic, HeroUpdate
-
-
-async def session_cleanup_background_task(session_manager):
-    """
-    Background task to periodically clean up expired sessions.
-
-    Runs every 5 minutes to remove expired sessions from memory.
-    """
-    CLEANUP_INTERVAL_SECONDS = 5 * 60  # 5 minutes
-
-    while True:
-        try:
-            await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
-            count = session_manager.cleanup_expired()
-            if count > 0:
-                print(f"🧹 Cleaned up {count} expired session(s)")
-        except asyncio.CancelledError:
-            raise  # Allow task cancellation
-        except Exception as e:
-            print(f"⚠️  Error in session cleanup task: {str(e)}")
-            # Continue running despite errors
 
 
 @asynccontextmanager
@@ -63,30 +39,18 @@ async def lifespan(app: FastAPI):
     print(f"Network: {os.getenv('network', 'NOT SET')}")
     print(f"Admin API Key configured: {'Yes' if settings.admin_api_key else 'No'}")
 
-    # Initialize database connection
-    # Try multi-tenant MongoDB first, fall back to PostgreSQL if not configured
-    multi_tenant_enabled = os.getenv("MONGODB_ADMIN_URI") is not None
-
-    if multi_tenant_enabled:
-        try:
-            from api.database.multi_tenant_manager import get_multi_tenant_db_manager
-            db_manager = get_multi_tenant_db_manager()
-            await db_manager.initialize()
-            print(f"✅ Multi-tenant database manager initialized")
-            print(f"   Admin database: terrasacha_admin")
-        except Exception as e:
-            print(f"⚠️  Multi-tenant database initialization failed: {str(e)}")
-            print("   API will start but multi-tenant operations will fail")
-    else:
-        # Fall back to single PostgreSQL database
-        try:
-            from api.config import db_settings
-            db_manager = get_db_manager()
-            db_manager.get_async_engine()
-            print(f"✅ Database connected: {db_settings.postgres_db}@{db_settings.postgres_host}")
-        except Exception as e:
-            print(f"⚠️  Database connection failed: {str(e)}")
-            print("   API will start but database operations will fail")
+    # Initialize MongoDB multi-tenant database
+    try:
+        from api.database.multi_tenant_manager import get_multi_tenant_db_manager
+        db_manager = get_multi_tenant_db_manager()
+        await db_manager.initialize()
+        print(f"✅ MongoDB multi-tenant database initialized")
+        print(f"   Admin database: terrasacha_admin")
+        print(f"   Architecture: MongoDB-only (PostgreSQL removed)")
+    except Exception as e:
+        print(f"❌ MongoDB initialization failed: {str(e)}")
+        print("   MONGODB_ADMIN_URI environment variable must be set")
+        raise  # Fail fast if MongoDB is not available
 
     # Check for wallet mnemonics
     wallet_mnemonics = [k for k in os.environ.keys() if "wallet_mnemonic" in k]
@@ -98,11 +62,7 @@ async def lifespan(app: FastAPI):
 
     print(f"\n📚 API Documentation: http://127.0.0.1:8000/docs")
     print("=" * 60 + "\n")
-
-    # Start background cleanup task
-    session_manager = get_session_manager()
-    cleanup_task = asyncio.create_task(session_cleanup_background_task(session_manager))
-    print("✅ Background session cleanup task started")
+    print("ℹ️  Session cleanup handled by MongoDB TTL index (auto-delete expired sessions)")
 
     yield  # Application runs here
 
@@ -111,26 +71,14 @@ async def lifespan(app: FastAPI):
     print("🛑 Shutting down API")
     print("=" * 60)
 
-    # Cancel background task
-    cleanup_task.cancel()
+    # Close MongoDB connections
     try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        print("✅ Background cleanup task stopped")
-
-    # Close database connections
-    try:
-        if multi_tenant_enabled:
-            from api.database.multi_tenant_manager import get_multi_tenant_db_manager
-            db_manager = get_multi_tenant_db_manager()
-            await db_manager.close()
-            print("✅ Multi-tenant database connections closed")
-        else:
-            db_manager = get_db_manager()
-            await db_manager.close()
-            print("✅ Database connections closed")
+        from api.database.multi_tenant_manager import get_multi_tenant_db_manager
+        db_manager = get_multi_tenant_db_manager()
+        await db_manager.close()
+        print("✅ MongoDB connections closed")
     except Exception as e:
-        print(f"⚠️  Error closing database: {str(e)}")
+        print(f"⚠️  Error closing MongoDB: {str(e)}")
 
     print("=" * 60 + "\n")
 
@@ -171,35 +119,35 @@ async def get_new_api_key():
 
 
 @app.get("/health")
-async def health_check(session: AsyncSession = Depends(get_session)):
+async def health_check():
     """
-    Health check endpoint that tests database connectivity.
+    Health check endpoint that tests MongoDB connectivity.
 
     Returns:
-        - status: "healthy" if database is accessible
-        - database: connection status and details
-        - version: API version
+        - status: "healthy" if MongoDB is accessible
+        - database: MongoDB connection status
+        - api_version: API version
+        - environment: Current environment
     """
-    from api.config import db_settings
-
     health_status = {
         "status": "healthy",
         "api_version": settings.api_version,
         "environment": settings.environment,
         "database": {
+            "type": "MongoDB",
             "connected": False,
-            "host": db_settings.postgres_host,
-            "database": db_settings.postgres_db,
         }
     }
 
     try:
-        # Test database connection with a simple query
-        result = await session.execute(text("SELECT version()"))
-        db_version = result.scalar()
+        # Test MongoDB connection by counting tenants
+        from api.database.models import Tenant
+
+        tenant_count = await Tenant.count()
 
         health_status["database"]["connected"] = True
-        health_status["database"]["version"] = db_version
+        health_status["database"]["tenant_count"] = tenant_count
+        health_status["database"]["architecture"] = "Multi-tenant"
 
         return JSONResponse(content=health_status, status_code=200)
 

@@ -278,7 +278,8 @@ class MongoTransactionService:
 
         # Verify password
         if not verify_password(password, wallet.password_hash):
-            from api.services.wallet_service import InvalidPasswordError
+            from api.services.wallet_service_mongo import InvalidPasswordError
+
             raise InvalidPasswordError("Incorrect password")
 
         # Decrypt mnemonic TEMPORARILY

@@ -3,9 +3,16 @@ Admin Service - MongoDB/Beanie Version
 
 Centralized business logic for administrative session management operations.
 Handles session queries, cleanup, and management across all tenants.
+
+Performance Optimizations:
+- Uses bulk update_many() instead of N+1 individual save() operations
+- Uses bulk delete_many() for purging old sessions
+- Leverages MongoDB compound indexes for efficient queries
 """
 
 from datetime import datetime, timezone, timedelta
+
+from beanie.operators import Set
 
 from api.database.models import WalletSessionMongo, WalletMongo
 from api.services.session_manager import get_session_manager
@@ -89,6 +96,12 @@ class AdminSessionService:
         """
         Cleanup expired sessions from memory and mark as revoked in DB.
 
+        NOTE: With TTL index enabled, MongoDB automatically deletes expired
+        sessions within 60 seconds. This method provides manual cleanup for
+        immediate consistency between memory and database.
+
+        Performance: Uses bulk update_many() instead of N+1 individual saves.
+
         Returns:
             dict with cleanup counts:
             - memory_cleaned: Sessions removed from memory
@@ -98,22 +111,19 @@ class AdminSessionService:
         session_manager = get_session_manager()
         memory_cleaned = session_manager.cleanup_expired()
 
-        # Mark expired sessions as revoked in MongoDB
+        # Mark expired sessions as revoked in MongoDB using bulk operation
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        # Find all expired, non-revoked sessions
-        expired_sessions = await WalletSessionMongo.find(
+        # Use bulk update instead of N+1 pattern
+        result = await WalletSessionMongo.find(
             WalletSessionMongo.expires_at < now,
             WalletSessionMongo.revoked == False
-        ).to_list()
+        ).update_many(Set({
+            WalletSessionMongo.revoked: True,
+            WalletSessionMongo.revoked_at: now
+        }))
 
-        # Update each one
-        db_cleaned = 0
-        for session_doc in expired_sessions:
-            session_doc.revoked = True
-            session_doc.revoked_at = now
-            await session_doc.save()
-            db_cleaned += 1
+        db_cleaned = result.modified_count if result else 0
 
         return {
             "memory_cleaned": memory_cleaned,
@@ -126,6 +136,12 @@ class AdminSessionService:
 
         This is different from cleanup - it DELETES revoked sessions after
         a retention period, rather than just marking them as revoked.
+
+        NOTE: With TTL index, expired sessions are auto-deleted. This method
+        handles purging REVOKED sessions that haven't expired yet but are
+        older than the retention period.
+
+        Performance: Uses bulk delete_many() instead of N+1 individual deletes.
 
         Best practices:
         - Keep revoked sessions for audit trail (30-90 days)
@@ -140,21 +156,18 @@ class AdminSessionService:
             dict with:
             - purged_count: Number of sessions permanently deleted
             - cutoff_date: Sessions revoked before this date were deleted
+            - retention_days: Retention period used
         """
         # Calculate cutoff date
         cutoff_date = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=retention_days)
 
-        # Find old revoked sessions
-        old_revoked_sessions = await WalletSessionMongo.find(
+        # Use bulk delete instead of N+1 pattern
+        result = await WalletSessionMongo.find(
             WalletSessionMongo.revoked == True,  # noqa: E712
             WalletSessionMongo.revoked_at < cutoff_date
-        ).to_list()
+        ).delete_many()
 
-        # Delete them permanently
-        purged_count = 0
-        for session_doc in old_revoked_sessions:
-            await session_doc.delete()
-            purged_count += 1
+        purged_count = result.deleted_count if result else 0
 
         return {
             "purged_count": purged_count,
@@ -196,24 +209,27 @@ class AdminSessionService:
         """
         Emergency: Clear ALL sessions (memory + DB).
 
+        WARNING: This logs out ALL users immediately. Use only in emergencies.
+
+        Performance: Uses bulk update_many() instead of N+1 individual saves.
+
         Returns:
             dict with cleared counts:
             - memory_cleared: Sessions removed from memory
             - db_revoked: Sessions marked as revoked in database
         """
-        # Get all non-revoked sessions
-        active_sessions = await WalletSessionMongo.find(
-            WalletSessionMongo.revoked == False
-        ).to_list()
-
-        # Mark all as revoked
+        # Mark all non-revoked sessions as revoked using bulk operation
         now = datetime.now(timezone.utc).replace(tzinfo=None)
-        db_revoked = 0
-        for session_doc in active_sessions:
-            session_doc.revoked = True
-            session_doc.revoked_at = now
-            await session_doc.save()
-            db_revoked += 1
+
+        # Use bulk update instead of N+1 pattern
+        result = await WalletSessionMongo.find(
+            WalletSessionMongo.revoked == False
+        ).update_many(Set({
+            WalletSessionMongo.revoked: True,
+            WalletSessionMongo.revoked_at: now
+        }))
+
+        db_revoked = result.modified_count if result else 0
 
         # Clear all from memory
         session_manager = get_session_manager()

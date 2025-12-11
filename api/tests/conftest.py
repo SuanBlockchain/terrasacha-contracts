@@ -2,22 +2,16 @@
 Pytest configuration for API tests
 
 Fixtures and configuration for FastAPI endpoint testing.
+MongoDB-only architecture (PostgreSQL removed).
 """
 
 import os
 from pathlib import Path
-from typing import AsyncGenerator
 
 import pytest
-import pytest_asyncio
 from dotenv import load_dotenv
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import NullPool
-from sqlmodel import SQLModel
 
-from api.database.connection import get_session
 from api.main import app
 
 
@@ -29,74 +23,14 @@ def load_env():
     if env_file.exists():
         load_dotenv(env_file)
 
-    # Ensure we're using test database
-    if not os.getenv("POSTGRES_DB", "").endswith("_test"):
-        os.environ["POSTGRES_DB"] = os.getenv("POSTGRES_DB", "terrasacha_db") + "_test"
-
     yield
 
 
-# Database fixtures
-@pytest.fixture(scope="session")
-def test_database_url():
-    """Get test database URL (async)"""
-    from api.config import db_settings
-
-    return db_settings.async_database_url
-
-
-@pytest_asyncio.fixture
-async def async_engine(test_database_url):
-    """Create async engine for testing"""
-    engine = create_async_engine(
-        test_database_url,
-        echo=False,
-        poolclass=NullPool,  # Don't pool connections in tests
-    )
-
-    # Create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.create_all)
-
-    yield engine
-
-    # Drop all tables after tests
-    async with engine.begin() as conn:
-        await conn.run_sync(SQLModel.metadata.drop_all)
-
-    await engine.dispose()
-
-
-@pytest_asyncio.fixture
-async def async_session(async_engine) -> AsyncGenerator[AsyncSession, None]:
-    """Create async session for testing"""
-    async_session_maker = sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-
-    async with async_session_maker() as session:
-        yield session
-
-
 @pytest.fixture
-def override_get_session(async_session: AsyncSession):
-    """Override get_session dependency for testing"""
-
-    async def _override_get_session():
-        yield async_session
-
-    return _override_get_session
-
-
-@pytest.fixture
-def client(override_get_session):
+def client():
     """Create FastAPI test client"""
-    # Override database dependency
-    app.dependency_overrides[get_session] = override_get_session
-
     with TestClient(app) as test_client:
         yield test_client
-
-    # Clear overrides after test
-    app.dependency_overrides.clear()
 
 
 # Auth fixtures

@@ -13,13 +13,9 @@ dependencies = [
     "opshin>=0.26.0",
     "python-dotenv>=1.1.1,<2.0.0",
     "requests>=2.32.5,<3.0.0",
-    "sqlmodel>=0.0.27",
-    "asyncpg>=0.30.0",
-    "alembic>=1.17.0",
     "fastapi[standard]>=0.119.0",
     "pydantic>=2.12.2",
     "pydantic-settings>=2.11.0",
-    "psycopg2-binary>=2.9.11",
     "cryptography>=44.0.0",
     "argon2-cffi>=23.1.0",
     "pyjwt>=2.10.0",
@@ -117,7 +113,6 @@ line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.11"
-# plugins = ["sqlalchemy.ext.mypy.plugin"]  # Disabled - requires mypy to be installed in same environment
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -142,7 +137,6 @@ exclude = [
     "^src/scripts/",               # Skip build scripts
     "^src/tests/",                 # Skip contract test files
     "^api/tests/",                 # Skip API test files
-    "^src/database/",              # Skip database models - requires SQLAlchemy plugin
 ]
 
 [[tool.mypy.overrides]]
@@ -152,12 +146,12 @@ module = [
     "hypothesis.*",
     "parameterized.*",
     "blockfrost.*",
-    "sqlalchemy.*",
-    "sqlmodel.*",
     "pydantic_settings.*",
     "pytest.*",
     "pytest_asyncio.*",
     "cardano_offchain.*",
+    "motor.*",
+    "beanie.*",
 ]
 ignore_missing_imports = true
 
@@ -176,13 +170,6 @@ module = [
 ]
 ignore_errors = true
 follow_imports = "skip"
-
-# Skip SQLAlchemy repository type errors (known issue with SQLAlchemy/mypy)
-[[tool.mypy.overrides]]
-module = [
-    "api.database.repositories.*",
-]
-disable_error_code = ["arg-type"]
 
 # Skip Pydantic model initialization errors in endpoints (false positives)
 [[tool.mypy.overrides]]

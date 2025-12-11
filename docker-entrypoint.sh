@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-echo "🔄 Running database migrations..."
-alembic upgrade head
-
-echo "✅ Migrations complete"
-echo "🚀 Starting API server..."
+echo "🚀 Starting Terrasacha API (MongoDB-only)"
+echo "📊 No migrations needed - MongoDB schema-less architecture"
 exec uvicorn api.main:app --host 0.0.0.0 --port 8000

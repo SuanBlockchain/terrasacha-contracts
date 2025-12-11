@@ -9,8 +9,6 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from api.database.connection import DatabaseSettings
-
 
 # Get the project root directory (one level up from api/)
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -75,6 +73,3 @@ class Settings(BaseSettings):
 # ============================================================================
 
 settings = Settings()  # type: ignore[call-arg]  # Pydantic settings loads from env
-
-# Database settings instance (for convenience)
-db_settings = DatabaseSettings()  # type: ignore[call-arg]  # Pydantic settings loads from env
