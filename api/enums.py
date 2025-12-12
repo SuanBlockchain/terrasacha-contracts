@@ -53,6 +53,28 @@ class TransactionStatus(str, Enum):
     FAILED = "FAILED"
 
 
+class TransactionType(str, Enum):
+    """
+    Transaction operation types
+
+    - SEND_ADA: Simple ADA transfer between addresses
+    - MINT_TOKEN: Mint new tokens (general)
+    - MINT_PROTOCOL: Mint protocol-specific tokens
+    - BURN_TOKEN: Burn/destroy tokens
+    - STAKE: Stake ADA to a pool
+    - UNSTAKE: Withdraw staked ADA
+    - SMART_CONTRACT: Execute smart contract operation
+    """
+
+    SEND_ADA = "send_ada"
+    MINT_TOKEN = "mint_token"
+    MINT_PROTOCOL = "mint_protocol"
+    BURN_TOKEN = "burn_token"
+    STAKE = "stake"
+    UNSTAKE = "unstake"
+    SMART_CONTRACT = "smart_contract"
+
+
 # ============================================================================
 # Contract Enums
 # ============================================================================

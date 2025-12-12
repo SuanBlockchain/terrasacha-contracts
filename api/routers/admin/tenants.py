@@ -79,7 +79,7 @@ async def create_tenant(
     tenant = Tenant(
         tenant_id=data.tenant_id,
         tenant_name=data.tenant_name,
-        database_name=f"terrasacha_{data.tenant_id}_production",
+        database_name=f"terrasacha_{data.tenant_id}",
         admin_email=data.admin_email,
         plan_tier=data.plan_tier,
         is_active=True,

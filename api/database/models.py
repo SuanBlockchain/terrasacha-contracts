@@ -27,8 +27,8 @@ class Tenant(Document):
     """
 
     tenant_id: Annotated[str, Indexed(unique=True)]  # e.g., "acme_corp"
-    tenant_name: str  # e.g., "ACME Corporation"
-    database_name: str  # e.g., "terrasacha_acme_corp_production"
+    tenant_name: str  
+    database_name: str 
 
     # Status
     is_active: bool = True

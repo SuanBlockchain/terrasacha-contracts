@@ -8,7 +8,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from api.enums import TransactionStatus
+from api.enums import TransactionStatus, TransactionType
 
 
 # ============================================================================
@@ -72,10 +72,14 @@ class TransactionStatusResponse(BaseModel):
 class TransactionHistoryItem(BaseModel):
     """Single transaction in history"""
 
-    id: int = Field(description="Database record ID")
+    id: str = Field(description="Database record ID (MongoDB ObjectId)")
     tx_hash: str = Field(description="Transaction hash")
-    tx_type: str = Field(description="Type of transaction (operation)")
-    status: TransactionStatus = Field(description="Current status")
+    tx_type: str = Field(
+        description="Type of transaction - Common values: send_ada, mint_token, mint_protocol, burn_token, stake, unstake, smart_contract"
+    )
+    status: TransactionStatus = Field(
+        description="Current status - Possible values: BUILT, SIGNED, PENDING, SUBMITTED, CONFIRMED, FAILED"
+    )
     from_address: str | None = Field(None, description="Source address")
     to_address: str | None = Field(None, description="Destination address")
     amount_lovelace: int | None = Field(None, description="Amount in lovelace")
@@ -91,8 +95,14 @@ class TransactionHistoryRequest(BaseModel):
     """Request parameters for transaction history"""
 
     wallet_name: str | None = Field(None, description="Filter by wallet name")
-    tx_type: str | None = Field(None, description="Filter by transaction type")
-    status: TransactionStatus | None = Field(None, description="Filter by status")
+    tx_type: TransactionType | None = Field(
+        None,
+        description="Filter by transaction type (send_ada, mint_token, mint_protocol, burn_token, stake, unstake, smart_contract)"
+    )
+    status: TransactionStatus | None = Field(
+        None,
+        description="Filter by status (BUILT, SIGNED, PENDING, SUBMITTED, CONFIRMED, FAILED)"
+    )
     from_date: datetime | None = Field(None, description="Filter transactions after this date")
     to_date: datetime | None = Field(None, description="Filter transactions before this date")
     limit: int = Field(default=50, ge=1, le=500, description="Number of results to return (1-500)")

@@ -31,6 +31,7 @@ from api.schemas.transaction import (
     TransactionStatus,
     TransactionStatusResponse,
 )
+from api.enums import TransactionType
 from api.services.transaction_service_mongo import (
     InsufficientFundsError,
     InvalidTransactionStateError,
@@ -502,8 +503,14 @@ async def get_transaction_status(
 )
 async def get_transaction_history(
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tx_type: str | None = Query(None, description="Filter by transaction type"),
-    status: str | None = Query(None, description="Filter by status"),
+    tx_type: TransactionType | None = Query(
+        None,
+        description="Filter by transaction type (send_ada, mint_token, mint_protocol, burn_token, stake, unstake, smart_contract)"
+    ),
+    status: TransactionStatus | None = Query(
+        None,
+        description="Filter by status (BUILT, SIGNED, PENDING, SUBMITTED, CONFIRMED, FAILED)"
+    ),
     limit: int = Query(50, ge=1, le=500, description="Number of results (1-500)"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     tenant_id: str = Depends(require_tenant_context),
@@ -512,11 +519,25 @@ async def get_transaction_history(
     """
     Get transaction history with filtering and pagination.
 
-    Filters:
-    - `tx_type`: Filter by transaction type (send_ada, mint_token, etc.)
-    - `status`: Filter by status (pending, submitted, confirmed, failed)
+    **Filters:**
+    - `tx_type`: Transaction type
+      - `send_ada` - Simple ADA transfer
+      - `mint_token` - Mint new tokens
+      - `mint_protocol` - Mint protocol-specific tokens
+      - `burn_token` - Burn/destroy tokens
+      - `stake` - Stake ADA
+      - `unstake` - Withdraw staked ADA
+      - `smart_contract` - Smart contract operation
 
-    Pagination:
+    - `status`: Transaction status
+      - `BUILT` - Transaction built (unsigned)
+      - `SIGNED` - Transaction signed
+      - `PENDING` - Created but not submitted
+      - `SUBMITTED` - Submitted to blockchain
+      - `CONFIRMED` - Confirmed on-chain
+      - `FAILED` - Transaction failed
+
+    **Pagination:**
     - `limit`: Number of results to return (max 500)
     - `offset`: Skip this many results (for pagination)
 
@@ -530,11 +551,11 @@ async def get_transaction_history(
 
         # Filter by operation type if provided
         if tx_type:
-            filters.append(TransactionMongo.operation == tx_type)
+            filters.append(TransactionMongo.operation == tx_type.value)
 
         # Filter by status if provided
         if status:
-            filters.append(TransactionMongo.status == status.upper())
+            filters.append(TransactionMongo.status == status.value)
 
         # Get total count
         total = await TransactionMongo.find(*filters).count()

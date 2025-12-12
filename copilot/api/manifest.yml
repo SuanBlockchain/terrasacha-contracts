@@ -60,6 +60,7 @@ secrets:
   # Tenant-specific MongoDB URIs
   # Add one secret per tenant: MONGODB_URI_<TENANT_ID>
   MONGODB_URI_DEFAULT: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/MONGODB_URI_DEFAULT
+  MONGODB_URI_NUWA: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/MONGODB_URI_NUWA
   # MONGODB_URI_CLIENT_A: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_uri_client_a
   # MONGODB_URI_CLIENT_B: /copilot/${COPILOT_APPLICATION_NAME}/${COPILOT_ENVIRONMENT_NAME}/secrets/mongodb_uri_client_b
   # Add more tenant URIs as needed...
