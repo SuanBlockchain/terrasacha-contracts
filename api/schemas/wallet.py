@@ -426,6 +426,27 @@ class PromoteWalletResponse(BaseModel):
         }
 
 
+class UnpromoteWalletResponse(BaseModel):
+    """Response after unpromoting a wallet from CORE to USER role"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    wallet_id: str = Field(description="Unpromoted wallet ID")
+    wallet_name: str = Field(description="Unpromoted wallet name")
+    new_role: str = Field(description="New wallet role (user)")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Wallet 'core_wallet' successfully unpromoted to USER role",
+                "wallet_id": "abc123def456...",
+                "wallet_name": "core_wallet",
+                "new_role": "user"
+            }
+        }
+
+
 # ============================================================================
 # Error Response Schemas
 # ============================================================================

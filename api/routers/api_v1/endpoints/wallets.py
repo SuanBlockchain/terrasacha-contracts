@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path
 
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.dependencies.tenant import require_tenant_context
-from api.enums import NetworkType
+from api.enums import NetworkType, WalletRole
 from api.schemas.wallet import (
     ChangePasswordRequest,
     ChangePasswordResponse,
@@ -29,6 +29,7 @@ from api.schemas.wallet import (
     RevokeTokenResponse,
     UnlockWalletRequest,
     UnlockWalletResponse,
+    UnpromoteWalletResponse,
     WalletInfoResponse,
     WalletListItem,
     WalletListResponse,
@@ -824,7 +825,7 @@ async def delete_wallet(
         wallet_name = wallet.name
 
         # Delete wallet (includes password verification)
-        await wallet_service.delete_wallet(wallet_id, request.password)
+        await wallet_service.delete_wallet(wallet_id, request.password, WalletRole(wallet.wallet_role))
 
         # Remove any active sessions from memory
         from api.database.models import WalletSessionMongo
@@ -898,9 +899,8 @@ async def promote_wallet(
         wallet_service = MongoWalletService()
 
         # Promote the wallet
-        promoted_wallet = await wallet_service.promote_to_core(
-            payment_key_hash=wallet_id,
-            promoted_by_pkh=core_wallet.wallet_id
+        promoted_wallet = await wallet_service.promote_wallet(
+            payment_key_hash=wallet_id
         )
 
         return PromoteWalletResponse(
@@ -918,3 +918,71 @@ async def promote_wallet(
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to promote wallet: {str(e)}")
+
+
+@router.put(
+    "/{wallet_id}/unpromote",
+    response_model=UnpromoteWalletResponse,
+    summary="Unpromote wallet from CORE to USER role",
+    description="Unpromote a CORE wallet back to USER role. A wallet can only unpromote itself.",
+    responses={
+        403: {"model": ErrorResponse, "description": "Not authorized (can only unpromote own wallet or last CORE wallet)"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def unpromote_wallet(
+    wallet_id: str = Path(..., description="Wallet ID to unpromote"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> UnpromoteWalletResponse:
+    """
+    Unpromote a CORE wallet to USER role.
+
+    This endpoint:
+    1. Verifies the authenticated wallet is the one being unpromoted (self-service)
+    2. Checks that this is not the last CORE wallet
+    3. Unpromotes the wallet to USER role
+
+    **Security:**
+    - Requires authentication (wallet must be unlocked)
+    - A wallet can only unpromote itself
+    - Cannot unpromote the last CORE wallet (system protection)
+
+    **Usage:**
+    - Wallet owner must be authenticated
+    - Useful when a CORE wallet no longer needs administrative privileges
+    - At least one CORE wallet must remain in the system
+    """
+    try:
+        # Verify the authenticated wallet is unpromoting itself
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"You can only unpromote your own wallet. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}' but trying to unpromote '{wallet_id}'"
+            )
+
+        wallet_service = MongoWalletService()
+
+        # Unpromote the wallet
+        unpromoted_wallet = await wallet_service.unpromote_wallet(
+            payment_key_hash=wallet_id
+        )
+
+        return UnpromoteWalletResponse(
+            success=True,
+            message=f"Wallet '{unpromoted_wallet.name}' successfully unpromoted to USER role",
+            wallet_id=unpromoted_wallet.id,
+            wallet_name=unpromoted_wallet.name,
+            new_role=unpromoted_wallet.wallet_role,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except PermissionDeniedError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to unpromote wallet: {str(e)}")

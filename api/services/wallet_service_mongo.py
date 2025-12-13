@@ -433,3 +433,34 @@ class MongoWalletService:
         await wallet.save()
 
         return wallet
+
+    async def unpromote_wallet(self, payment_key_hash: str) -> WalletMongo:
+        """
+        Unpromote a CORE wallet to USER wallet.
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            Updated wallet
+
+        Raises:
+            WalletNotFoundError: If wallet doesn't exist
+            PermissionDeniedError: If this is the last CORE wallet
+        """
+        wallet = await WalletMongo.get(payment_key_hash)
+        if not wallet:
+            raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
+
+        # Check if this is the last CORE wallet
+        core_wallets = await WalletMongo.find(WalletMongo.wallet_role == WalletRole.CORE.value).to_list()
+        if len(core_wallets) <= 1 and wallet.wallet_role == WalletRole.CORE.value:
+            raise PermissionDeniedError(
+                "Cannot unpromote the last CORE wallet. At least one CORE wallet must exist."
+            )
+
+        wallet.wallet_role = WalletRole.USER.value
+        wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await wallet.save()
+
+        return wallet
