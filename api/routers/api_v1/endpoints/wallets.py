@@ -7,7 +7,7 @@ Provides wallet information, balance checking, address generation, and switching
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.dependencies.tenant import require_tenant_context
@@ -20,13 +20,17 @@ from api.schemas.wallet import (
     DeleteWalletRequest,
     DeleteWalletResponse,
     ErrorResponse,
+    HeartbeatResponse,
     ImportWalletRequest,
     ImportWalletResponse,
+    ListSessionsResponse,
     LockWalletResponse,
     PromoteWalletResponse,
     RefreshTokenRequest,
     RefreshTokenResponse,
+    RevokeSessionResponse,
     RevokeTokenResponse,
+    SessionInfo,
     UnlockWalletRequest,
     UnlockWalletResponse,
     UnpromoteWalletResponse,
@@ -220,7 +224,8 @@ async def import_wallet(
 )
 async def unlock_wallet(
     wallet_id: str = Path(..., description="Wallet ID to unlock"),
-    request: UnlockWalletRequest = ...,
+    unlock_request: UnlockWalletRequest = ...,
+    http_request: Request = ...,
     tenant_id: str = Depends(require_tenant_context),
 ) -> UnlockWalletResponse:
     """
@@ -232,24 +237,79 @@ async def unlock_wallet(
     3. Creates an in-memory CardanoWallet instance
     4. Generates JWT access and refresh tokens
     5. Stores the session for transaction signing
+    6. Captures client information for security auditing
 
     **Security:**
     - Access token expires in 30 minutes (configurable)
     - Refresh token expires in 7 days (configurable)
     - Tokens are required for transaction signing
     - Use access token in Authorization header: `Bearer <token>`
+    - Multiple concurrent sessions are supported (e.g., different browsers/devices)
 
     **Usage:**
     - Save both tokens securely
     - Use access token for API calls
     - Use refresh token to get new access tokens when they expire
     - Lock wallet when done to clear the session
+
+    **Multi-Device Support:**
+    - You can unlock the same wallet from multiple devices
+    - Each device gets its own session
+    - Use /sessions endpoint to view all active sessions
+    - Revoke specific sessions as needed
     """
     try:
         wallet_service = MongoWalletService()
 
-        # Unlock wallet and get CardanoWallet instance
-        wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, request.password)
+        # Unlock wallet and get CardanoWallet instance (always allowed, even if already unlocked)
+        wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, unlock_request.password)
+
+        # Capture client information for session tracking
+        client_ip = http_request.client.host if http_request.client else None
+        user_agent = http_request.headers.get("user-agent", None)
+
+        # Generate client fingerprint from various headers
+        client_fingerprint = None
+        if user_agent:
+            # Simple fingerprint: hash of user-agent + accept-language
+            import hashlib
+            accept_language = http_request.headers.get("accept-language", "")
+            fingerprint_data = f"{user_agent}:{accept_language}:{client_ip}"
+            client_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()[:16]
+
+        # Generate human-readable session name from user agent
+        session_name = None
+        if user_agent:
+            # Parse user agent to get browser and OS
+            ua_lower = user_agent.lower()
+            browser = "Unknown Browser"
+            os_name = "Unknown OS"
+
+            # Detect browser
+            if "chrome" in ua_lower and "edg" not in ua_lower:
+                browser = "Chrome"
+            elif "firefox" in ua_lower:
+                browser = "Firefox"
+            elif "safari" in ua_lower and "chrome" not in ua_lower:
+                browser = "Safari"
+            elif "edg" in ua_lower:
+                browser = "Edge"
+            elif "opera" in ua_lower or "opr" in ua_lower:
+                browser = "Opera"
+
+            # Detect OS
+            if "windows" in ua_lower:
+                os_name = "Windows"
+            elif "mac" in ua_lower:
+                os_name = "Mac"
+            elif "linux" in ua_lower:
+                os_name = "Linux"
+            elif "android" in ua_lower:
+                os_name = "Android"
+            elif "iphone" in ua_lower or "ipad" in ua_lower:
+                os_name = "iOS"
+
+            session_name = f"{browser} on {os_name}"
 
         # Generate tokens
         from api.enums import WalletRole
@@ -286,6 +346,11 @@ async def unlock_wallet(
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
             last_used_at=datetime.now(timezone.utc).replace(tzinfo=None),
             revoked=False,
+            # Client tracking information
+            ip_address=client_ip,
+            user_agent=user_agent,
+            client_fingerprint=client_fingerprint,
+            session_name=session_name,
         )
         await db_session.insert()
 
@@ -567,6 +632,291 @@ async def revoke_token(
             status_code=500,
             detail=f"Failed to revoke token: {str(e)}"
         )
+
+
+# ============================================================================
+# Session Management Endpoints
+# ============================================================================
+
+
+@router.get(
+    "/{wallet_id}/sessions",
+    response_model=ListSessionsResponse,
+    summary="List active wallet sessions",
+    description="Get all active sessions for a wallet (requires authentication)",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to view this wallet's sessions"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def list_wallet_sessions(
+    wallet_id: str = Path(..., description="Wallet ID"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> ListSessionsResponse:
+    """
+    List all active sessions for a wallet.
+
+    This endpoint allows users to see:
+    - All devices/browsers that have active sessions
+    - When each session was created and when it expires
+    - Which session is the current one
+    - Session metadata (IP, user agent, client fingerprint)
+
+    **Use Cases:**
+    - Security auditing: See all active sessions
+    - Session management: Identify sessions to revoke
+    - Multi-device usage: Track where wallet is unlocked
+
+    **Authorization:**
+    - User must be authenticated
+    - User can only view sessions for their own wallet
+    """
+    try:
+        # Verify user owns this wallet
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to view sessions for this wallet"
+            )
+
+        wallet_service = MongoWalletService()
+        wallet = await wallet_service.get_wallet(wallet_id)
+        if not wallet:
+            raise HTTPException(status_code=404, detail="Wallet not found")
+
+        # Get all active sessions
+        active_sessions = await wallet_service.get_active_sessions(wallet_id)
+
+        # Convert to SessionInfo objects
+        session_infos = []
+        for session in active_sessions:
+            session_infos.append(SessionInfo(
+                jti=session.jti,
+                session_name=session.session_name,
+                client_fingerprint=session.client_fingerprint,
+                ip_address=session.ip_address,
+                user_agent=session.user_agent,
+                created_at=session.created_at,
+                expires_at=session.expires_at,
+                last_used_at=session.last_used_at,
+                is_current=(session.jti == wallet_auth.jti)
+            ))
+
+        return ListSessionsResponse(
+            wallet_id=wallet_id,
+            wallet_name=wallet.name,
+            sessions=session_infos,
+            total=len(session_infos)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list sessions: {str(e)}"
+        )
+
+
+@router.delete(
+    "/{wallet_id}/sessions/{jti}",
+    response_model=RevokeSessionResponse,
+    summary="Revoke a specific session",
+    description="Revoke a specific session by JTI (requires authentication)",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to revoke this session"},
+        404: {"model": ErrorResponse, "description": "Session not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def revoke_specific_session(
+    wallet_id: str = Path(..., description="Wallet ID"),
+    jti: str = Path(..., description="Session JTI to revoke"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> RevokeSessionResponse:
+    """
+    Revoke a specific session by JTI.
+
+    This endpoint allows users to:
+    - Logout from a specific device/browser
+    - Revoke sessions they no longer recognize
+    - Manage multiple concurrent sessions
+
+    **Use Cases:**
+    - User sees an unfamiliar session and wants to revoke it
+    - User wants to logout from a different device
+    - User lost a device and wants to revoke that session
+
+    **Authorization:**
+    - User must be authenticated
+    - User can only revoke sessions for their own wallet
+    - User can revoke their current session (self-logout)
+
+    **Note:**
+    - Revoking the current session will logout the user
+    - The session becomes invalid immediately
+    """
+    try:
+        # Verify user owns this wallet
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to revoke sessions for this wallet"
+            )
+
+        # Find the session
+        from api.database.models import WalletSessionMongo
+
+        session_doc = await WalletSessionMongo.find_one(
+            WalletSessionMongo.jti == jti,
+            WalletSessionMongo.wallet_id == wallet_id
+        )
+
+        if not session_doc:
+            raise HTTPException(
+                status_code=404,
+                detail="Session not found or already revoked"
+            )
+
+        # Revoke the session
+        session_doc.revoked = True
+        session_doc.revoked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await session_doc.save()
+
+        # Remove from in-memory session manager
+        session_manager = get_session_manager()
+        session_manager.remove_session(jti)
+
+        return RevokeSessionResponse(
+            success=True,
+            message="Session revoked successfully" if jti != wallet_auth.jti else "Current session revoked (logged out)",
+            jti=jti,
+            session_name=session_doc.session_name
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to revoke session: {str(e)}"
+        )
+
+
+@router.post(
+    "/{wallet_id}/heartbeat",
+    response_model=HeartbeatResponse,
+    summary="Session heartbeat",
+    description="Keep session alive and check session validity",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid or expired session"},
+        403: {"model": ErrorResponse, "description": "Not authorized"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def session_heartbeat(
+    wallet_id: str = Path(..., description="Wallet ID"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> HeartbeatResponse:
+    """
+    Send a heartbeat to keep the session alive and check validity.
+
+    This endpoint:
+    1. Verifies the session is still valid
+    2. Updates the last_used_at timestamp
+    3. Returns session expiration information
+
+    **Use Cases:**
+    - Frontend periodic checks to verify session is still active
+    - Update session activity timestamp
+    - Get remaining session time for UI display
+
+    **Recommended Usage:**
+    - Call every 5 minutes from active frontend
+    - Call when user performs any action
+    - Use to detect session expiry and redirect to unlock
+
+    **Authorization:**
+    - User must be authenticated
+    - User can only heartbeat their own wallet's session
+    """
+    try:
+        # Verify user owns this wallet
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to heartbeat this wallet's session"
+            )
+
+        # Update last_used_at in database
+        from api.database.models import WalletSessionMongo
+
+        session_doc = await WalletSessionMongo.find_one(
+            WalletSessionMongo.jti == wallet_auth.jti
+        )
+
+        if not session_doc:
+            return HeartbeatResponse(
+                success=False,
+                message="Session not found or expired",
+                session_valid=False,
+                expires_at=None,
+                time_remaining_seconds=None
+            )
+
+        if session_doc.revoked:
+            return HeartbeatResponse(
+                success=False,
+                message="Session has been revoked",
+                session_valid=False,
+                expires_at=None,
+                time_remaining_seconds=None
+            )
+
+        # Check if expired
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if session_doc.expires_at < now:
+            return HeartbeatResponse(
+                success=False,
+                message="Session has expired",
+                session_valid=False,
+                expires_at=session_doc.expires_at,
+                time_remaining_seconds=0
+            )
+
+        # Update last_used_at
+        session_doc.last_used_at = now
+        await session_doc.save()
+
+        # Calculate time remaining
+        time_remaining = (session_doc.expires_at - now).total_seconds()
+
+        return HeartbeatResponse(
+            success=True,
+            message="Session is active",
+            session_valid=True,
+            expires_at=session_doc.expires_at,
+            time_remaining_seconds=int(time_remaining)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Heartbeat failed: {str(e)}"
+        )
+
+
+# ============================================================================
+# Wallet Password Management
+# ============================================================================
 
 
 @router.post(

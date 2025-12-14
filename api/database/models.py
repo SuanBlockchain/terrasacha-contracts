@@ -150,6 +150,8 @@ class WalletSessionMongo(Document):
     # Session tracking
     ip_address: str | None = None
     user_agent: str | None = None
+    client_fingerprint: str | None = None  # Browser/device fingerprint for tracking
+    session_name: str | None = None  # Human-readable session identifier (e.g., "Chrome on Mac")
 
     # Timestamps
     created_at: Annotated[datetime, Indexed()] = BeanieField(

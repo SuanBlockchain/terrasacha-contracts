@@ -16,6 +16,7 @@ from api.config import settings
 from api.routers.api_v1.api import api_router
 from api.utils.security import generate_api_key
 from api.services.session_manager import get_session_manager
+from api.services.session_cleanup_service import get_cleanup_service
 
 
 # from db.dblib import engine
@@ -62,7 +63,32 @@ async def lifespan(app: FastAPI):
 
     print(f"\n📚 API Documentation: http://127.0.0.1:8000/docs")
     print("=" * 60 + "\n")
-    print("ℹ️  Session cleanup handled by MongoDB TTL index (auto-delete expired sessions)")
+
+    # Start background session cleanup task
+    cleanup_task = None
+    cleanup_interval_minutes = int(os.getenv("SESSION_CLEANUP_INTERVAL_MINUTES", "5"))
+
+    async def periodic_session_cleanup():
+        """Run session cleanup periodically."""
+        while True:
+            try:
+                await asyncio.sleep(cleanup_interval_minutes * 60)  # Convert minutes to seconds
+                cleanup_service = get_cleanup_service()
+                stats = await cleanup_service.cleanup_expired_sessions()
+                print(
+                    f"🧹 Session cleanup: {stats['wallets_locked']} wallets locked, "
+                    f"{stats['sessions_removed_from_memory']} sessions removed"
+                )
+            except asyncio.CancelledError:
+                print("Session cleanup task cancelled")
+                break
+            except Exception as e:
+                print(f"⚠️  Session cleanup error: {str(e)}")
+
+    # Start cleanup task
+    cleanup_task = asyncio.create_task(periodic_session_cleanup())
+    print(f"✅ Session cleanup task started (runs every {cleanup_interval_minutes} minutes)")
+    print("ℹ️  MongoDB TTL index also auto-deletes expired sessions from database")
 
     yield  # Application runs here
 
@@ -70,6 +96,15 @@ async def lifespan(app: FastAPI):
     print("\n" + "=" * 60)
     print("🛑 Shutting down API")
     print("=" * 60)
+
+    # Cancel cleanup task
+    if cleanup_task:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        print("✅ Session cleanup task stopped")
 
     # Close MongoDB connections
     try:

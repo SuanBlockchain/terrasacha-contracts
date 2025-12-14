@@ -189,9 +189,50 @@ class MongoWalletService:
 
         return wallet
 
+    async def is_wallet_locked(self, payment_key_hash: str) -> bool:
+        """
+        Check if wallet is locked based on active sessions.
+
+        A wallet is considered locked if it has NO valid (non-revoked, non-expired) sessions.
+        This replaces the old is_locked field approach with session-based implicit locking.
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            True if wallet is locked (no active sessions), False otherwise
+        """
+        active_sessions_count = await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == payment_key_hash,
+            WalletSessionMongo.revoked == False,
+            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+        ).count()
+
+        return active_sessions_count == 0
+
+    async def get_active_sessions_count(self, payment_key_hash: str) -> int:
+        """
+        Get count of active sessions for a wallet.
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            Number of active sessions
+        """
+        return await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == payment_key_hash,
+            WalletSessionMongo.revoked == False,
+            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+        ).count()
+
     async def unlock_wallet(self, payment_key_hash: str, password: str) -> tuple[WalletMongo, CardanoWallet]:
         """
         Unlock a wallet by decrypting its mnemonic.
+
+        NOTE: This method ALWAYS allows unlock if password is correct, even if wallet
+        already has active sessions. This enables multiple concurrent sessions and
+        prevents client token loss from causing deadlocks.
 
         Args:
             payment_key_hash: Payment key hash (wallet ID)
@@ -231,7 +272,7 @@ class MongoWalletService:
         except Exception as e:
             raise InvalidMnemonicError(f"Failed to create wallet from stored mnemonic: {e}") from e
 
-        # Update wallet state
+        # Update wallet tracking (keep is_locked for backward compatibility during migration)
         wallet.is_locked = False
         wallet.last_unlocked_at = datetime.now(timezone.utc).replace(tzinfo=None)
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -239,9 +280,29 @@ class MongoWalletService:
 
         return wallet, cardano_wallet
 
+    async def get_active_sessions(self, payment_key_hash: str) -> list[WalletSessionMongo]:
+        """
+        Get all active sessions for a wallet.
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+
+        Returns:
+            List of active (non-revoked, non-expired) sessions
+        """
+        return await WalletSessionMongo.find(
+            WalletSessionMongo.wallet_id == payment_key_hash,
+            WalletSessionMongo.revoked == False,
+            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+        ).sort(-WalletSessionMongo.created_at).to_list()
+
     async def lock_wallet(self, payment_key_hash: str) -> WalletMongo:
         """
-        Lock a wallet (marks as locked, doesn't affect stored data).
+        Lock a wallet by revoking all active sessions.
+
+        NOTE: This method sets is_locked for backward compatibility, but the actual
+        locking is done via session revocation. The wallet is truly locked when
+        all sessions are revoked.
 
         Args:
             payment_key_hash: Payment key hash (wallet ID)
@@ -256,6 +317,7 @@ class MongoWalletService:
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
+        # Update is_locked field (backward compatibility during migration)
         wallet.is_locked = True
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await wallet.save()

@@ -202,6 +202,122 @@ class RevokeTokenResponse(BaseModel):
         }
 
 
+class SessionInfo(BaseModel):
+    """Information about a wallet session (user-facing)"""
+
+    jti: str = Field(description="Session ID (JWT ID)")
+    session_name: str | None = Field(None, description="Human-readable session name (e.g., 'Chrome on Mac')")
+    client_fingerprint: str | None = Field(None, description="Client fingerprint")
+    ip_address: str | None = Field(None, description="IP address")
+    user_agent: str | None = Field(None, description="User agent string")
+    created_at: datetime = Field(description="When session was created")
+    expires_at: datetime = Field(description="When session expires")
+    last_used_at: datetime | None = Field(None, description="Last activity timestamp")
+    is_current: bool = Field(description="Whether this is the current session")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "jti": "abc123xyz...",
+                "session_name": "Chrome on Mac",
+                "client_fingerprint": "fp_abc123",
+                "ip_address": "192.168.1.100",
+                "user_agent": "Mozilla/5.0...",
+                "created_at": "2025-10-31T12:00:00Z",
+                "expires_at": "2025-10-31T12:30:00Z",
+                "last_used_at": "2025-10-31T12:15:00Z",
+                "is_current": True
+            }
+        }
+
+
+class ListSessionsResponse(BaseModel):
+    """Response for listing active wallet sessions"""
+
+    wallet_id: str = Field(description="Wallet ID")
+    wallet_name: str = Field(description="Wallet name")
+    sessions: list[SessionInfo] = Field(description="List of active sessions")
+    total: int = Field(description="Total number of active sessions")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "wallet_id": "abc123def456...",
+                "wallet_name": "my_wallet",
+                "sessions": [
+                    {
+                        "jti": "session1",
+                        "session_name": "Chrome on Mac",
+                        "created_at": "2025-10-31T12:00:00Z",
+                        "expires_at": "2025-10-31T12:30:00Z",
+                        "is_current": True
+                    },
+                    {
+                        "jti": "session2",
+                        "session_name": "Firefox on Windows",
+                        "created_at": "2025-10-31T11:00:00Z",
+                        "expires_at": "2025-10-31T11:30:00Z",
+                        "is_current": False
+                    }
+                ],
+                "total": 2
+            }
+        }
+
+
+class RevokeSessionRequest(BaseModel):
+    """Request to revoke a specific session"""
+
+    jti: str = Field(description="Session ID (JWT ID) to revoke")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "jti": "abc123xyz..."
+            }
+        }
+
+
+class RevokeSessionResponse(BaseModel):
+    """Response after revoking a specific session"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    jti: str = Field(description="Revoked session ID")
+    session_name: str | None = Field(None, description="Session name that was revoked")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Session revoked successfully",
+                "jti": "abc123xyz...",
+                "session_name": "Chrome on Mac"
+            }
+        }
+
+
+class HeartbeatResponse(BaseModel):
+    """Response for session heartbeat"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Status message")
+    session_valid: bool = Field(description="Whether session is still valid")
+    expires_at: datetime | None = Field(None, description="When session expires")
+    time_remaining_seconds: int | None = Field(None, description="Seconds until expiration")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Session is active",
+                "session_valid": True,
+                "expires_at": "2025-10-31T12:30:00Z",
+                "time_remaining_seconds": 900
+            }
+        }
+
+
 # ============================================================================
 # Wallet Creation & Import Schemas
 # ============================================================================
