@@ -7,9 +7,10 @@ Provides wallet information, balance checking, address generation, and switching
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
+from api.dependencies.chain_context import get_chain_context
 from api.dependencies.tenant import require_tenant_context
 from api.enums import NetworkType, WalletRole
 from api.schemas.wallet import (
@@ -19,7 +20,9 @@ from api.schemas.wallet import (
     CreateWalletResponse,
     DeleteWalletRequest,
     DeleteWalletResponse,
+    DerivedAddressInfo,
     ErrorResponse,
+    GenerateAddressesResponse,
     HeartbeatResponse,
     ImportWalletRequest,
     ImportWalletResponse,
@@ -34,10 +37,18 @@ from api.schemas.wallet import (
     UnlockWalletRequest,
     UnlockWalletResponse,
     UnpromoteWalletResponse,
+    UtxoInfo,
+    UtxoResponse,
+    WalletBalanceResponse,
+    WalletBalances,
+    WalletBalanceInfo,
+    WalletExportData,
+    WalletExportResponse,
     WalletInfoResponse,
     WalletListItem,
     WalletListResponse,
 )
+from cardano_offchain.chain_context import CardanoChainContext
 from api.services.session_manager import get_session_manager
 from api.services.token_service import InvalidTokenError, TokenService
 from api.services.wallet_service_mongo import (
@@ -1336,3 +1347,360 @@ async def unpromote_wallet(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to unpromote wallet: {str(e)}")
+
+
+# ============================================================================
+# Wallet Query Endpoints (Balance, Addresses, UTXOs, Export)
+# ============================================================================
+
+
+@router.get(
+    "/{wallet_id}/balance",
+    response_model=WalletBalanceResponse,
+    summary="Check wallet balance",
+    description="Get ADA balance for wallet addresses. Requires wallet to be unlocked.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to check this wallet's balance"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def get_wallet_balance(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    limit_addresses: int = Query(5, ge=1, le=20, description="Number of derived addresses to check"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+    tenant_id: str = Depends(require_tenant_context),
+) -> WalletBalanceResponse:
+    """
+    Check wallet balance across all addresses.
+
+    This endpoint:
+    1. Queries the blockchain for UTXOs on wallet addresses
+    2. Calculates total balance in lovelace and ADA
+    3. Returns balance breakdown by address
+
+    **Usage:**
+    - Checks main enterprise and staking addresses
+    - Checks first N derived addresses (configurable)
+    - Returns both lovelace and ADA amounts
+
+    **Authorization:**
+    - Requires valid access token (wallet must be unlocked)
+    - Can only check balance of own wallet
+    """
+    try:
+        # Verify wallet ownership
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot check balance of another wallet. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}'"
+            )
+
+        # Get balance using service
+        wallet_service = MongoWalletService()
+        balances_data = await wallet_service.get_wallet_balance(
+            wallet_auth.cardano_wallet,
+            chain_context.api,
+            limit_addresses
+        )
+
+        # Convert to response format
+        main_addresses_balance = {}
+        for addr_type, addr_data in balances_data["main_addresses"].items():
+            balance_lovelace = addr_data["balance"]
+            main_addresses_balance[addr_type] = WalletBalanceInfo(
+                address=addr_data["address"],
+                balance_lovelace=balance_lovelace,
+                balance_ada=balance_lovelace / 1_000_000
+            )
+
+        derived_addresses_balance = []
+        for addr_data in balances_data.get("derived_addresses", []):
+            balance_lovelace = addr_data["balance"]
+            derived_addresses_balance.append(WalletBalanceInfo(
+                address=addr_data["address"],
+                balance_lovelace=balance_lovelace,
+                balance_ada=balance_lovelace / 1_000_000
+            ))
+
+        total_lovelace = balances_data["total_balance"]
+
+        return WalletBalanceResponse(
+            wallet_name=wallet_auth.wallet_name,
+            balances=WalletBalances(
+                main_addresses=main_addresses_balance,
+                derived_addresses=derived_addresses_balance,
+                total_balance_lovelace=total_lovelace,
+                total_balance_ada=total_lovelace / 1_000_000
+            )
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check wallet balance: {str(e)}"
+        )
+
+
+@router.get(
+    "/{wallet_id}/addresses",
+    response_model=GenerateAddressesResponse,
+    summary="List wallet addresses",
+    description="Get deterministic HD wallet addresses. Requires wallet to be unlocked.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to access this wallet"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def get_wallet_addresses(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    count: int = Query(10, ge=1, le=20, description="Number of addresses to generate"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> GenerateAddressesResponse:
+    """
+    Get deterministic HD wallet addresses.
+
+    This endpoint:
+    1. Derives addresses from the wallet's seed
+    2. Generates both enterprise (payment-only) and staking addresses
+    3. Returns addresses with derivation paths and indexes
+
+    **Features:**
+    - Deterministic address generation (same seed = same addresses)
+    - BIP44 compliant derivation paths
+    - Both enterprise and staking address types
+
+    **Authorization:**
+    - Requires valid access token (wallet must be unlocked)
+    - Can only access own wallet's addresses
+    """
+    try:
+        # Verify wallet ownership
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot access another wallet's addresses. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}'"
+            )
+
+        # Generate addresses using service
+        wallet_service = MongoWalletService()
+        addresses_data = await wallet_service.get_wallet_addresses(
+            wallet_auth.cardano_wallet,
+            count
+        )
+
+        # Convert to response format
+        addresses = []
+        for addr_data in addresses_data:
+            addresses.append(DerivedAddressInfo(
+                index=addr_data["index"],
+                path=addr_data["derivation_path"],
+                enterprise_address=str(addr_data["enterprise_address"]),
+                staking_address=str(addr_data["staking_address"])
+            ))
+
+        return GenerateAddressesResponse(
+            wallet_name=wallet_auth.wallet_name,
+            addresses=addresses,
+            count=len(addresses)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate addresses: {str(e)}"
+        )
+
+
+@router.get(
+    "/{wallet_id}/utxos",
+    response_model=UtxoResponse,
+    summary="Get wallet UTXOs",
+    description="Get unspent transaction outputs for wallet addresses. Requires wallet to be unlocked.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to access this wallet"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def get_wallet_utxos(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    address_index: int | None = Query(None, ge=0, description="Specific address index (None = all main addresses)"),
+    min_ada: float | None = Query(None, ge=0, description="Minimum ADA value filter"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+    tenant_id: str = Depends(require_tenant_context),
+) -> UtxoResponse:
+    """
+    Get unspent transaction outputs (UTXOs) for wallet.
+
+    This endpoint:
+    1. Queries the blockchain for available UTXOs
+    2. Returns detailed UTXO information including native tokens
+    3. Supports filtering by address and minimum value
+
+    **Use Cases:**
+    - Debugging transaction building
+    - Checking available inputs
+    - Verifying token holdings
+    - Advanced transaction construction
+
+    **Authorization:**
+    - Requires valid access token (wallet must be unlocked)
+    - Can only access own wallet's UTXOs
+    """
+    try:
+        # Verify wallet ownership
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot access another wallet's UTXOs. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}'"
+            )
+
+        # Get UTXOs using service
+        wallet_service = MongoWalletService()
+        utxos_data = await wallet_service.get_wallet_utxos(
+            wallet_auth.cardano_wallet,
+            chain_context.api,
+            address_index,
+            min_ada
+        )
+
+        # Convert to response format
+        utxos = []
+        for utxo_data in utxos_data["utxos"]:
+            utxos.append(UtxoInfo(
+                tx_hash=utxo_data["tx_hash"],
+                output_index=utxo_data["output_index"],
+                address=utxo_data["address"],
+                amount_lovelace=utxo_data["amount_lovelace"],
+                amount_ada=utxo_data["amount_ada"],
+                tokens=utxo_data.get("tokens")
+            ))
+
+        return UtxoResponse(
+            wallet_id=wallet_id,
+            wallet_name=wallet_auth.wallet_name,
+            utxos=utxos,
+            total_ada=utxos_data["total_ada"],
+            total_lovelace=utxos_data["total_lovelace"]
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get wallet UTXOs: {str(e)}"
+        )
+
+
+@router.post(
+    "/{wallet_id}/export",
+    response_model=WalletExportResponse,
+    summary="Export wallet data",
+    description="Export wallet public information (addresses, network, etc.). Does NOT export private keys or mnemonic.",
+    responses={
+        401: {"model": ErrorResponse, "description": "Not authenticated"},
+        403: {"model": ErrorResponse, "description": "Not authorized to export this wallet"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def export_wallet_data(
+    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_id: str = Depends(require_tenant_context),
+) -> WalletExportResponse:
+    """
+    Export wallet public data for backup/documentation.
+
+    This endpoint:
+    1. Exports wallet metadata (name, network, role)
+    2. Exports public addresses (main + first 10 derived)
+    3. Does NOT export private keys or mnemonic (security)
+
+    **Security:**
+    - Only public information is exported
+    - Mnemonic phrase is NEVER included
+    - Password hash is NEVER included
+    - Private keys are NEVER included
+
+    **Use Cases:**
+    - Documentation and record keeping
+    - Address list backup
+    - Configuration management
+    - Audit trails
+
+    **Authorization:**
+    - Requires valid access token (wallet must be unlocked)
+    - Can only export own wallet's data
+    """
+    try:
+        # Verify wallet ownership
+        if wallet_auth.wallet_id != wallet_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot export another wallet's data. "
+                       f"You are authenticated as '{wallet_auth.wallet_id}'"
+            )
+
+        # Get wallet from database
+        wallet_service = MongoWalletService()
+        wallet = await wallet_service.get_wallet(wallet_id)
+
+        # Export data using service
+        export_data = await wallet_service.export_wallet_data(
+            wallet,
+            wallet_auth.cardano_wallet
+        )
+
+        # Convert derived addresses to proper format
+        derived_addresses = []
+        for addr in export_data["derived_addresses"]:
+            derived_addresses.append(DerivedAddressInfo(
+                index=addr["index"],
+                path=addr["path"],
+                enterprise_address=addr["enterprise_address"],
+                staking_address=addr["staking_address"]
+            ))
+
+        # Create wallet export data
+        wallet_export = WalletExportData(
+            name=export_data["wallet_name"],
+            network=export_data["network"],
+            addresses={
+                "enterprise": export_data["enterprise_address"],
+                "staking": export_data["staking_address"]
+            },
+            derived_addresses=derived_addresses,
+            created_at=export_data.get("created_at")
+        )
+
+        return WalletExportResponse(
+            wallets=[wallet_export],
+            total_wallets=1
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to export wallet data: {str(e)}"
+        )

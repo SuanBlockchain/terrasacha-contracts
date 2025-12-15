@@ -471,6 +471,35 @@ class WalletExportResponse(BaseModel):
     total_wallets: int
 
 
+class UtxoRequest(BaseModel):
+    """Request to query wallet UTXOs"""
+
+    address_index: int | None = Field(None, ge=0, description="Specific address index (None = all addresses)")
+    min_ada: float | None = Field(None, ge=0, description="Minimum ADA value filter")
+
+
+class UtxoInfo(BaseModel):
+    """Information about a single UTXO"""
+
+    tx_hash: str = Field(description="Transaction hash containing this output")
+    output_index: int = Field(description="Output index in the transaction")
+    address: str = Field(description="Address owning this UTXO")
+    amount_lovelace: int = Field(description="Amount in lovelace")
+    amount_ada: float = Field(description="Amount in ADA")
+    tokens: list[dict] | None = Field(None, description="Native tokens (if any)")
+
+
+class UtxoResponse(BaseModel):
+    """Response with wallet UTXOs"""
+
+    wallet_id: str = Field(description="Wallet ID (payment key hash)")
+    wallet_name: str = Field(description="Wallet name")
+    utxos: list[UtxoInfo] = Field(description="List of unspent transaction outputs")
+    total_ada: float = Field(description="Total ADA across all UTXOs")
+    total_lovelace: int = Field(description="Total lovelace across all UTXOs")
+    checked_at: datetime = Field(default_factory=datetime.utcnow, description="When UTXOs were queried")
+
+
 class DeleteWalletRequest(BaseModel):
     """Request to delete a wallet"""
 

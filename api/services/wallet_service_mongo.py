@@ -6,8 +6,10 @@ Handles wallet creation, encryption, unlocking, and management.
 """
 
 from datetime import datetime, timezone
+from typing import Any
 
 import pycardano as pc
+from blockfrost import ApiError, BlockFrostApi
 from cryptography.fernet import InvalidToken
 
 from api.database.models import WalletMongo, WalletSessionMongo
@@ -526,3 +528,187 @@ class MongoWalletService:
         await wallet.save()
 
         return wallet
+
+    # ============================================================================
+    # Wallet Query Methods (Balance, Addresses, UTXOs, Export)
+    # ============================================================================
+
+    async def get_wallet_balance(
+        self,
+        cardano_wallet: CardanoWallet,
+        blockfrost_api: BlockFrostApi,
+        limit_addresses: int = 5,
+    ) -> dict[str, Any]:
+        """
+        Get balance for wallet addresses.
+
+        Args:
+            cardano_wallet: Unlocked CardanoWallet instance
+            blockfrost_api: BlockFrost API instance
+            limit_addresses: Number of derived addresses to check
+
+        Returns:
+            Balance information dictionary with structure:
+            {
+                "main_addresses": {"enterprise": {...}, "staking": {...}},
+                "derived_addresses": [...],
+                "total_balance": int (lovelace)
+            }
+        """
+        return cardano_wallet.check_balances(blockfrost_api, limit_addresses)
+
+    async def get_wallet_addresses(
+        self,
+        cardano_wallet: CardanoWallet,
+        count: int = 10,
+    ) -> list[dict[str, Any]]:
+        """
+        Generate wallet addresses (deterministic HD wallet).
+
+        Args:
+            cardano_wallet: Unlocked CardanoWallet instance
+            count: Number of addresses to generate
+
+        Returns:
+            List of address dictionaries with index, derivation_path,
+            enterprise_address, staking_address
+        """
+        return cardano_wallet.generate_addresses(count)
+
+    async def get_wallet_utxos(
+        self,
+        cardano_wallet: CardanoWallet,
+        blockfrost_api: BlockFrostApi,
+        address_index: int | None = None,
+        min_ada: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Get unspent transaction outputs for wallet.
+
+        Args:
+            cardano_wallet: Unlocked CardanoWallet instance
+            blockfrost_api: BlockFrost API instance
+            address_index: Specific address index (None = all addresses)
+            min_ada: Minimum ADA filter
+
+        Returns:
+            UTXO information with structure:
+            {
+                "utxos": [...],
+                "total_lovelace": int,
+                "total_ada": float
+            }
+        """
+        utxos_list = []
+        total_lovelace = 0
+
+        # Determine which addresses to check
+        addresses_to_check = []
+        if address_index is not None:
+            # Check specific address
+            if address_index == 0:
+                addresses_to_check = [
+                    ("enterprise", str(cardano_wallet.enterprise_address)),
+                    ("staking", str(cardano_wallet.staking_address)),
+                ]
+            else:
+                # Generate the specific derived address
+                addr_info = cardano_wallet.generate_addresses(address_index)
+                if addr_info:
+                    addr = addr_info[-1]  # Get the last generated address
+                    addresses_to_check = [
+                        ("enterprise", str(addr["enterprise_address"])),
+                        ("staking", str(addr["staking_address"])),
+                    ]
+        else:
+            # Check all main addresses
+            addresses_to_check = [
+                ("enterprise", str(cardano_wallet.enterprise_address)),
+                ("staking", str(cardano_wallet.staking_address)),
+            ]
+
+        # Query UTXOs for each address
+        for addr_type, address in addresses_to_check:
+            try:
+                utxos = blockfrost_api.address_utxos(address)
+                for utxo in utxos:
+                    # Extract lovelace amount
+                    lovelace_amount = 0
+                    tokens = []
+
+                    for amount in utxo.amount:
+                        if amount.unit == "lovelace":
+                            lovelace_amount = int(amount.quantity)
+                        else:
+                            tokens.append({
+                                "unit": amount.unit,
+                                "quantity": amount.quantity
+                            })
+
+                    ada_amount = lovelace_amount / 1_000_000
+
+                    # Apply min_ada filter
+                    if min_ada is not None and ada_amount < min_ada:
+                        continue
+
+                    utxos_list.append({
+                        "tx_hash": utxo.tx_hash,
+                        "output_index": utxo.output_index,
+                        "address": address,
+                        "amount_lovelace": lovelace_amount,
+                        "amount_ada": ada_amount,
+                        "tokens": tokens if tokens else None,
+                    })
+
+                    total_lovelace += lovelace_amount
+
+            except ApiError:
+                # Address might not exist on chain yet or have no UTXOs
+                continue
+
+        return {
+            "utxos": utxos_list,
+            "total_lovelace": total_lovelace,
+            "total_ada": total_lovelace / 1_000_000,
+        }
+
+    async def export_wallet_data(
+        self,
+        wallet: WalletMongo,
+        cardano_wallet: CardanoWallet,
+    ) -> dict[str, Any]:
+        """
+        Export wallet public data (no secrets).
+
+        Args:
+            wallet: Wallet database record
+            cardano_wallet: Unlocked CardanoWallet instance
+
+        Returns:
+            Export data dictionary with public information only
+        """
+        # Generate first 10 addresses
+        derived_addresses = cardano_wallet.generate_addresses(10)
+
+        # Format derived addresses for export
+        formatted_addresses = [
+            {
+                "index": addr["index"],
+                "path": addr["derivation_path"],
+                "enterprise_address": str(addr["enterprise_address"]),
+                "staking_address": str(addr["staking_address"]),
+            }
+            for addr in derived_addresses
+        ]
+
+        return {
+            "wallet_id": wallet.id,
+            "wallet_name": wallet.name,
+            "network": wallet.network,
+            "role": wallet.wallet_role,
+            "enterprise_address": wallet.enterprise_address,
+            "staking_address": wallet.staking_address,
+            "derived_addresses": formatted_addresses,
+            "created_at": wallet.created_at,
+            # NOTE: Mnemonic, password hash, and encrypted data are NOT included for security
+        }
