@@ -56,6 +56,95 @@ class MongoWalletService:
     Handles wallet lifecycle including creation, import, unlock, lock, and deletion.
     """
 
+    def __init__(self, database=None):
+        """
+        Initialize wallet service with optional database context.
+
+        Args:
+            database: MongoDB database instance for tenant isolation.
+                     If None, uses the globally initialized database (not recommended for multi-tenant).
+        """
+        self.database = database
+
+    def _get_wallet_collection(self):
+        """Get the wallets collection from the tenant database."""
+        if self.database is not None:
+            return self.database.get_collection("wallets")
+        return None
+
+    def _get_session_collection(self):
+        """Get the wallet_sessions collection from the tenant database."""
+        if self.database is not None:
+            return self.database.get_collection("wallet_sessions")
+        return None
+
+    async def _find_wallet_by_id(self, payment_key_hash: str) -> WalletMongo | None:
+        """Find wallet by payment key hash using tenant database."""
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = await collection.find_one({"_id": payment_key_hash})
+            if wallet_dict:
+                # Convert MongoDB document to WalletMongo
+                wallet_dict["id"] = wallet_dict.pop("_id")
+                # Use model_validate to properly handle the document
+                return WalletMongo.model_validate(wallet_dict)
+            return None
+        else:
+            return await WalletMongo.get(payment_key_hash)
+
+    async def _find_wallet_by_name(self, name: str) -> WalletMongo | None:
+        """Find wallet by name using tenant database."""
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = await collection.find_one({"name": name})
+            if wallet_dict:
+                # Convert MongoDB document to WalletMongo
+                wallet_dict["id"] = wallet_dict.pop("_id")
+                # Use model_validate to properly handle the document
+                return WalletMongo.model_validate(wallet_dict)
+            return None
+        else:
+            query = WalletMongo.find_one(WalletMongo.name == name)
+            return await query
+
+    async def _save_wallet(self, wallet: WalletMongo) -> None:
+        """Save wallet to tenant database."""
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = wallet.model_dump(by_alias=True, exclude_unset=False)
+            # Handle id -> _id conversion (Beanie uses id, MongoDB uses _id)
+            if "id" in wallet_dict:
+                wallet_dict["_id"] = wallet_dict.pop("id")
+            elif "_id" not in wallet_dict:
+                wallet_dict["_id"] = wallet.id
+            await collection.replace_one({"_id": wallet_dict["_id"]}, wallet_dict)
+        else:
+            await wallet.save()
+
+    async def _delete_wallet(self, wallet: WalletMongo) -> None:
+        """Delete wallet from tenant database."""
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            await collection.delete_one({"_id": wallet.id})
+        else:
+            await wallet.delete()
+
+    async def _is_first_wallet(self) -> bool:
+        """
+        Check if this is the first wallet for the current tenant.
+
+        Returns:
+            True if no wallets exist, False otherwise
+        """
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_count = await collection.count_documents({})
+            return wallet_count == 0
+        else:
+            # For non-tenant mode, count all wallets
+            wallet_count = await WalletMongo.find_all().count()
+            return wallet_count == 0
+
     async def create_wallet(
         self, name: str, password: str, network: NetworkType = NetworkType.TESTNET, role: WalletRole = WalletRole.USER
     ) -> tuple[WalletMongo, str]:
@@ -79,12 +168,19 @@ class MongoWalletService:
             ValueError: If password doesn't meet strength requirements
         """
         # Check if wallet already exists
-        existing_wallet = await WalletMongo.find_one(WalletMongo.name == name)
+        existing_wallet = await self._find_wallet_by_name(name)
         if existing_wallet:
             raise WalletAlreadyExistsError(f"Wallet '{name}' already exists")
 
         # Validate password strength
         validate_password_strength(password)
+
+        # Check if this is the first wallet for auto-promotion to CORE
+        is_first_wallet = await self._is_first_wallet()
+        if is_first_wallet:
+            role = WalletRole.CORE
+            import logging
+            logging.info(f"Auto-promoting first wallet '{name}' to CORE role for tenant")
 
         # Generate 24-word mnemonic (256-bit entropy)
         mnemonic = pc.HDWallet.generate_mnemonic(strength=256)
@@ -116,8 +212,18 @@ class MongoWalletService:
             is_default=False,
         )
 
-        # Save to MongoDB
-        await wallet.insert()
+        # Save to MongoDB (use explicit database for tenant isolation)
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = wallet.model_dump(by_alias=True, exclude_unset=False)
+            # Handle id -> _id conversion (Beanie uses id, MongoDB uses _id)
+            if "id" in wallet_dict:
+                wallet_dict["_id"] = wallet_dict.pop("id")
+            elif "_id" not in wallet_dict:
+                wallet_dict["_id"] = wallet.id
+            await collection.insert_one(wallet_dict)
+        else:
+            await wallet.insert()
 
         # Return wallet and mnemonic (user must save mnemonic!)
         return wallet, mnemonic
@@ -149,12 +255,19 @@ class MongoWalletService:
             ValueError: If password doesn't meet strength requirements
         """
         # Check if wallet already exists
-        existing_wallet = await WalletMongo.find_one(WalletMongo.name == name)
+        existing_wallet = await self._find_wallet_by_name(name)
         if existing_wallet:
             raise WalletAlreadyExistsError(f"Wallet '{name}' already exists")
 
         # Validate password strength
         validate_password_strength(password)
+
+        # Check if this is the first wallet for auto-promotion to CORE
+        is_first_wallet = await self._is_first_wallet()
+        if is_first_wallet:
+            wallet_role = WalletRole.CORE
+            import logging
+            logging.info(f"Auto-promoting first imported wallet '{name}' to CORE role for tenant")
 
         # Validate mnemonic by trying to create a wallet
         try:
@@ -186,8 +299,18 @@ class MongoWalletService:
             is_default=False,
         )
 
-        # Save to MongoDB
-        await wallet.insert()
+        # Save to MongoDB (use explicit database for tenant isolation)
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = wallet.model_dump(by_alias=True, exclude_unset=False)
+            # Handle id -> _id conversion (Beanie uses id, MongoDB uses _id)
+            if "id" in wallet_dict:
+                wallet_dict["_id"] = wallet_dict.pop("id")
+            elif "_id" not in wallet_dict:
+                wallet_dict["_id"] = wallet.id
+            await collection.insert_one(wallet_dict)
+        else:
+            await wallet.insert()
 
         return wallet
 
@@ -204,11 +327,19 @@ class MongoWalletService:
         Returns:
             True if wallet is locked (no active sessions), False otherwise
         """
-        active_sessions_count = await WalletSessionMongo.find(
-            WalletSessionMongo.wallet_id == payment_key_hash,
-            WalletSessionMongo.revoked == False,
-            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
-        ).count()
+        if self.database is not None:
+            collection = self._get_session_collection()
+            active_sessions_count = await collection.count_documents({
+                "wallet_id": payment_key_hash,
+                "revoked": False,
+                "expires_at": {"$gt": datetime.now(timezone.utc).replace(tzinfo=None)}
+            })
+        else:
+            active_sessions_count = await WalletSessionMongo.find(
+                WalletSessionMongo.wallet_id == payment_key_hash,
+                WalletSessionMongo.revoked == False,
+                WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+            ).count()
 
         return active_sessions_count == 0
 
@@ -222,11 +353,19 @@ class MongoWalletService:
         Returns:
             Number of active sessions
         """
-        return await WalletSessionMongo.find(
-            WalletSessionMongo.wallet_id == payment_key_hash,
-            WalletSessionMongo.revoked == False,
-            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
-        ).count()
+        if self.database is not None:
+            collection = self._get_session_collection()
+            return await collection.count_documents({
+                "wallet_id": payment_key_hash,
+                "revoked": False,
+                "expires_at": {"$gt": datetime.now(timezone.utc).replace(tzinfo=None)}
+            })
+        else:
+            return await WalletSessionMongo.find(
+                WalletSessionMongo.wallet_id == payment_key_hash,
+                WalletSessionMongo.revoked == False,
+                WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+            ).count()
 
     async def unlock_wallet(self, payment_key_hash: str, password: str) -> tuple[WalletMongo, CardanoWallet]:
         """
@@ -248,7 +387,7 @@ class MongoWalletService:
             InvalidPasswordError: If password is incorrect
         """
         # Get wallet from MongoDB
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
@@ -260,7 +399,7 @@ class MongoWalletService:
         if needs_rehash(wallet.password_hash):
             # Rehash password with updated parameters
             wallet.password_hash = hash_password(password)
-            await wallet.save()
+            await self._save_wallet(wallet)
 
         # Decrypt mnemonic
         try:
@@ -278,7 +417,7 @@ class MongoWalletService:
         wallet.is_locked = False
         wallet.last_unlocked_at = datetime.now(timezone.utc).replace(tzinfo=None)
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet, cardano_wallet
 
@@ -292,11 +431,20 @@ class MongoWalletService:
         Returns:
             List of active (non-revoked, non-expired) sessions
         """
-        return await WalletSessionMongo.find(
-            WalletSessionMongo.wallet_id == payment_key_hash,
-            WalletSessionMongo.revoked == False,
-            WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
-        ).sort(-WalletSessionMongo.created_at).to_list()
+        if self.database is not None:
+            collection = self._get_session_collection()
+            sessions_data = await collection.find({
+                "wallet_id": payment_key_hash,
+                "revoked": False,
+                "expires_at": {"$gt": datetime.now(timezone.utc).replace(tzinfo=None)}
+            }).sort("created_at", -1).to_list(None)
+            return [WalletSessionMongo(**session) for session in sessions_data]
+        else:
+            return await WalletSessionMongo.find(
+                WalletSessionMongo.wallet_id == payment_key_hash,
+                WalletSessionMongo.revoked == False,
+                WalletSessionMongo.expires_at > datetime.now(timezone.utc).replace(tzinfo=None)
+            ).sort(-WalletSessionMongo.created_at).to_list()
 
     async def lock_wallet(self, payment_key_hash: str) -> WalletMongo:
         """
@@ -315,14 +463,14 @@ class MongoWalletService:
         Raises:
             WalletNotFoundError: If wallet doesn't exist
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
         # Update is_locked field (backward compatibility during migration)
         wallet.is_locked = True
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet
 
@@ -336,7 +484,7 @@ class MongoWalletService:
         Returns:
             Wallet or None if not found
         """
-        return await WalletMongo.get(payment_key_hash)
+        return await self._find_wallet_by_id(payment_key_hash)
 
     async def get_wallet_by_name(self, name: str) -> WalletMongo | None:
         """
@@ -348,7 +496,7 @@ class MongoWalletService:
         Returns:
             Wallet or None if not found
         """
-        return await WalletMongo.find_one(WalletMongo.name == name)
+        return await self._find_wallet_by_name(name)
 
     async def list_wallets(self, skip: int = 0, limit: int = 100) -> list[WalletMongo]:
         """
@@ -361,7 +509,17 @@ class MongoWalletService:
         Returns:
             List of wallets
         """
-        return await WalletMongo.find_all().skip(skip).limit(limit).to_list()
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallets_data = await collection.find().skip(skip).limit(limit).to_list(None)
+            # Convert MongoDB documents to WalletMongo objects
+            wallets = []
+            for w in wallets_data:
+                w["id"] = w.pop("_id")
+                wallets.append(WalletMongo.model_validate(w))
+            return wallets
+        else:
+            return await WalletMongo.find_all().skip(skip).limit(limit).to_list()
 
     async def delete_wallet(self, payment_key_hash: str, password: str, requesting_wallet_role: WalletRole) -> bool:
         """
@@ -379,7 +537,7 @@ class MongoWalletService:
             InvalidPasswordError: If password is incorrect
             PermissionDeniedError: If user role tries to delete core wallet
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             return False
 
@@ -392,7 +550,7 @@ class MongoWalletService:
             raise InvalidPasswordError("Incorrect password")
 
         # Delete wallet
-        await wallet.delete()
+        await self._delete_wallet(wallet)
 
         return True
 
@@ -413,7 +571,7 @@ class MongoWalletService:
             InvalidPasswordError: If current password is incorrect
             ValueError: If new password doesn't meet strength requirements
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
@@ -441,7 +599,7 @@ class MongoWalletService:
         wallet.encryption_salt = salt
         wallet.password_hash = password_hash_str
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet
 
@@ -458,20 +616,29 @@ class MongoWalletService:
         Raises:
             WalletNotFoundError: If wallet doesn't exist
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
         # Unset previous default
-        previous_default = await WalletMongo.find_one(WalletMongo.is_default == True)
-        if previous_default:
-            previous_default.is_default = False
-            await previous_default.save()
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            previous_default_dict = await collection.find_one({"is_default": True})
+            if previous_default_dict:
+                previous_default_dict["id"] = previous_default_dict.pop("_id")
+                previous_default = WalletMongo.model_validate(previous_default_dict)
+                previous_default.is_default = False
+                await self._save_wallet(previous_default)
+        else:
+            previous_default = await WalletMongo.find_one(WalletMongo.is_default == True)
+            if previous_default:
+                previous_default.is_default = False
+                await previous_default.save()
 
         # Set new default
         wallet.is_default = True
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet
 
@@ -488,13 +655,13 @@ class MongoWalletService:
         Raises:
             WalletNotFoundError: If wallet doesn't exist
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
         wallet.wallet_role = WalletRole.CORE.value
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet
 
@@ -512,12 +679,21 @@ class MongoWalletService:
             WalletNotFoundError: If wallet doesn't exist
             PermissionDeniedError: If this is the last CORE wallet
         """
-        wallet = await WalletMongo.get(payment_key_hash)
+        wallet = await self._find_wallet_by_id(payment_key_hash)
         if not wallet:
             raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
 
         # Check if this is the last CORE wallet
-        core_wallets = await WalletMongo.find(WalletMongo.wallet_role == WalletRole.CORE.value).to_list()
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            core_wallets_data = await collection.find({"wallet_role": WalletRole.CORE.value}).to_list(None)
+            core_wallets = []
+            for w in core_wallets_data:
+                w["id"] = w.pop("_id")
+                core_wallets.append(WalletMongo.model_validate(w))
+        else:
+            core_wallets = await WalletMongo.find(WalletMongo.wallet_role == WalletRole.CORE.value).to_list()
+
         if len(core_wallets) <= 1 and wallet.wallet_role == WalletRole.CORE.value:
             raise PermissionDeniedError(
                 "Cannot unpromote the last CORE wallet. At least one CORE wallet must exist."
@@ -525,7 +701,7 @@ class MongoWalletService:
 
         wallet.wallet_role = WalletRole.USER.value
         wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-        await wallet.save()
+        await self._save_wallet(wallet)
 
         return wallet
 
@@ -672,43 +848,3 @@ class MongoWalletService:
             "total_ada": total_lovelace / 1_000_000,
         }
 
-    async def export_wallet_data(
-        self,
-        wallet: WalletMongo,
-        cardano_wallet: CardanoWallet,
-    ) -> dict[str, Any]:
-        """
-        Export wallet public data (no secrets).
-
-        Args:
-            wallet: Wallet database record
-            cardano_wallet: Unlocked CardanoWallet instance
-
-        Returns:
-            Export data dictionary with public information only
-        """
-        # Generate first 10 addresses
-        derived_addresses = cardano_wallet.generate_addresses(10)
-
-        # Format derived addresses for export
-        formatted_addresses = [
-            {
-                "index": addr["index"],
-                "path": addr["derivation_path"],
-                "enterprise_address": str(addr["enterprise_address"]),
-                "staking_address": str(addr["staking_address"]),
-            }
-            for addr in derived_addresses
-        ]
-
-        return {
-            "wallet_id": wallet.id,
-            "wallet_name": wallet.name,
-            "network": wallet.network,
-            "role": wallet.wallet_role,
-            "enterprise_address": wallet.enterprise_address,
-            "staking_address": wallet.staking_address,
-            "derived_addresses": formatted_addresses,
-            "created_at": wallet.created_at,
-            # NOTE: Mnemonic, password hash, and encrypted data are NOT included for security
-        }

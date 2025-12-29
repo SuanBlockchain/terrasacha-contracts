@@ -278,6 +278,54 @@ class RevokeSessionRequest(BaseModel):
         }
 
 
+# ============================================================================
+# Auto-Unlock Session Schemas
+# ============================================================================
+
+
+class StoreSessionPasswordRequest(BaseModel):
+    """Request to store encrypted password for auto-unlock"""
+
+    user_id: str = Field(description="Frontend user ID")
+    password: str = Field(min_length=8, max_length=128, description="Wallet password")
+    session_key: str = Field(description="Frontend-generated session key (base64url)")
+    frontend_session_id: str = Field(description="Frontend session ID")
+    expires_hours: int = Field(
+        default=24,
+        ge=1,
+        le=168,
+        description="Session expiration in hours (1-168, default 24)"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user_12345",
+                "password": "MySecureP@ssw0rd",
+                "session_key": "Xq7vN9kL2mP5wR8tY1uI3oA6sD4fG7hJ9kM2nB5vC8xZ1aS4dF6gH8",
+                "frontend_session_id": "frontend_session_abc123",
+                "expires_hours": 24
+            }
+        }
+
+
+class StoreSessionPasswordResponse(BaseModel):
+    """Response after storing session password"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    expires_at: datetime = Field(description="When the auto-unlock session expires")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Auto-unlock enabled for 24 hours",
+                "expires_at": "2025-11-01T12:00:00Z"
+            }
+        }
+
+
 class RevokeSessionResponse(BaseModel):
     """Response after revoking a specific session"""
 

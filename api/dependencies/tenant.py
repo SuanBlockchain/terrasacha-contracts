@@ -113,3 +113,53 @@ async def require_tenant_context(
             status_code=500,
             detail=f"Database initialization failed: {str(e)}"
         )
+
+
+async def get_tenant_database(
+    api_key_and_tenant: Annotated[tuple[str, str], Depends(get_api_key_and_tenant)]
+):
+    """
+    Get the tenant's database instance for explicit database operations.
+
+    This dependency provides the actual MongoDB database instance for the tenant,
+    enabling tenant-isolated database operations.
+
+    Args:
+        api_key_and_tenant: Tuple of (api_key, tenant_id) from security layer
+
+    Returns:
+        MongoDB database instance for the tenant
+
+    Raises:
+        HTTPException: If admin API key is used or tenant is invalid
+    """
+    api_key, tenant_id = api_key_and_tenant
+
+    # Reject admin API key
+    if tenant_id == "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint requires a tenant API key. Admin API key cannot be used for tenant-specific resources."
+        )
+
+    try:
+        # Set tenant in context for this request
+        set_current_tenant(tenant_id)
+
+        # Get and return tenant database
+        db_manager = get_multi_tenant_db_manager()
+        tenant_db = await db_manager.get_tenant_database(tenant_id)
+
+        return tenant_db
+
+    except ValueError as e:
+        # Tenant validation failed
+        clear_current_tenant()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Database initialization or other error
+        clear_current_tenant()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database initialization failed: {str(e)}"
+        )

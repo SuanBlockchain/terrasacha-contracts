@@ -44,6 +44,103 @@ class InsufficientFundsError(Exception):
 class MongoTransactionService:
     """Service for managing blockchain transactions (MongoDB version)"""
 
+    def __init__(self, database=None):
+        """
+        Initialize transaction service with optional database context.
+
+        Args:
+            database: MongoDB database instance for tenant isolation.
+                     If None, uses the globally initialized database (not recommended for multi-tenant).
+        """
+        self.database = database
+
+    def _get_wallet_collection(self):
+        """Get the wallets collection from the tenant database."""
+        if self.database is not None:
+            return self.database.get_collection("wallets")
+        return None
+
+    def _get_transaction_collection(self):
+        """Get the transactions collection from the tenant database."""
+        if self.database is not None:
+            return self.database.get_collection("transactions")
+        return None
+
+    async def _find_wallet_by_id(self, wallet_id: str):
+        """Find wallet by ID using tenant database."""
+        if self.database is not None:
+            collection = self._get_wallet_collection()
+            wallet_dict = await collection.find_one({"_id": wallet_id})
+            if wallet_dict:
+                wallet_dict["id"] = wallet_dict.pop("_id")
+                return WalletMongo.model_validate(wallet_dict)
+            return None
+        else:
+            return await WalletMongo.find_one(WalletMongo.id == wallet_id)
+
+    async def _find_transaction_by_hash(self, tx_hash: str):
+        """Find transaction by hash using tenant database."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            # tx_hash is stored as _id in MongoDB
+            logger.info(f"🔍 Searching for transaction {tx_hash} in MongoDB")
+            tx_dict = await collection.find_one({"_id": tx_hash})
+            if tx_dict:
+                logger.info(f"✅ Found transaction {tx_hash} in MongoDB")
+                # Convert _id back to tx_hash for the model and remove _id
+                if "_id" in tx_dict:
+                    tx_dict["tx_hash"] = tx_dict["_id"]
+                    del tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                return TransactionMongo.model_validate(tx_dict)
+            else:
+                logger.warning(f"❌ Transaction {tx_hash} NOT FOUND in MongoDB")
+                # Debug: List all transactions in collection
+                all_txs = await collection.find({}).to_list(length=10)
+                logger.info(f"📋 Recent transactions in DB: {[tx.get('_id', 'no-id')[:16] + '...' for tx in all_txs]}")
+            return None
+        else:
+            return await TransactionMongo.find_one(TransactionMongo.tx_hash == tx_hash)
+
+    async def _save_transaction(self, transaction: TransactionMongo):
+        """Save transaction to tenant database."""
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            tx_dict = transaction.model_dump(by_alias=True, exclude_unset=False)
+            # Remove 'id' if present and use tx_hash as _id
+            if "id" in tx_dict:
+                tx_dict.pop("id")
+            # Ensure _id is set to tx_hash for MongoDB
+            tx_dict["_id"] = transaction.tx_hash
+            await collection.replace_one(
+                {"_id": transaction.tx_hash},
+                tx_dict,
+                upsert=True
+            )
+        else:
+            await transaction.save()
+
+    async def _insert_transaction(self, transaction: TransactionMongo):
+        """Insert transaction to tenant database."""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            tx_dict = transaction.model_dump(by_alias=True, exclude_unset=False)
+            # Remove 'id' if present and use tx_hash as _id
+            if "id" in tx_dict:
+                tx_dict.pop("id")
+            # Set _id to tx_hash for MongoDB (primary key)
+            tx_dict["_id"] = transaction.tx_hash
+            await collection.insert_one(tx_dict)
+            logger.info(f"✅ Inserted transaction {transaction.tx_hash} into MongoDB")
+        else:
+            await transaction.insert()
+            logger.info(f"✅ Inserted transaction {transaction.tx_hash} using Beanie")
+
     async def build_transaction(
         self,
         wallet_id: str,
@@ -72,7 +169,7 @@ class MongoTransactionService:
             Exception: Other blockchain errors
         """
         # Get wallet from MongoDB
-        wallet = await WalletMongo.find_one(WalletMongo.id == wallet_id)
+        wallet = await self._find_wallet_by_id(wallet_id)
 
         if not wallet:
             raise Exception(f"Wallet {wallet_id} not found")
@@ -147,9 +244,20 @@ class MongoTransactionService:
         # Calculate estimated fee
         estimated_fee = int(tx_body.fee) if hasattr(tx_body, 'fee') else 170000  # Default estimate
 
-        # Calculate transaction hash from unsigned transaction
-        unsigned_tx = pc.Transaction(tx_body, pc.TransactionWitnessSet())
-        tx_hash = str(unsigned_tx.id.payload.hex()) if unsigned_tx.id else None
+        # Calculate transaction hash from transaction body
+        # For unsigned transactions, the hash is calculated from the transaction body
+        try:
+            tx_body_hash = tx_body.hash()
+            if tx_body_hash is None:
+                raise Exception("Transaction body hash is None")
+            tx_hash = tx_body_hash.hex()
+        except Exception as e:
+            # Fallback: create a Transaction object to get the ID
+            unsigned_tx = pc.Transaction(tx_body, pc.TransactionWitnessSet())
+            if unsigned_tx.id and hasattr(unsigned_tx.id, 'payload'):
+                tx_hash = unsigned_tx.id.payload.hex()
+            else:
+                raise Exception(f"Failed to calculate transaction hash: {str(e)}")
 
         # Extract inputs and outputs for database storage
         inputs = []
@@ -168,13 +276,30 @@ class MongoTransactionService:
             })
 
         # Check for FAILED transaction with same parameters - auto-reset to BUILT
-        failed_tx = await TransactionMongo.find_one(
-            TransactionMongo.wallet_id == wallet_id,
-            TransactionMongo.status == TransactionStatus.FAILED.value,
-            TransactionMongo.to_address == to_address,
-            TransactionMongo.amount_lovelace == amount_lovelace,
-            TransactionMongo.from_address_index == from_address_index
-        )
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            failed_tx_dict = await collection.find_one({
+                "wallet_id": wallet_id,
+                "status": TransactionStatus.FAILED.value,
+                "to_address": to_address,
+                "amount_lovelace": amount_lovelace,
+                "from_address_index": from_address_index
+            })
+            if failed_tx_dict:
+                if "_id" in failed_tx_dict:
+                    failed_tx_dict["tx_hash"] = failed_tx_dict["_id"]
+                    del failed_tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                failed_tx = TransactionMongo.model_validate(failed_tx_dict)
+            else:
+                failed_tx = None
+        else:
+            failed_tx = await TransactionMongo.find_one(
+                TransactionMongo.wallet_id == wallet_id,
+                TransactionMongo.status == TransactionStatus.FAILED.value,
+                TransactionMongo.to_address == to_address,
+                TransactionMongo.amount_lovelace == amount_lovelace,
+                TransactionMongo.from_address_index == from_address_index
+            )
 
         if failed_tx:
             # Reset the failed transaction to BUILT with new transaction data
@@ -194,17 +319,43 @@ class MongoTransactionService:
             return failed_tx
 
         # Check for duplicate transaction (same wallet, status BUILT, same to_address and amount)
-        existing_tx = await TransactionMongo.find_one(
-            TransactionMongo.wallet_id == wallet_id,
-            TransactionMongo.status == TransactionStatus.BUILT.value,
-            TransactionMongo.to_address == to_address,
-            TransactionMongo.amount_lovelace == amount_lovelace,
-            TransactionMongo.from_address_index == from_address_index
-        )
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            existing_tx_dict = await collection.find_one({
+                "wallet_id": wallet_id,
+                "status": TransactionStatus.BUILT.value,
+                "to_address": to_address,
+                "amount_lovelace": amount_lovelace,
+                "from_address_index": from_address_index
+            })
+            if existing_tx_dict:
+                # Convert _id to tx_hash for the model and remove _id
+                if "_id" in existing_tx_dict:
+                    existing_tx_dict["tx_hash"] = existing_tx_dict["_id"]
+                    del existing_tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                existing_tx = TransactionMongo.model_validate(existing_tx_dict)
+            else:
+                existing_tx = None
+        else:
+            existing_tx = await TransactionMongo.find_one(
+                TransactionMongo.wallet_id == wallet_id,
+                TransactionMongo.status == TransactionStatus.BUILT.value,
+                TransactionMongo.to_address == to_address,
+                TransactionMongo.amount_lovelace == amount_lovelace,
+                TransactionMongo.from_address_index == from_address_index
+            )
 
         if existing_tx:
             # Return the existing transaction instead of creating a duplicate
             return existing_tx
+
+        # Validate tx_hash before creating transaction
+        if not tx_hash or tx_hash is None:
+            raise Exception(
+                f"Transaction hash is None or empty. "
+                f"tx_body type: {type(tx_body)}, "
+                f"has hash method: {hasattr(tx_body, 'hash')}"
+            )
 
         # Create transaction record in MongoDB
         transaction = TransactionMongo(
@@ -224,7 +375,7 @@ class MongoTransactionService:
             tx_metadata=metadata if metadata else {},
         )
 
-        await transaction.insert()
+        await self._insert_transaction(transaction)
         return transaction
 
     async def sign_transaction(
@@ -253,9 +404,7 @@ class MongoTransactionService:
             InvalidPasswordError: Wrong password
         """
         # Get transaction
-        transaction = await TransactionMongo.find_one(
-            TransactionMongo.tx_hash == transaction_id
-        )
+        transaction = await self._find_transaction_by_hash(transaction_id)
 
         if not transaction:
             raise TransactionNotFoundError(f"Transaction {transaction_id} not found")
@@ -271,7 +420,7 @@ class MongoTransactionService:
             )
 
         # Get wallet
-        wallet = await WalletMongo.find_one(WalletMongo.id == wallet_id)
+        wallet = await self._find_wallet_by_id(wallet_id)
 
         if not wallet:
             raise Exception(f"Wallet {wallet_id} not found")
@@ -315,23 +464,26 @@ class MongoTransactionService:
         # Create signed transaction
         signed_tx = pc.Transaction(unsigned_tx_body, witness_set, True, auxiliary_data)
 
-        # Get signed CBOR and hash
+        # Get signed CBOR
         signed_cbor = signed_tx.to_cbor_hex()
-        tx_hash = str(signed_tx.id.payload.hex())
+
+        # NOTE: Do NOT update tx_hash! The transaction ID must remain constant.
+        # The unsigned transaction hash is used as the permanent identifier.
+        # Cardano allows this because the transaction body (which determines the ID)
+        # doesn't change when adding witnesses.
 
         # Clear sensitive data immediately
         del mnemonic
         del cardano_wallet
         del signing_key
 
-        # Update transaction in MongoDB
+        # Update transaction in MongoDB (keep original tx_hash!)
         transaction.signed_cbor = signed_cbor
-        transaction.tx_hash = tx_hash
         transaction.status = TransactionStatus.SIGNED.value
         transaction.fee_lovelace = int(unsigned_tx_body.fee)
         transaction.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        await transaction.save()
+        await self._save_transaction(transaction)
         return transaction
 
     async def submit_transaction(
@@ -357,9 +509,7 @@ class MongoTransactionService:
             InvalidTransactionStateError: Transaction not in SIGNED state
         """
         # Get transaction
-        transaction = await TransactionMongo.find_one(
-            TransactionMongo.tx_hash == transaction_id
-        )
+        transaction = await self._find_transaction_by_hash(transaction_id)
 
         if not transaction:
             raise TransactionNotFoundError(f"Transaction {transaction_id} not found")
@@ -393,7 +543,7 @@ class MongoTransactionService:
             transaction.status = TransactionStatus.FAILED.value
             transaction.error_message = str(e)
             transaction.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await transaction.save()
+            await self._save_transaction(transaction)
             raise Exception(f"Failed to submit transaction: {str(e)}")
 
         # Update transaction
@@ -401,7 +551,7 @@ class MongoTransactionService:
         transaction.submitted_at = datetime.now(timezone.utc).replace(tzinfo=None)
         transaction.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        await transaction.save()
+        await self._save_transaction(transaction)
         return transaction
 
     async def sign_and_submit_transaction(

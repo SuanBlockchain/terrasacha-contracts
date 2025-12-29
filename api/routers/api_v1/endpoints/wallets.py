@@ -5,13 +5,13 @@ FastAPI endpoints for wallet management operations.
 Provides wallet information, balance checking, address generation, and switching.
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
 
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.dependencies.chain_context import get_chain_context
-from api.dependencies.tenant import require_tenant_context
+from api.dependencies.tenant import get_tenant_database, require_tenant_context
 from api.enums import NetworkType, WalletRole
 from api.schemas.wallet import (
     ChangePasswordRequest,
@@ -34,6 +34,8 @@ from api.schemas.wallet import (
     RevokeSessionResponse,
     RevokeTokenResponse,
     SessionInfo,
+    StoreSessionPasswordRequest,
+    StoreSessionPasswordResponse,
     UnlockWalletRequest,
     UnlockWalletResponse,
     UnpromoteWalletResponse,
@@ -42,8 +44,6 @@ from api.schemas.wallet import (
     WalletBalanceResponse,
     WalletBalances,
     WalletBalanceInfo,
-    WalletExportData,
-    WalletExportResponse,
     WalletInfoResponse,
     WalletListItem,
     WalletListResponse,
@@ -81,7 +81,7 @@ router = APIRouter()
 )
 async def create_wallet(
     request: CreateWalletRequest,
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> CreateWalletResponse:
     """
     Create a new wallet with generated mnemonic.
@@ -111,8 +111,8 @@ async def create_wallet(
                 detail=f"Invalid network '{request.network}'. Must be 'testnet' or 'mainnet'"
             )
 
-        # Create wallet service (MongoDB version)
-        wallet_service = MongoWalletService()
+        # Create wallet service (MongoDB version) with tenant database
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Create wallet (returns wallet and mnemonic)
         wallet, mnemonic = await wallet_service.create_wallet(
@@ -155,7 +155,7 @@ async def create_wallet(
 )
 async def import_wallet(
     request: ImportWalletRequest,
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> ImportWalletResponse:
     """
     Import an existing wallet from a mnemonic phrase.
@@ -183,7 +183,7 @@ async def import_wallet(
             )
 
         # Create wallet service
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Import wallet
         wallet = await wallet_service.import_wallet(
@@ -237,7 +237,7 @@ async def unlock_wallet(
     wallet_id: str = Path(..., description="Wallet ID to unlock"),
     unlock_request: UnlockWalletRequest = ...,
     http_request: Request = ...,
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> UnlockWalletResponse:
     """
     Unlock a wallet with password.
@@ -270,7 +270,7 @@ async def unlock_wallet(
     - Revoke specific sessions as needed
     """
     try:
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Unlock wallet and get CardanoWallet instance (always allowed, even if already unlocked)
         wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, unlock_request.password)
@@ -402,7 +402,7 @@ async def unlock_wallet(
 )
 async def lock_wallet(
     wallet_id: str = Path(..., description="Wallet ID to lock"),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> LockWalletResponse:
     """
     Lock a wallet and revoke all sessions.
@@ -418,7 +418,7 @@ async def lock_wallet(
     - Recommended when done using the wallet
     """
     try:
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Lock wallet in database
         wallet = await wallet_service.lock_wallet(wallet_id)
@@ -458,6 +458,342 @@ async def lock_wallet(
         raise HTTPException(status_code=500, detail=f"Failed to lock wallet: {str(e)}")
 
 
+# ============================================================================
+# Auto-Unlock Endpoints
+# ============================================================================
+
+
+@router.post(
+    "/{wallet_id}/session/store",
+    response_model=StoreSessionPasswordResponse,
+    summary="Store encrypted password for auto-unlock",
+    description="Store wallet password encrypted for auto-unlock functionality",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid password"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def store_session_password(
+    wallet_id: str = Path(..., description="Wallet ID"),
+    request: StoreSessionPasswordRequest = ...,
+    http_request: Request = ...,
+    tenant_db = Depends(get_tenant_database),
+) -> StoreSessionPasswordResponse:
+    """
+    Store wallet password encrypted for auto-unlock.
+
+    This endpoint is called by the frontend after a user logs in for the first time.
+    The wallet password is encrypted with a session key generated by the frontend,
+    allowing the wallet to be auto-unlocked on subsequent logins without prompting
+    for the password.
+
+    **Security:**
+    - Password is verified before storing
+    - Password encrypted with frontend-generated session key
+    - Only session key hash is stored (not the key itself)
+    - Auto-expires after configured hours (default 24)
+    - All sessions revoked on password change
+
+    **Frontend Integration:**
+    1. User logs into frontend
+    2. Frontend generates session_key (crypto.randomBytes(32))
+    3. Frontend prompts: "Enter wallet password to enable quick access"
+    4. Frontend calls this endpoint with password and session_key
+    5. Frontend stores session_key securely (encrypted local storage)
+
+    **Usage:**
+    - This is a one-time setup per session
+    - Once stored, use /auto-unlock endpoint for password-free unlocking
+    - Transaction signing still requires password (security checkpoint)
+    """
+    try:
+        # Import here to avoid circular dependencies
+        from api.database.models import UserSessionMongo
+        from api.utils.password import verify_password
+        from api.utils.session_encryption import (
+            encrypt_password_for_session,
+            hash_session_key,
+        )
+
+        wallet_service = MongoWalletService(database=tenant_db)
+
+        # 1. Get wallet and verify password is correct
+        wallet = await wallet_service.get_wallet(wallet_id)
+        if not wallet:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        if not verify_password(request.password, wallet.password_hash):
+            raise HTTPException(status_code=401, detail="Invalid password")
+
+        # 2. Encrypt password with session key
+        encrypted_password = encrypt_password_for_session(
+            request.password,
+            request.session_key
+        )
+
+        # 3. Calculate expiration
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=request.expires_hours)
+        expires_at = expires_at.replace(tzinfo=None)  # MongoDB compatibility
+
+        # 4. Capture client information
+        client_ip = http_request.client.host if http_request.client else None
+        user_agent = http_request.headers.get("user-agent", None)
+
+        # 5. Check if session already exists (upsert logic) using tenant database
+        user_sessions_collection = tenant_db.get_collection("user_sessions")
+
+        existing_session_dict = await user_sessions_collection.find_one({
+            "frontend_session_id": request.frontend_session_id,
+            "wallet_id": wallet_id
+        })
+
+        if existing_session_dict:
+            # Update existing session
+            await user_sessions_collection.update_one(
+                {"_id": existing_session_dict["_id"]},
+                {"$set": {
+                    "encrypted_wallet_password": encrypted_password,
+                    "session_key_hash": hash_session_key(request.session_key),
+                    "expires_at": expires_at,
+                    "updated_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                    "ip_address": client_ip,
+                    "user_agent": user_agent
+                }}
+            )
+        else:
+            # Create new session
+            session_doc = {
+                "user_id": request.user_id,
+                "wallet_id": wallet_id,
+                "encrypted_wallet_password": encrypted_password,
+                "session_key_hash": hash_session_key(request.session_key),
+                "frontend_session_id": request.frontend_session_id,
+                "expires_at": expires_at,
+                "ip_address": client_ip,
+                "user_agent": user_agent,
+                "created_at": datetime.now(timezone.utc).replace(tzinfo=None),
+                "updated_at": datetime.now(timezone.utc).replace(tzinfo=None)
+            }
+            await user_sessions_collection.insert_one(session_doc)
+
+        return StoreSessionPasswordResponse(
+            success=True,
+            message=f"Auto-unlock enabled for {request.expires_hours} hours",
+            expires_at=expires_at.replace(tzinfo=timezone.utc)
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to store session password: {str(e)}")
+
+
+@router.post(
+    "/{wallet_id}/auto-unlock",
+    response_model=UnlockWalletResponse,
+    summary="Auto-unlock wallet with frontend session",
+    description="Auto-unlock wallet using stored encrypted password (no password prompt required)",
+    responses={
+        401: {"model": ErrorResponse, "description": "Invalid or expired session"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def auto_unlock_wallet(
+    wallet_id: str = Path(..., description="Wallet ID"),
+    http_request: Request = ...,
+    session_key: str = Header(..., alias="X-Session-Key", description="Session key from frontend"),
+    frontend_session_id: str = Header(..., alias="X-Frontend-Session-ID", description="Frontend session ID"),
+    tenant_db = Depends(get_tenant_database),
+) -> UnlockWalletResponse:
+    """
+    Auto-unlock wallet without password prompt.
+
+    This endpoint uses the encrypted password stored via /session/store to automatically
+    unlock the wallet without prompting the user. The session key must be provided in
+    the X-Session-Key header.
+
+    **Required Headers:**
+    - `X-Session-Key`: Session key (generated by frontend during /session/store)
+    - `X-Frontend-Session-ID`: Frontend session identifier
+
+    **Security:**
+    - Verifies session exists and is not expired
+    - Verifies session key matches stored hash
+    - Decrypts password and unlocks wallet
+    - Returns same JWT tokens as regular unlock
+    - Transaction signing still requires password
+
+    **Frontend Integration:**
+    1. User logs into frontend (subsequent login, not first time)
+    2. Frontend retrieves stored session_key
+    3. Frontend calls this endpoint with headers
+    4. Backend auto-unlocks wallet
+    5. Frontend receives JWT tokens for API calls
+
+    **Error Handling:**
+    - 401: Session not found, expired, or invalid key → Prompt for password
+    - 404: Wallet not found
+    - 500: Server error
+    """
+    try:
+        # Import here to avoid circular dependencies
+        from api.database.models import UserSessionMongo
+        from api.utils.session_encryption import (
+            decrypt_password_from_session,
+            hash_session_key,
+        )
+
+        # 1. Find and validate session using tenant database
+        user_sessions_collection = tenant_db.get_collection("user_sessions")
+
+        user_session_dict = await user_sessions_collection.find_one({
+            "frontend_session_id": frontend_session_id,
+            "wallet_id": wallet_id,
+            "expires_at": {"$gt": datetime.now(timezone.utc).replace(tzinfo=None)}
+        })
+
+        if not user_session_dict:
+            raise HTTPException(
+                status_code=401,
+                detail="Session not found or expired. Please enter your password to enable auto-unlock."
+            )
+
+        # 2. Verify session key matches
+        if hash_session_key(session_key) != user_session_dict["session_key_hash"]:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid session key. Please login again."
+            )
+
+        # 3. Decrypt wallet password
+        try:
+            wallet_password = decrypt_password_from_session(
+                user_session_dict["encrypted_wallet_password"],
+                session_key
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to decrypt password. Please re-enable auto-unlock."
+            )
+
+        # 4. Use existing unlock logic
+        wallet_service = MongoWalletService(database=tenant_db)
+        wallet, cardano_wallet = await wallet_service.unlock_wallet(wallet_id, wallet_password)
+
+        # Clear password from memory immediately
+        del wallet_password
+
+        # 5. Capture client information for session tracking
+        client_ip = http_request.client.host if http_request.client else None
+        user_agent = http_request.headers.get("user-agent", None)
+
+        # Generate client fingerprint
+        client_fingerprint = None
+        if user_agent:
+            import hashlib
+            accept_language = http_request.headers.get("accept-language", "")
+            fingerprint_data = f"{user_agent}:{accept_language}:{client_ip}"
+            client_fingerprint = hashlib.sha256(fingerprint_data.encode()).hexdigest()[:16]
+
+        # Generate human-readable session name
+        session_name = None
+        if user_agent:
+            ua_lower = user_agent.lower()
+            browser = "Unknown Browser"
+            os_name = "Unknown OS"
+
+            # Detect browser
+            if "chrome" in ua_lower and "edg" not in ua_lower:
+                browser = "Chrome"
+            elif "firefox" in ua_lower:
+                browser = "Firefox"
+            elif "safari" in ua_lower and "chrome" not in ua_lower:
+                browser = "Safari"
+            elif "edg" in ua_lower:
+                browser = "Edge"
+
+            # Detect OS
+            if "windows" in ua_lower:
+                os_name = "Windows"
+            elif "mac" in ua_lower:
+                os_name = "Mac"
+            elif "linux" in ua_lower:
+                os_name = "Linux"
+            elif "android" in ua_lower:
+                os_name = "Android"
+            elif "ios" in ua_lower or "iphone" in ua_lower or "ipad" in ua_lower:
+                os_name = "iOS"
+
+            session_name = f"{browser} on {os_name}"
+
+        # 6. Generate tokens (same as regular unlock)
+        from api.enums import WalletRole
+        wallet_role_enum = WalletRole(wallet.wallet_role) if isinstance(wallet.wallet_role, str) else wallet.wallet_role
+
+        access_token, access_jti, access_expires_at = TokenService.create_wallet_token(
+            payment_key_hash=wallet.id,
+            wallet_name=wallet.name,
+            wallet_role=wallet_role_enum,
+        )
+
+        refresh_token, refresh_jti, refresh_expires_at = TokenService.create_refresh_token(
+            payment_key_hash=wallet.id,
+            wallet_name=wallet.name,
+        )
+
+        # 7. Store in in-memory session manager
+        session_manager = get_session_manager()
+        session_manager.store_session(
+            jti=access_jti,
+            cardano_wallet=cardano_wallet,
+            expires_at=access_expires_at
+        )
+
+        # 8. Store in MongoDB for audit trail
+        from api.database.models import WalletSessionMongo
+
+        db_session = WalletSessionMongo(
+            wallet_id=wallet.id,
+            jti=access_jti,
+            refresh_jti=refresh_jti,
+            expires_at=access_expires_at.replace(tzinfo=None),
+            refresh_expires_at=refresh_expires_at.replace(tzinfo=None),
+            revoked=False,
+            ip_address=client_ip,
+            user_agent=user_agent,
+            client_fingerprint=client_fingerprint,
+            session_name=session_name,
+            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            updated_at=datetime.now(timezone.utc).replace(tzinfo=None)
+        )
+        await db_session.insert()
+
+        # 9. Calculate expires_in
+        expires_in = int((access_expires_at - datetime.now(timezone.utc)).total_seconds())
+
+        return UnlockWalletResponse(
+            success=True,
+            wallet_id=wallet.id,
+            wallet_name=wallet.name,
+            wallet_role=wallet.wallet_role,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            token_type="Bearer",
+            expires_in=expires_in,
+            expires_at=access_expires_at
+        )
+
+    except HTTPException:
+        raise
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to auto-unlock wallet: {str(e)}")
+
+
 @router.post(
     "/token/refresh",
     response_model=RefreshTokenResponse,
@@ -470,7 +806,7 @@ async def lock_wallet(
 )
 async def refresh_access_token(
     request: RefreshTokenRequest,
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> RefreshTokenResponse:
     """
     Refresh an access token using a refresh token.
@@ -526,14 +862,18 @@ async def refresh_access_token(
             )
 
         # Get wallet to get role
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         wallet = await wallet_service.get_wallet(wallet_id)
+
+        # Convert wallet_role to enum if it's a string
+        from api.enums import WalletRole
+        wallet_role_enum = WalletRole(wallet.wallet_role) if isinstance(wallet.wallet_role, str) else wallet.wallet_role
 
         # Generate new access token
         new_access_token, new_access_jti, new_access_expires_at = TokenService.create_wallet_token(
             payment_key_hash=wallet_id,
             wallet_name=wallet_name,
-            wallet_role=wallet.wallet_role,
+            wallet_role=wallet_role_enum,
         )
 
         # Get the CardanoWallet instance from the old session (if still exists)
@@ -591,7 +931,7 @@ async def refresh_access_token(
 )
 async def revoke_token(
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> RevokeTokenResponse:
     """
     Revoke the current access token (logout).
@@ -665,7 +1005,7 @@ async def revoke_token(
 async def list_wallet_sessions(
     wallet_id: str = Path(..., description="Wallet ID"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> ListSessionsResponse:
     """
     List all active sessions for a wallet.
@@ -693,7 +1033,7 @@ async def list_wallet_sessions(
                 detail="Not authorized to view sessions for this wallet"
             )
 
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         wallet = await wallet_service.get_wallet(wallet_id)
         if not wallet:
             raise HTTPException(status_code=404, detail="Wallet not found")
@@ -748,7 +1088,7 @@ async def revoke_specific_session(
     wallet_id: str = Path(..., description="Wallet ID"),
     jti: str = Path(..., description="Session JTI to revoke"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> RevokeSessionResponse:
     """
     Revoke a specific session by JTI.
@@ -833,7 +1173,7 @@ async def revoke_specific_session(
 async def session_heartbeat(
     wallet_id: str = Path(..., description="Wallet ID"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> HeartbeatResponse:
     """
     Send a heartbeat to keep the session alive and check validity.
@@ -947,7 +1287,7 @@ async def change_password(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
     request: ChangePasswordRequest = ...,
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> ChangePasswordResponse:
     """
     Change wallet password.
@@ -984,10 +1324,10 @@ async def change_password(
             )
 
         # Change password using wallet service
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         updated_wallet = await wallet_service.change_password(
             payment_key_hash=wallet_id,
-            old_password=request.old_password,
+            current_password=request.old_password,
             new_password=request.new_password
         )
 
@@ -1051,7 +1391,7 @@ async def change_password(
     description="Get a list of all database wallets with basic information",
 )
 async def list_wallets(
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> WalletListResponse:
     """
     List all database wallets.
@@ -1067,7 +1407,7 @@ async def list_wallets(
     """
     try:
         # Get database wallets only
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         db_wallets = await wallet_service.list_wallets(skip=0, limit=100)
 
         wallets = []
@@ -1112,7 +1452,7 @@ async def list_wallets(
 )
 async def get_wallet(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> WalletInfoResponse:
     """
     Get detailed wallet information by ID.
@@ -1127,7 +1467,7 @@ async def get_wallet(
     - Creation timestamp
     """
     try:
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         wallet = await wallet_service.get_wallet(wallet_id)
 
         return WalletInfoResponse(
@@ -1163,7 +1503,7 @@ async def get_wallet(
 async def delete_wallet(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
     request: DeleteWalletRequest = ...,
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> DeleteWalletResponse:
     """
     Delete a wallet with password confirmation.
@@ -1179,7 +1519,7 @@ async def delete_wallet(
     - All active sessions for this wallet will be terminated
     """
     try:
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Get wallet info before deletion for response
         wallet = await wallet_service.get_wallet(wallet_id)
@@ -1232,7 +1572,7 @@ async def delete_wallet(
 async def promote_wallet(
     wallet_id: str = Path(..., description="Wallet ID to promote"),
     core_wallet: WalletAuthContext = Depends(require_core_wallet),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> PromoteWalletResponse:
     """
     Promote a wallet to CORE role.
@@ -1257,7 +1597,7 @@ async def promote_wallet(
     - That wallet can then promote others via this endpoint
     """
     try:
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Promote the wallet
         promoted_wallet = await wallet_service.promote_wallet(
@@ -1295,7 +1635,7 @@ async def promote_wallet(
 async def unpromote_wallet(
     wallet_id: str = Path(..., description="Wallet ID to unpromote"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> UnpromoteWalletResponse:
     """
     Unpromote a CORE wallet to USER role.
@@ -1324,7 +1664,7 @@ async def unpromote_wallet(
                        f"You are authenticated as '{wallet_auth.wallet_id}' but trying to unpromote '{wallet_id}'"
             )
 
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
 
         # Unpromote the wallet
         unpromoted_wallet = await wallet_service.unpromote_wallet(
@@ -1371,7 +1711,7 @@ async def get_wallet_balance(
     limit_addresses: int = Query(5, ge=1, le=20, description="Number of derived addresses to check"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
     chain_context: CardanoChainContext = Depends(get_chain_context),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> WalletBalanceResponse:
     """
     Check wallet balance across all addresses.
@@ -1400,7 +1740,7 @@ async def get_wallet_balance(
             )
 
         # Get balance using service
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         balances_data = await wallet_service.get_wallet_balance(
             wallet_auth.cardano_wallet,
             chain_context.api,
@@ -1463,7 +1803,7 @@ async def get_wallet_addresses(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
     count: int = Query(10, ge=1, le=20, description="Number of addresses to generate"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> GenerateAddressesResponse:
     """
     Get deterministic HD wallet addresses.
@@ -1492,7 +1832,7 @@ async def get_wallet_addresses(
             )
 
         # Generate addresses using service
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         addresses_data = await wallet_service.get_wallet_addresses(
             wallet_auth.cardano_wallet,
             count
@@ -1541,7 +1881,7 @@ async def get_wallet_utxos(
     min_ada: float | None = Query(None, ge=0, description="Minimum ADA value filter"),
     wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
     chain_context: CardanoChainContext = Depends(get_chain_context),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> UtxoResponse:
     """
     Get unspent transaction outputs (UTXOs) for wallet.
@@ -1571,7 +1911,7 @@ async def get_wallet_utxos(
             )
 
         # Get UTXOs using service
-        wallet_service = MongoWalletService()
+        wallet_service = MongoWalletService(database=tenant_db)
         utxos_data = await wallet_service.get_wallet_utxos(
             wallet_auth.cardano_wallet,
             chain_context.api,
@@ -1605,102 +1945,4 @@ async def get_wallet_utxos(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get wallet UTXOs: {str(e)}"
-        )
-
-
-@router.post(
-    "/{wallet_id}/export",
-    response_model=WalletExportResponse,
-    summary="Export wallet data",
-    description="Export wallet public information (addresses, network, etc.). Does NOT export private keys or mnemonic.",
-    responses={
-        401: {"model": ErrorResponse, "description": "Not authenticated"},
-        403: {"model": ErrorResponse, "description": "Not authorized to export this wallet"},
-        404: {"model": ErrorResponse, "description": "Wallet not found"},
-        500: {"model": ErrorResponse, "description": "Server error"},
-    },
-)
-async def export_wallet_data(
-    wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
-) -> WalletExportResponse:
-    """
-    Export wallet public data for backup/documentation.
-
-    This endpoint:
-    1. Exports wallet metadata (name, network, role)
-    2. Exports public addresses (main + first 10 derived)
-    3. Does NOT export private keys or mnemonic (security)
-
-    **Security:**
-    - Only public information is exported
-    - Mnemonic phrase is NEVER included
-    - Password hash is NEVER included
-    - Private keys are NEVER included
-
-    **Use Cases:**
-    - Documentation and record keeping
-    - Address list backup
-    - Configuration management
-    - Audit trails
-
-    **Authorization:**
-    - Requires valid access token (wallet must be unlocked)
-    - Can only export own wallet's data
-    """
-    try:
-        # Verify wallet ownership
-        if wallet_auth.wallet_id != wallet_id:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Cannot export another wallet's data. "
-                       f"You are authenticated as '{wallet_auth.wallet_id}'"
-            )
-
-        # Get wallet from database
-        wallet_service = MongoWalletService()
-        wallet = await wallet_service.get_wallet(wallet_id)
-
-        # Export data using service
-        export_data = await wallet_service.export_wallet_data(
-            wallet,
-            wallet_auth.cardano_wallet
-        )
-
-        # Convert derived addresses to proper format
-        derived_addresses = []
-        for addr in export_data["derived_addresses"]:
-            derived_addresses.append(DerivedAddressInfo(
-                index=addr["index"],
-                path=addr["path"],
-                enterprise_address=addr["enterprise_address"],
-                staking_address=addr["staking_address"]
-            ))
-
-        # Create wallet export data
-        wallet_export = WalletExportData(
-            name=export_data["wallet_name"],
-            network=export_data["network"],
-            addresses={
-                "enterprise": export_data["enterprise_address"],
-                "staking": export_data["staking_address"]
-            },
-            derived_addresses=derived_addresses,
-            created_at=export_data.get("created_at")
-        )
-
-        return WalletExportResponse(
-            wallets=[wallet_export],
-            total_wallets=1
-        )
-
-    except WalletNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to export wallet data: {str(e)}"
         )

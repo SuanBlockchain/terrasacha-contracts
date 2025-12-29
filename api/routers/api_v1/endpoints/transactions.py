@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from api.database.models import TransactionMongo, WalletMongo
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token
-from api.dependencies.tenant import require_tenant_context
+from api.dependencies.tenant import require_tenant_context, get_tenant_database
 from api.services.transaction_service_mongo import MongoTransactionService
 from api.enums import TransactionStatus as DBTransactionStatus
 from api.schemas.transaction import (
@@ -82,7 +82,7 @@ def get_chain_context() -> CardanoChainContext:
 async def build_transaction(
     request: BuildTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> BuildTransactionResponse:
     """
     Build an unsigned transaction (Stage 1: Offchain).
@@ -105,14 +105,16 @@ async def build_transaction(
     - Or sign and submit: POST /transactions/sign-and-submit
     """
     try:
-        # Get wallet's network from MongoDB
-        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
+        # Get wallet's network from tenant database
+        from api.services.wallet_service_mongo import MongoWalletService
+        wallet_service = MongoWalletService(database=tenant_db)
+        db_wallet = await wallet_service.get_wallet(wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
-        # Create transaction service
-        tx_service = MongoTransactionService()
+        # Create transaction service with tenant database
+        tx_service = MongoTransactionService(database=tenant_db)
 
         # Build the transaction
         transaction = await tx_service.build_transaction(
@@ -167,7 +169,7 @@ async def build_transaction(
 async def sign_transaction(
     request: SignTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> SignTransactionResponse:
     """
     Sign a built transaction with wallet password (Stage 2).
@@ -191,14 +193,16 @@ async def sign_transaction(
     - Submit the signed transaction: POST /transactions/submit
     """
     try:
-        # Get wallet's network from MongoDB
-        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
+        # Get wallet's network from tenant database
+        from api.services.wallet_service_mongo import MongoWalletService
+        wallet_service = MongoWalletService(database=tenant_db)
+        db_wallet = await wallet_service.get_wallet(wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
-        # Create transaction service
-        tx_service = MongoTransactionService()
+        # Create transaction service with tenant database
+        tx_service = MongoTransactionService(database=tenant_db)
 
         # Sign the transaction
         transaction = await tx_service.sign_transaction(
@@ -245,7 +249,7 @@ async def sign_transaction(
 async def submit_transaction(
     request: SubmitTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> SubmitTransactionResponse:
     """
     Submit a signed transaction to the blockchain (Stage 3).
@@ -268,14 +272,16 @@ async def submit_transaction(
     - Use explorer URL to track confirmation
     """
     try:
-        # Get wallet's network from MongoDB
-        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
+        # Get wallet's network from tenant database
+        from api.services.wallet_service_mongo import MongoWalletService
+        wallet_service = MongoWalletService(database=tenant_db)
+        db_wallet = await wallet_service.get_wallet(wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
-        # Create transaction service
-        tx_service = MongoTransactionService()
+        # Create transaction service with tenant database
+        tx_service = MongoTransactionService(database=tenant_db)
 
         # Submit the transaction
         transaction = await tx_service.submit_transaction(
@@ -323,7 +329,7 @@ async def submit_transaction(
 async def sign_and_submit_transaction(
     request: SignAndSubmitTransactionRequest,
     wallet: WalletAuthContext = Depends(get_wallet_from_token),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
 ) -> SignAndSubmitTransactionResponse:
     """
     Sign and submit a transaction in one operation (Convenience endpoint).
@@ -351,14 +357,16 @@ async def sign_and_submit_transaction(
     - Simple user flows
     """
     try:
-        # Get wallet's network from MongoDB
-        db_wallet = await WalletMongo.find_one(WalletMongo.id == wallet.wallet_id)
+        # Get wallet's network from tenant database
+        from api.services.wallet_service_mongo import MongoWalletService
+        wallet_service = MongoWalletService(database=tenant_db)
+        db_wallet = await wallet_service.get_wallet(wallet.wallet_id)
 
         if not db_wallet:
             raise HTTPException(status_code=404, detail=f"Wallet {wallet.wallet_id} not found")
 
-        # Create transaction service
-        tx_service = MongoTransactionService()
+        # Create transaction service with tenant database
+        tx_service = MongoTransactionService(database=tenant_db)
 
         # Sign and submit
         transaction = await tx_service.sign_and_submit_transaction(
