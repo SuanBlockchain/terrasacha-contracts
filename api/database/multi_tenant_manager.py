@@ -45,10 +45,10 @@ class MultiTenantDatabaseManager:
         # Initialize admin database
         admin_db = self.client["terrasacha_admin"]
 
-        from api.database.models import Tenant, ApiKey
+        from api.database.models import Tenant, ApiKey, TenantContractConfig
         await init_beanie(
             database=admin_db,
-            document_models=[Tenant, ApiKey]
+            document_models=[Tenant, ApiKey, TenantContractConfig]
         )
 
         self._initialized = True
@@ -102,12 +102,24 @@ class MultiTenantDatabaseManager:
 
             # Initialize Beanie for tenant database with MongoDB models
             try:
-                from api.database.models import WalletMongo, WalletSessionMongo, TransactionMongo
+                from api.database.models import (
+                    WalletMongo,
+                    WalletSessionMongo,
+                    UserSessionMongo,
+                    TransactionMongo,
+                    ContractMongo,
+                )
 
                 # Initialize with available Beanie models
                 await init_beanie(
                     database=tenant_db,
-                    document_models=[WalletMongo, WalletSessionMongo, TransactionMongo]
+                    document_models=[
+                        WalletMongo,
+                        WalletSessionMongo,
+                        UserSessionMongo,
+                        TransactionMongo,
+                        ContractMongo,
+                    ]
                 )
             except ImportError:
                 # Models not yet migrated to Beanie

@@ -712,6 +712,16 @@ class AdminCleanupResponse(BaseModel):
     message: str = Field(description="Operation summary")
 
 
+class AdminWalletSyncResponse(BaseModel):
+    """Response for wallet lock state synchronization and cleanup"""
+
+    success: bool = Field(default=True)
+    wallets_locked: int = Field(description="Number of wallets that were locked due to no active sessions")
+    sessions_removed_from_memory: int = Field(description="Number of expired/revoked sessions removed from memory")
+    wallets_checked: int = Field(description="Total number of wallets checked")
+    message: str = Field(description="Operation summary")
+
+
 class AdminRevokeSessionResponse(BaseModel):
     """Response for revoking a specific session"""
 

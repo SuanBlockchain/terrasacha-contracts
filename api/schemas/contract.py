@@ -40,8 +40,10 @@ class AvailableContractInfo(BaseModel):
     name: str = Field(description="Contract name")
     file_path: str = Field(description="File path relative to src/terrasacha_contracts/")
     description: str = Field(description="Human-readable description")
+    category: str = Field(description="Contract category (core_protocol, project_management, token_management, testing)")
     requires_params: bool = Field(description="Whether compilation requires parameters")
     param_description: str | None = Field(None, description="Description of required parameters")
+    tags: list[str] | None = Field(None, description="Optional tags for filtering and discovery")
 
 
 class AvailableContractsResponse(BaseModel):
@@ -89,12 +91,14 @@ class CompileContractResponse(BaseModel):
     policy_id: str = Field(description="Contract policy ID (primary key / script hash)")
     contract_name: str = Field(description="Contract name")
     cbor_hex: str = Field(description="Compiled CBOR hex string")
-    testnet_address: str = Field(description="Testnet address")
-    mainnet_address: str = Field(description="Mainnet address")
+    testnet_address: str | None = Field(None, description="Testnet address")
+    mainnet_address: str | None = Field(None, description="Mainnet address")
     contract_type: str = Field(description="Contract type (spending/minting)")
     source_hash: str = Field(description="SHA256 hash of source code (for versioning)")
     version: int = Field(description="Contract version (auto-increments on recompile)")
     compiled_at: datetime = Field(description="Compilation timestamp")
+    category: str | None = Field(None, description="Contract category from registry (None for custom contracts)")
+    is_custom_contract: bool = Field(False, description="True if compiled from custom source (not in registry)")
 
     class Config:
         json_schema_extra = {
@@ -227,12 +231,14 @@ class DbContractListItem(BaseModel):
     policy_id: str = Field(description="Contract policy ID (primary key)")
     name: str = Field(description="Contract name")
     contract_type: str = Field(description="Type of contract (spending/minting)")
-    testnet_address: str = Field(description="Testnet address")
-    mainnet_address: str = Field(description="Mainnet address")
+    testnet_address: str | None = Field(None, description="Testnet address")
+    mainnet_address: str | None = Field(None, description="Mainnet address")
     version: int = Field(description="Contract version (increments on recompile)")
     source_hash: str = Field(description="SHA256 hash of source code")
     compiled_at: datetime = Field(description="Compilation timestamp")
     network: str = Field(description="Network (testnet/mainnet)")
+    category: str | None = Field(None, description="Contract category from registry (None for custom contracts)")
+    is_custom_contract: bool = Field(False, description="True if compiled from custom source (not in registry)")
 
 
 class DbContractListResponse(BaseModel):

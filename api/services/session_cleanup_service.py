@@ -15,6 +15,7 @@ import logging
 
 from api.database.models import WalletMongo, WalletSessionMongo
 from api.services.session_manager import get_session_manager
+from api.database.multi_tenant_manager import get_multi_tenant_db_manager
 
 logger = logging.getLogger(__name__)
 
@@ -30,15 +31,19 @@ class SessionCleanupService:
     """
 
     @staticmethod
-    async def cleanup_expired_sessions() -> dict[str, int]:
+    async def cleanup_expired_sessions(tenant_id: str) -> dict[str, int]:
         """
-        Clean up expired sessions and synchronize wallet lock state.
+        Clean up expired sessions and synchronize wallet lock state for a specific tenant.
 
         This method:
-        1. Finds all wallets in the database
-        2. Checks if each wallet has active sessions
-        3. Sets is_locked=True if no active sessions exist
-        4. Removes expired sessions from in-memory storage
+        1. Initializes the tenant database
+        2. Finds all wallets in the tenant's database
+        3. Checks if each wallet has active sessions
+        4. Sets is_locked=True if no active sessions exist
+        5. Removes expired sessions from in-memory storage
+
+        Args:
+            tenant_id: The tenant identifier for multi-tenant database access
 
         Returns:
             Dictionary with cleanup statistics:
@@ -47,6 +52,10 @@ class SessionCleanupService:
             - wallets_checked: Total number of wallets checked
         """
         try:
+            # Initialize tenant database
+            db_manager = get_multi_tenant_db_manager()
+            await db_manager.get_tenant_database(tenant_id)
+
             session_manager = get_session_manager()
             now = datetime.now(timezone.utc).replace(tzinfo=None)
 
@@ -54,7 +63,7 @@ class SessionCleanupService:
             sessions_removed_from_memory = 0
             wallets_checked = 0
 
-            # Get all wallets
+            # Get all wallets for this tenant
             wallets = await WalletMongo.find_all().to_list()
             wallets_checked = len(wallets)
 
@@ -109,9 +118,12 @@ class SessionCleanupService:
             raise
 
     @staticmethod
-    async def get_cleanup_stats() -> dict[str, int]:
+    async def get_cleanup_stats(tenant_id: str) -> dict[str, int]:
         """
-        Get statistics about sessions that need cleanup.
+        Get statistics about sessions that need cleanup for a specific tenant.
+
+        Args:
+            tenant_id: The tenant identifier for multi-tenant database access
 
         Returns:
             Dictionary with statistics:
@@ -122,6 +134,10 @@ class SessionCleanupService:
             - wallets_unlocked: Wallets with is_locked=False
             - wallets_with_active_sessions: Wallets that have active sessions
         """
+        # Initialize tenant database
+        db_manager = get_multi_tenant_db_manager()
+        await db_manager.get_tenant_database(tenant_id)
+
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         total_sessions = await WalletSessionMongo.find_all().count()

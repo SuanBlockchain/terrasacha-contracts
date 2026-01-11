@@ -17,10 +17,12 @@ from pydantic import BaseModel
 from api.dependencies.auth import require_core_wallet, WalletAuthContext
 from api.dependencies.tenant import require_tenant_context
 from api.services.admin_service_mongo import AdminSessionService
+from api.services.session_cleanup_service import get_cleanup_service
 from api.schemas.wallet import (
     AdminSessionListResponse,
     AdminSessionCountResponse,
     AdminCleanupResponse,
+    AdminWalletSyncResponse,
     AdminRevokeSessionResponse,
     AdminClearAllResponse,
     SessionMetadata,
@@ -190,8 +192,8 @@ async def manual_cleanup(
     - Requires CORE wallet authentication
     - Requires valid API key
 
-    **Note:** Background cleanup runs automatically every 5 minutes,
-    but this endpoint allows manual cleanup on demand.
+    **Note:** This endpoint cleans up session memory and database entries.
+    For comprehensive cleanup including wallet locking, use /sessions/sync-wallets instead.
     """
     try:
         admin_service = AdminSessionService()
@@ -209,6 +211,61 @@ async def manual_cleanup(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to cleanup sessions: {str(e)}"
+        )
+
+
+@router.post(
+    "/sessions/sync-wallets",
+    response_model=AdminWalletSyncResponse,
+    summary="Synchronize wallet lock state with sessions",
+    description="Lock wallets with no active sessions and cleanup expired sessions (CORE wallets only)",
+    responses={
+        403: {"model": ErrorResponse, "description": "Access denied - CORE wallet required"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def sync_wallet_locks(
+    admin: WalletAuthContext = Depends(require_core_wallet),
+    tenant_id: str = Depends(require_tenant_context),
+) -> AdminWalletSyncResponse:
+    """
+    Synchronize wallet lock state with active sessions.
+
+    This endpoint performs comprehensive cleanup:
+    1. Checks all wallets for active sessions
+    2. Locks wallets that have no active (non-revoked, non-expired) sessions
+    3. Removes expired/revoked sessions from in-memory storage
+    4. Ensures database state matches actual session state
+
+    **Access Control:**
+    - Requires CORE wallet authentication
+    - Requires valid tenant API key
+
+    **When to use:**
+    - After mass session revocations
+    - To ensure wallet lock state is consistent
+    - Periodic maintenance (recommended: hourly or daily)
+
+    **Note:** This is tenant-scoped - only affects wallets in the current tenant.
+    """
+    try:
+        cleanup_service = get_cleanup_service()
+        result = await cleanup_service.cleanup_expired_sessions(tenant_id)
+
+        return AdminWalletSyncResponse(
+            success=True,
+            wallets_locked=result["wallets_locked"],
+            sessions_removed_from_memory=result["sessions_removed_from_memory"],
+            wallets_checked=result["wallets_checked"],
+            message=f"Checked {result['wallets_checked']} wallets: "
+                    f"locked {result['wallets_locked']} wallets, "
+                    f"removed {result['sessions_removed_from_memory']} sessions from memory",
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sync wallet locks: {str(e)}"
         )
 
 

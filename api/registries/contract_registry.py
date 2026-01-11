@@ -1,15 +1,23 @@
 """
 Contract Registry
 
-Central registry of available Opshin contracts for compilation.
-Makes it easy to add new contracts and see what's available.
+Enhanced contract registry with structured definitions and type safety.
+Provides backward-compatible API while using dataclasses and enums internally.
 """
 
 from typing import TypedDict
 
+from api.registries.contract_definitions import (
+    CONTRACTS,
+    ContractDefinition,
+    ContractName,
+    ContractCategory,
+    ParameterSpec
+)
+
 
 class ContractInfo(TypedDict):
-    """Contract information"""
+    """Contract information (legacy format for backward compatibility)"""
     name: str
     file_path: str
     description: str
@@ -17,92 +25,122 @@ class ContractInfo(TypedDict):
     param_description: str | None
 
 
+class ContractRegistry:
+    """
+    Enhanced registry with structured queries.
+
+    Provides type-safe access to contract definitions with support
+    for filtering by name, type, category, and tags.
+    """
+
+    def __init__(self, contracts: list[ContractDefinition] = CONTRACTS):
+        """
+        Initialize registry with contract definitions.
+
+        Args:
+            contracts: List of ContractDefinition instances
+        """
+        self._contracts = {c.name.value: c for c in contracts}
+
+    def get_definition(self, name: str) -> ContractDefinition | None:
+        """
+        Get contract definition by name.
+
+        Args:
+            name: Contract name (string value from ContractName enum)
+
+        Returns:
+            ContractDefinition or None if not found
+        """
+        return self._contracts.get(name)
+
+    def get_all_definitions(self) -> list[ContractDefinition]:
+        """
+        Get all contract definitions.
+
+        Returns:
+            List of all ContractDefinition instances
+        """
+        return list(self._contracts.values())
+
+    def get_by_type(self, contract_type: str) -> list[ContractDefinition]:
+        """
+        Get contracts by type.
+
+        Args:
+            contract_type: "minting" or "spending"
+
+        Returns:
+            List of ContractDefinition instances of the specified type
+        """
+        return [c for c in self._contracts.values() if c.contract_type == contract_type]
+
+    def get_by_category(self, category: str) -> list[ContractDefinition]:
+        """
+        Get contracts by category.
+
+        Args:
+            category: Category name (string value from ContractCategory enum)
+
+        Returns:
+            List of ContractDefinition instances in the specified category
+        """
+        return [c for c in self._contracts.values() if c.category.value == category]
+
+    def get_by_tag(self, tag: str) -> list[ContractDefinition]:
+        """
+        Get contracts by tag.
+
+        Args:
+            tag: Tag to filter by
+
+        Returns:
+            List of ContractDefinition instances with the specified tag
+        """
+        return [c for c in self._contracts.values() if tag in c.tags]
+
+
 # ============================================================================
-# Minting Policy Contracts
+# Global Registry Instance
 # ============================================================================
 
-MINTING_CONTRACTS: dict[str, ContractInfo] = {
-    "myUSDFree": {
-        "name": "myUSDFree",
-        "file_path": "minting_policies/myUSDFree.py",
-        "description": "USDA faucet minting policy - free minting for testing",
-        "requires_params": False,
-        "param_description": None,
-    },
-    "project_nfts": {
-        "name": "project_nfts",
-        "file_path": "minting_policies/project_nfts.py",
-        "description": "Project NFTs minting policy - requires UTXO reference and protocol policy ID",
-        "requires_params": True,
-        "param_description": "Requires: [TxOutRef, protocol_policy_id_bytes]",
-    },
-    "protocol_nfts": {
-        "name": "protocol_nfts",
-        "file_path": "minting_policies/protocol_nfts.py",
-        "description": "Protocol NFTs minting policy - requires UTXO reference",
-        "requires_params": True,
-        "param_description": "Requires: [TxOutRef]",
-    },
-    "grey": {
-        "name": "grey",
-        "file_path": "minting_policies/grey.py",
-        "description": "Grey token minting policy - requires project NFTs policy ID",
-        "requires_params": True,
-        "param_description": "Requires: [project_nfts_policy_id_bytes]",
-    },
-}
+_registry = ContractRegistry()
 
 
 # ============================================================================
-# Spending Validator Contracts
+# Backward-Compatible Functions
 # ============================================================================
-
-SPENDING_CONTRACTS: dict[str, ContractInfo] = {
-    "investor": {
-        "name": "investor",
-        "file_path": "validators/investor.py",
-        "description": "Investor contract - manages grey token sales",
-        "requires_params": True,
-        "param_description": "Requires: [protocol_policy_id_bytes, grey_policy_id_bytes, grey_token_name_bytes]",
-    },
-    "project": {
-        "name": "project",
-        "file_path": "validators/project.py",
-        "description": "Project contract - manages project state and carbon credits",
-        "requires_params": True,
-        "param_description": "Requires: [project_nfts_policy_id_bytes]",
-    },
-    "protocol": {
-        "name": "protocol",
-        "file_path": "validators/protocol.py",
-        "description": "Protocol contract - manages global protocol state",
-        "requires_params": True,
-        "param_description": "Requires: [protocol_nfts_policy_id_bytes]",
-    },
-}
-
-
-# ============================================================================
-# Registry Functions
-# ============================================================================
+# These functions maintain the old API for existing code
 
 
 def get_contract_info(contract_name: str, contract_type: str) -> ContractInfo | None:
     """
-    Get contract information by name and type.
+    Get contract information by name and type (legacy format).
 
     Args:
         contract_name: Name of the contract
         contract_type: "minting" or "spending"
 
     Returns:
-        ContractInfo or None if not found
+        ContractInfo dict or None if not found
     """
-    if contract_type == "minting":
-        return MINTING_CONTRACTS.get(contract_name)
-    elif contract_type == "spending":
-        return SPENDING_CONTRACTS.get(contract_name)
-    return None
+    definition = _registry.get_definition(contract_name)
+
+    if not definition or definition.contract_type != contract_type:
+        return None
+
+    # Convert parameters to legacy format
+    param_description = None
+    if definition.parameters:
+        param_description = "Requires: [" + ", ".join(p.name for p in definition.parameters) + "]"
+
+    return {
+        "name": definition.name.value,
+        "file_path": definition.file_path,
+        "description": definition.description,
+        "requires_params": definition.requires_params,
+        "param_description": param_description,
+    }
 
 
 def get_contract_file_path(contract_name: str, contract_type: str) -> str | None:
@@ -122,64 +160,26 @@ def get_contract_file_path(contract_name: str, contract_type: str) -> str | None
 
 def list_all_contracts() -> dict[str, list[ContractInfo]]:
     """
-    List all available contracts grouped by type.
+    List all available contracts grouped by type (legacy format).
 
     Returns:
         Dictionary with "minting" and "spending" keys containing contract lists
     """
+    minting_definitions = _registry.get_by_type("minting")
+    spending_definitions = _registry.get_by_type("spending")
+
     return {
-        "minting": list(MINTING_CONTRACTS.values()),
-        "spending": list(SPENDING_CONTRACTS.values()),
+        "minting": [
+            get_contract_info(c.name.value, "minting")
+            for c in minting_definitions
+        ],
+        "spending": [
+            get_contract_info(c.name.value, "spending")
+            for c in spending_definitions
+        ],
     }
 
 
-def add_minting_contract(
-    name: str,
-    file_path: str,
-    description: str,
-    requires_params: bool = False,
-    param_description: str | None = None
-) -> None:
-    """
-    Dynamically add a new minting contract to the registry.
-
-    Args:
-        name: Contract name
-        file_path: Path relative to src/terrasacha_contracts/
-        description: Human-readable description
-        requires_params: Whether compilation requires parameters
-        param_description: Description of required parameters
-    """
-    MINTING_CONTRACTS[name] = {
-        "name": name,
-        "file_path": file_path,
-        "description": description,
-        "requires_params": requires_params,
-        "param_description": param_description,
-    }
-
-
-def add_spending_contract(
-    name: str,
-    file_path: str,
-    description: str,
-    requires_params: bool = False,
-    param_description: str | None = None
-) -> None:
-    """
-    Dynamically add a new spending contract to the registry.
-
-    Args:
-        name: Contract name
-        file_path: Path relative to src/terrasacha_contracts/
-        description: Human-readable description
-        requires_params: Whether compilation requires parameters
-        param_description: Description of required parameters
-    """
-    SPENDING_CONTRACTS[name] = {
-        "name": name,
-        "file_path": file_path,
-        "description": description,
-        "requires_params": requires_params,
-        "param_description": param_description,
-    }
+# Note: add_minting_contract and add_spending_contract functions have been
+# removed as they were never used and are not needed with the new structured approach.
+# Contracts should be added to contract_definitions.py instead.

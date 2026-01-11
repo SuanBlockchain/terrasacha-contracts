@@ -80,6 +80,49 @@ class ApiKey(Document):
         name = "api_keys"
 
 
+class TenantContractConfig(Document):
+    """
+    Tenant-specific contract availability configuration - stored in admin MongoDB database
+
+    Controls which contracts from the registry are available to each tenant.
+    Stored in admin database for centralized management.
+
+    If no config exists for a tenant → all contracts available (default).
+    If config exists → only specified contracts/categories available based on filter rules.
+
+    Filtering priority (highest to lowest):
+    1. disabled_contracts - explicitly disabled contracts
+    2. disabled_categories - explicitly disabled categories
+    3. enabled_contracts - if set, only these contracts allowed
+    4. enabled_categories - if set, only contracts in these categories allowed
+    5. Default: all contracts enabled
+    """
+
+    tenant_id: Annotated[str, Indexed(unique=True)]  # References Tenant.tenant_id
+
+    # Contract filtering (contract names from ContractName enum)
+    enabled_contracts: list[str] = []  # If set, only these contracts available
+    disabled_contracts: list[str] = []  # If set, all except these available
+
+    # Category-based filtering (category names from ContractCategory enum)
+    enabled_categories: list[str] = []  # If set, only contracts in these categories
+    disabled_categories: list[str] = []  # If set, all except these categories
+
+    # Feature flags
+    allow_custom_contracts: bool = True  # Allow compilation from custom source code
+
+    # Metadata
+    notes: str | None = None
+    created_at: datetime = BeanieField(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: datetime = BeanieField(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    class Settings:
+        name = "tenant_contract_configs"
+        indexes = [
+            IndexModel([("tenant_id", ASCENDING)], unique=True),
+        ]
+
+
 # ============================================================================
 # Tenant-Specific Models (MongoDB/Beanie - Tenant Databases)
 # ============================================================================
@@ -277,4 +320,66 @@ class TransactionMongo(Document):
             IndexModel([("wallet_id", ASCENDING), ("created_at", DESCENDING)]),
             IndexModel([("status", ASCENDING)]),
             IndexModel([("created_at", DESCENDING)]),
+        ]
+
+
+class ContractMongo(Document):
+    """
+    Smart Contract records - MongoDB/Beanie version (multi-tenant)
+
+    Stores compiled Opshin smart contracts with versioning support.
+    Contracts are compiled from source files and stored with their CBOR artifacts.
+
+    Stored in tenant databases for multi-tenant isolation.
+    Only CORE wallets can compile contracts.
+    """
+
+    # Primary identification
+    policy_id: Annotated[str, Indexed(unique=True)]  # Script hash (unique contract ID)
+    name: str  # Contract name from registry or custom name
+    contract_type: str  # "spending" or "minting"
+
+    # Compiled contract data
+    cbor_hex: str  # Compiled CBOR hex string
+    testnet_addr: str | None = None  # Testnet address (for spending validators)
+    mainnet_addr: str | None = None  # Mainnet address (for spending validators)
+
+    # Source tracking
+    source_file: str  # File path of source contract
+    source_hash: str  # SHA256 hash of source code for versioning
+    compilation_params: list[str] | None = None  # Parameters used in compilation
+
+    # Versioning
+    version: int  # Auto-increment on recompile (1, 2, 3, ...)
+
+    # Metadata
+    network: str  # "testnet" or "mainnet"
+    wallet_id: str  # Compiled by which CORE wallet (References WalletMongo.id)
+    description: str | None = None  # Optional description
+
+    # Registry linkage (connects compiled contracts to static registry)
+    registry_contract_name: str | None = None  # ContractName value from registry (None for custom contracts)
+    is_custom_contract: bool = False  # True if compiled from custom source (not in registry)
+    category: str | None = None  # ContractCategory value from registry (None for custom contracts)
+
+    # Reference script support (Phase 2 future enhancement)
+    reference_utxo: str | None = None  # UTXO where reference script is stored
+    reference_tx_hash: str | None = None  # Transaction hash of reference script
+
+    # Timestamps
+    compiled_at: datetime  # When this version was compiled
+    created_at: datetime = BeanieField(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: datetime = BeanieField(default_factory=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+    class Settings:
+        name = "contracts"  # Collection name
+        indexes = [
+            IndexModel([("policy_id", ASCENDING)], unique=True),
+            IndexModel([("name", ASCENDING)]),
+            IndexModel([("network", ASCENDING)]),
+            IndexModel([("wallet_id", ASCENDING)]),
+            IndexModel([("contract_type", ASCENDING)]),
+            IndexModel([("name", ASCENDING), ("version", DESCENDING)]),  # Latest version lookup
+            IndexModel([("category", ASCENDING)]),  # Filter by category
+            IndexModel([("is_custom_contract", ASCENDING)]),  # Filter custom vs registry contracts
         ]

@@ -521,7 +521,7 @@ async def get_transaction_history(
     ),
     limit: int = Query(50, ge=1, le=500, description="Number of results (1-500)"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
-    tenant_id: str = Depends(require_tenant_context),
+    tenant_db = Depends(get_tenant_database),
     chain_context: CardanoChainContext = Depends(get_chain_context),
 ) -> TransactionHistoryResponse:
     """
@@ -554,26 +554,39 @@ async def get_transaction_history(
     - Returns only transactions for the authenticated wallet
     """
     try:
+        # Get transaction collection from tenant database
+        collection = tenant_db.get_collection("transactions")
+
         # Build query filters for the authenticated wallet
-        filters = [TransactionMongo.wallet_id == wallet.wallet_id]
+        query_filter = {"wallet_id": wallet.wallet_id}
 
         # Filter by operation type if provided
         if tx_type:
-            filters.append(TransactionMongo.operation == tx_type.value)
+            query_filter["operation"] = tx_type.value
 
         # Filter by status if provided
         if status:
-            filters.append(TransactionMongo.status == status.value)
+            query_filter["status"] = status.value
 
         # Get total count
-        total = await TransactionMongo.find(*filters).count()
+        total = await collection.count_documents(query_filter)
 
         # Execute query with pagination
-        db_transactions = await TransactionMongo.find(*filters)\
-            .sort([("created_at", -1)])\
+        cursor = collection.find(query_filter)\
+            .sort("created_at", -1)\
             .skip(offset)\
-            .limit(limit)\
-            .to_list()
+            .limit(limit)
+
+        db_transactions_dicts = await cursor.to_list(length=limit)
+
+        # Convert to TransactionMongo models
+        db_transactions = []
+        for tx_dict in db_transactions_dicts:
+            # Convert _id to tx_hash for model validation
+            if "_id" in tx_dict:
+                tx_dict["tx_hash"] = tx_dict["_id"]
+                del tx_dict["_id"]
+            db_transactions.append(TransactionMongo.model_validate(tx_dict))
 
         # Convert to response models
         transactions = []
