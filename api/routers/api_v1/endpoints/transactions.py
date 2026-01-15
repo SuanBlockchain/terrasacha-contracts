@@ -8,6 +8,8 @@ Provides ADA sending, transaction status checking, and transaction history.
 import os
 from datetime import datetime, timezone
 
+import pycardano as pc
+from blockfrost import ApiError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from api.database.models import TransactionMongo, WalletMongo
@@ -16,8 +18,15 @@ from api.dependencies.tenant import require_tenant_context, get_tenant_database
 from api.services.transaction_service_mongo import MongoTransactionService
 from api.enums import TransactionStatus as DBTransactionStatus
 from api.schemas.transaction import (
+    AddressDestin,
+    BlockchainTransactionHistoryResponse,
+    BlockchainTransactionItem,
+    BlockchainTransactionInput,
+    BlockchainTransactionOutput,
     BuildTransactionRequest,
     BuildTransactionResponse,
+    MinLovelaceResponse,
+    MultiAssetItem,
     SignAndSubmitTransactionRequest,
     SignAndSubmitTransactionResponse,
     SignTransactionRequest,
@@ -729,4 +738,282 @@ async def get_transaction_detail(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get transaction details: {str(e)}")
 
+
+# ============================================================================
+# Min Lovelace Calculation Endpoint
+# ============================================================================
+
+
+@router.post(
+    "/min-lovelace/",
+    response_model=MinLovelaceResponse,
+    status_code=200,
+    summary="Calculate minimum ADA required for a UTXO",
+    description="Given UTXO output details (address, assets, datum), calculate the minimum lovelace required per Cardano protocol.",
+    responses={
+        400: {"model": TransactionErrorResponse, "description": "Invalid address or asset format"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to calculate min lovelace"},
+    },
+)
+async def calculate_min_lovelace(
+    request: AddressDestin,
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+    tenant_db = Depends(get_tenant_database),
+) -> MinLovelaceResponse:
+    """
+    Calculate minimum lovelace required for a UTXO output.
+
+    This endpoint calculates the minimum ADA (lovelace) required for a UTXO based on:
+    - Address size and type
+    - Native tokens (multiAsset) if present
+    - Datum if attached
+    - Current Cardano protocol parameters
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet
+
+    **Use cases:**
+    - Determine min ADA before creating transaction outputs
+    - Validate if a UTXO will meet minimum requirements
+    - Calculate proper ADA amounts for NFT/token transfers
+
+    **Example:**
+    ```json
+    {
+      "address": "addr_test1...",
+      "lovelace": 0,
+      "multiAsset": [
+        {
+          "policyid": "abc123...",
+          "tokens": {"TokenName": 1}
+        }
+      ],
+      "datum": null
+    }
+    ```
+    """
+    try:
+        # Validate and parse address
+        try:
+            address = pc.Address.from_primitive(request.address)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid Cardano address format: {str(e)}"
+            )
+
+        # Build multiAsset if provided
+        multi_asset = None
+        if request.multiAsset:
+            multi_asset_dict = {}
+            for item in request.multiAsset:
+                # Convert policy ID from hex string to ScriptHash
+                policy_id = pc.ScriptHash.from_primitive(item.policyid)
+
+                # Build assets dict for this policy
+                assets_dict = {}
+                for token_name, amount in item.tokens.items():
+                    # Try to parse token name as hex, fallback to UTF-8 encoding
+                    try:
+                        asset_name = pc.AssetName(bytes.fromhex(token_name))
+                    except ValueError:
+                        asset_name = pc.AssetName(token_name.encode('utf-8'))
+                    assets_dict[asset_name] = amount
+
+                multi_asset_dict[policy_id] = pc.Asset(assets_dict)
+
+            multi_asset = pc.MultiAsset(multi_asset_dict)
+
+        # Create Value
+        if multi_asset:
+            amount = pc.Value(coin=request.lovelace, multi_asset=multi_asset)
+        else:
+            amount = pc.Value(coin=request.lovelace)
+
+        # Parse datum if provided
+        datum = None
+        if request.datum:
+            if isinstance(request.datum, str):
+                # Assume CBOR hex string
+                datum = pc.Datum(pc.RawCBOR(bytes.fromhex(request.datum)))
+            else:
+                # Assume dict - convert to datum
+                datum = pc.Datum(request.datum)
+
+        # Create output for min lovelace calculation
+        output = pc.TransactionOutput(address=address, amount=amount, datum=datum)
+
+        # Calculate min lovelace using PyCardano
+        context = chain_context.get_context()
+        min_val = pc.min_lovelace(context, output=output)
+
+        return MinLovelaceResponse(
+            min_lovelace=min_val,
+            min_ada=min_val / 1_000_000
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input: {str(e)}") from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to calculate min lovelace: {str(e)}") from e
+
+
+# ============================================================================
+# Blockchain Transaction History Endpoint
+# ============================================================================
+
+
+@router.get(
+    "/address-history/",
+    response_model=BlockchainTransactionHistoryResponse,
+    status_code=200,
+    summary="Get transaction history from blockchain",
+    description="Query transaction history directly from Cardano blockchain via Blockfrost API for any Cardano address",
+    responses={
+        400: {"model": TransactionErrorResponse, "description": "Invalid address or parameters"},
+        401: {"model": TransactionErrorResponse, "description": "Authentication required"},
+        500: {"model": TransactionErrorResponse, "description": "Failed to query blockchain"},
+    },
+)
+async def get_blockchain_transaction_history(
+    address: str = Query(..., description="Cardano address to query transaction history for"),
+    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    from_block: str | None = Query(None, description="Starting block height (inclusive)"),
+    to_block: str | None = Query(None, description="Ending block height (inclusive)"),
+    page: int = Query(1, ge=1, le=1000, description="Page number (1-1000)"),
+    limit: int = Query(10, ge=1, le=100, description="Results per page (1-100)"),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> BlockchainTransactionHistoryResponse:
+    """
+    Get transaction history from Cardano blockchain for any address.
+
+    This endpoint queries the blockchain directly via Blockfrost API, providing:
+    - Complete transaction history for any Cardano address (sent and received)
+    - Full UTXO details with native asset information
+    - Transaction metadata from on-chain data
+    - Block confirmation details
+
+    **Key Differences from /history:**
+    - Queries blockchain, not local database
+    - Accepts any Cardano address (not limited to wallet's own addresses)
+    - Shows ALL transactions for the address, not just ones created via this API
+    - Includes full multi-asset details
+    - Only shows confirmed transactions (on-chain)
+
+    **Authentication Required:**
+    - JWT token from unlocked wallet (for rate limiting and access control)
+
+    **Pagination:**
+    - `page`: Page number to fetch (1-based)
+    - `limit`: Results per page (max 100)
+
+    **Block Filtering:**
+    - `from_block`: Include transactions from this block height onwards
+    - `to_block`: Include transactions up to this block height
+
+    **Example:**
+    ```
+    GET /transactions/address-history/?address=addr_test1...&page=1&limit=10
+    ```
+    """
+    try:
+        # Validate address format
+        try:
+            pc.Address.from_primitive(address)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid Cardano address: {str(e)}")
+
+        # Get Blockfrost API instance
+        api = chain_context.get_api()
+
+        # Query address transactions from Blockfrost
+        try:
+            transactions_list = api.address_transactions(
+                address=address,
+                from_block=from_block,
+                to_block=to_block,
+                return_type="json",
+                count=limit,
+                page=page,
+                order="desc",  # Most recent first
+            )
+        except ApiError as e:
+            if "404" in str(e):
+                # Address has no transactions yet
+                return BlockchainTransactionHistoryResponse(
+                    transactions=[],
+                    total=0,
+                    page=page,
+                    limit=limit,
+                    has_more=False,
+                )
+            raise HTTPException(status_code=500, detail=f"Blockfrost API error: {str(e)}")
+
+        # Enrich each transaction with full details
+        enriched_transactions = []
+        for tx_summary in transactions_list:
+            tx_hash = tx_summary["tx_hash"]
+
+            try:
+                # Get full transaction details
+                tx_utxos = api.transaction_utxos(tx_hash, return_type="json")
+                tx_details = api.transaction(tx_hash, return_type="json")
+
+                # Get metadata (may be empty)
+                try:
+                    tx_metadata = api.transaction_metadata(tx_hash, return_type="json")
+                except ApiError:
+                    tx_metadata = None
+
+                # Build explorer URL
+                explorer_url = chain_context.get_explorer_url(tx_hash)
+
+                # Create enriched transaction item
+                enriched_tx = BlockchainTransactionItem(
+                    hash=tx_hash,
+                    block_height=tx_summary["block_height"],
+                    block_time=tx_summary["block_time"],
+                    block=tx_details.get("block", ""),
+                    slot=tx_details.get("slot", 0),
+                    inputs=tx_utxos.get("inputs", []),
+                    outputs=tx_utxos.get("outputs", []),
+                    fees=tx_details.get("fees", "0"),
+                    size=tx_details.get("size", 0),
+                    index=tx_details.get("index", 0),
+                    output_amount=tx_details.get("output_amount", []),
+                    deposit=tx_details.get("deposit", "0"),
+                    metadata=tx_metadata,
+                    invalid_before=tx_details.get("invalid_before"),
+                    invalid_hereafter=tx_details.get("invalid_hereafter"),
+                    valid_contract=tx_details.get("valid_contract", True),
+                    explorer_url=explorer_url,
+                )
+
+                enriched_transactions.append(enriched_tx)
+
+            except ApiError as e:
+                # Log error but continue with other transactions
+                print(f"Warning: Failed to enrich transaction {tx_hash}: {str(e)}")
+                continue
+
+        # Determine if there are more results
+        has_more = len(transactions_list) == limit
+
+        return BlockchainTransactionHistoryResponse(
+            transactions=enriched_transactions,
+            total=len(enriched_transactions),
+            page=page,
+            limit=limit,
+            has_more=has_more,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to query blockchain transaction history: {str(e)}"
+        )
 

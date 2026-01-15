@@ -168,6 +168,142 @@ class TransactionDetailResponse(BaseModel):
 
 
 # ============================================================================
+# Min Lovelace Calculation Schemas
+# ============================================================================
+
+
+class MultiAssetItem(BaseModel):
+    """Multi-asset (native token) item for min lovelace calculation"""
+
+    policyid: str = Field(description="Policy ID (hex string)")
+    tokens: dict[str, int] = Field(description="Token names mapped to amounts. Key: token name (hex or string), Value: quantity")
+
+
+class AddressDestin(BaseModel):
+    """
+    Request to calculate minimum lovelace for a UTXO output.
+
+    Used to determine the minimum ADA required for a UTXO based on:
+    - Address size
+    - Native tokens (multiAsset) if present
+    - Datum if present
+    - Current protocol parameters
+
+    **Datum Format Options:**
+    - String: CBOR hex string (e.g., "d8799f00ff")
+    - Dict: JSON object with constructor and fields (e.g., {"constructor": 0, "fields": []})
+    - Null: No datum attached
+    """
+
+    address: str = Field(description="Destination Cardano address")
+    lovelace: int = Field(default=0, ge=0, description="Initial lovelace amount (usually 0 for min calculation)")
+    multiAsset: list[MultiAssetItem] | None = Field(None, description="Native tokens (if any)")
+    datum: str | dict | None = Field(
+        None,
+        description="Datum in CBOR hex format (string) OR as a dict object. Examples: '585d...' or {'constructor': 0, 'fields': []}",
+    )
+
+
+class MinLovelaceResponse(BaseModel):
+    """Response for min lovelace calculation"""
+
+    min_lovelace: int = Field(description="Minimum lovelace required for the UTXO")
+    min_ada: float = Field(description="Minimum ADA required (lovelace / 1,000,000)")
+
+
+# ============================================================================
+# Blockchain Transaction History Schemas
+# ============================================================================
+
+
+class BlockchainAssetItem(BaseModel):
+    """Native asset in a transaction input/output"""
+
+    policy_id: str = Field(description="Asset policy ID")
+    asset_name: str = Field(description="Asset name (hex)")
+    asset_name_label: str | None = Field(None, description="Decoded asset name if possible")
+    quantity: str = Field(description="Asset quantity (as string to handle large numbers)")
+    fingerprint: str | None = Field(None, description="Asset fingerprint")
+
+
+class BlockchainTransactionInput(BaseModel):
+    """Transaction input from blockchain query"""
+
+    address: str = Field(description="Input address")
+    tx_hash: str = Field(description="Transaction hash of the output being spent")
+    output_index: int = Field(description="Output index being spent")
+    amount: list[dict] = Field(description="Amount including ADA and native assets")
+    collateral: bool = Field(default=False, description="Whether this is a collateral input")
+    data_hash: str | None = Field(None, description="Datum hash if present")
+    inline_datum: str | None = Field(None, description="Inline datum if present")
+    reference_script_hash: str | None = Field(None, description="Reference script hash if present")
+
+
+class BlockchainTransactionOutput(BaseModel):
+    """Transaction output from blockchain query"""
+
+    address: str = Field(description="Output address")
+    amount: list[dict] = Field(description="Amount including ADA and native assets")
+    output_index: int = Field(description="Output index in transaction")
+    data_hash: str | None = Field(None, description="Datum hash if present")
+    inline_datum: str | None = Field(None, description="Inline datum if present")
+    collateral: bool = Field(default=False, description="Whether this is a collateral output")
+    reference_script_hash: str | None = Field(None, description="Reference script hash if present")
+
+
+class BlockchainTransactionItem(BaseModel):
+    """
+    Transaction item from blockchain query.
+
+    Enriched with full UTXO details, fees, size, and metadata.
+    Follows the pattern from the user's reference implementation.
+    """
+
+    # Transaction identification
+    hash: str = Field(description="Transaction hash")
+
+    # Block information
+    block_height: int = Field(description="Block height where transaction was confirmed")
+    block_time: int = Field(description="Block timestamp (Unix time)")
+    block: str = Field(description="Block hash")
+    slot: int = Field(description="Slot number")
+
+    # Transaction details
+    inputs: list[BlockchainTransactionInput] = Field(description="Transaction inputs")
+    outputs: list[BlockchainTransactionOutput] = Field(description="Transaction outputs")
+
+    # Fees and size
+    fees: str = Field(description="Transaction fees in lovelace")
+    size: int = Field(description="Transaction size in bytes")
+
+    # Additional information
+    index: int = Field(description="Transaction index in block")
+    output_amount: list[dict] = Field(description="Total output amounts")
+    deposit: str = Field(description="Deposit amount in lovelace")
+
+    # Metadata
+    metadata: list[dict] | None = Field(None, description="Transaction metadata")
+
+    # Validation
+    invalid_before: str | None = Field(None, description="Invalid before slot")
+    invalid_hereafter: str | None = Field(None, description="Invalid after slot")
+    valid_contract: bool = Field(default=True, description="Whether contract validation passed")
+
+    # Explorer URL
+    explorer_url: str = Field(description="Blockchain explorer URL")
+
+
+class BlockchainTransactionHistoryResponse(BaseModel):
+    """Response for blockchain transaction history query"""
+
+    transactions: list[BlockchainTransactionItem] = Field(description="List of blockchain transactions")
+    total: int = Field(description="Total number of transactions returned")
+    page: int = Field(description="Current page number")
+    limit: int = Field(description="Results per page")
+    has_more: bool = Field(description="Whether more results are available")
+
+
+# ============================================================================
 # Two-Stage Transaction Flow Schemas
 # ============================================================================
 

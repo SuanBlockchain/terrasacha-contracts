@@ -18,6 +18,7 @@ from api.schemas.contract import (
     AvailableContractInfo,
     AvailableContractsResponse,
     CompileContractRequest,
+    CompileCustomContractRequest,
     CompileContractResponse,
     ContractErrorResponse,
     DbContractListItem,
@@ -140,12 +141,13 @@ async def list_available_contracts(
 @router.post(
     "/compile",
     response_model=CompileContractResponse,
-    summary="Compile Opshin contract (CORE only)",
-    description="Compile an Opshin smart contract from file path or source code. Stores in database. Requires CORE wallet.",
+    summary="Compile registry contract (CORE only)",
+    description="Compile a pre-defined contract from the registry. Use GET /available to see available contracts. Requires CORE wallet.",
     responses={
         400: {"model": ContractErrorResponse, "description": "Invalid request or compilation failed"},
         401: {"model": ContractErrorResponse, "description": "Authentication required"},
-        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required or contract not available for tenant"},
+        404: {"model": ContractErrorResponse, "description": "Contract not found in registry"},
         500: {"model": ContractErrorResponse, "description": "Compilation failed"},
     },
 )
@@ -156,24 +158,45 @@ async def compile_contract(
     tenant_id: str = Depends(get_tenant_context)
 ) -> CompileContractResponse:
     """
-    Compile an Opshin smart contract (CORE wallets only).
+    Compile a registry contract (CORE wallets only).
 
-    This endpoint:
-    1. Accepts contract source code or file path
-    2. Compiles using Opshin
-    3. Stores compiled contract in database
-    4. Returns contract information
+    This endpoint compiles **pre-defined contracts** from the contract registry.
+    These are audited, production-ready contracts maintained by your organization.
+
+    **Available Contracts:**
+    - Call `GET /api/v1/contracts/available` to browse all registry contracts
+    - Contracts are categorized: core_protocol, project_management, token_management, testing
+
+    **Registry Contracts:**
+    - ✅ Audited and reviewed
+    - ✅ Part of official protocol
+    - ✅ Subject to tenant filtering rules
+    - ✅ Versioned and tracked
+
+    ---
 
     **Authentication Required:**
-    - CORE wallet only (admin privileges)
+    - CORE wallet (Bearer token)
+    - Valid API key (admin or tenant)
 
-    **Compilation Options:**
-    1. **From registry**: Use `contract_name` from available contracts (recommended)
-    2. **Custom source**: Provide `source_code` directly
+    **Tenant Permissions:**
+    - Contracts may be enabled/disabled per tenant
+    - Admin API key sees all contracts
+    - Tenant API key sees only allowed contracts
 
-    **Example Requests:**
+    ---
 
-    From available contract (automatic file lookup):
+    **Examples:**
+
+    Simple contract (no parameters):
+    ```json
+    {
+        "contract_name": "myUSDFree",
+        "contract_type": "minting"
+    }
+    ```
+
+    Parameterized contract:
     ```json
     {
         "contract_name": "grey",
@@ -182,39 +205,29 @@ async def compile_contract(
     }
     ```
 
-    Custom source code:
+    Spending validator:
     ```json
     {
-        "contract_name": "my_custom_validator",
-        "contract_type": "spending",
-        "source_code": "#!opshin\\nfrom opshin.prelude import *\\n..."
+        "contract_name": "protocol",
+        "contract_type": "spending"
     }
     ```
 
-    **Tip**: Call `GET /api/v1/contracts/available` to see available contracts
+    ---
+
+    **For custom contracts:** Use `POST /api/v1/contracts/compile-custom` instead.
     """
     try:
         # Create registry service for tenant validation
         registry_service = ContractRegistryService(_registry)
 
-        # Validate contract availability for tenant (if compiling from registry)
-        if not request.source_code:
-            # Compiling from registry - validate against tenant config
-            is_valid, error_msg = await registry_service.validate_contract_for_tenant(
-                contract_name=request.contract_name,
-                tenant_id=tenant_id if tenant_id != "admin" else "default"  # Admin can compile any contract
-            )
-            if not is_valid:
-                raise HTTPException(status_code=403, detail=error_msg)
-        else:
-            # Compiling custom source - check if allowed
-            if tenant_id != "admin":  # Admin can always compile custom contracts
-                is_allowed = await registry_service.is_custom_contract_allowed(tenant_id)
-                if not is_allowed:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Custom contract compilation is not allowed for your tenant. Please contact your administrator."
-                    )
+        # Validate contract availability for tenant
+        is_valid, error_msg = await registry_service.validate_contract_for_tenant(
+            contract_name=request.contract_name,
+            tenant_id=tenant_id if tenant_id != "admin" else "default"  # Admin can compile any contract
+        )
+        if not is_valid:
+            raise HTTPException(status_code=403, detail=error_msg)
 
         # Get wallet's network from database (MongoDB)
         wallet_collection = tenant_db.get_collection("wallets")
@@ -230,64 +243,43 @@ async def compile_contract(
         # Create contract service
         contract_service = MongoContractService(database=tenant_db)
 
-        # Get registry definition for metadata (if compiling from registry)
-        definition = None
-        if not request.source_code:
-            definition = _registry.get_definition(request.contract_name)
+        # Get registry definition for metadata
+        definition = _registry.get_definition(request.contract_name)
 
-        # Compile contract
-        if request.source_code:
-            # Option 2: Compile from custom source code
-            contract = await contract_service.compile_contract_from_source(
-                source_code=request.source_code,
-                contract_name=request.contract_name,
-                network=db_wallet.network,
-                contract_type=request.contract_type,
-                wallet_id=core_wallet.wallet_id,
-                compilation_params=request.compilation_params
-            )
-        else:
-            # Option 1: Compile from registry (automatic file lookup)
-            file_path = get_contract_file_path(request.contract_name, request.contract_type)
+        # Get file path from registry
+        file_path = get_contract_file_path(request.contract_name, request.contract_type)
 
-            if not file_path:
-                # Get contract info to provide helpful error message
-                contract_info = get_contract_info(request.contract_name, request.contract_type)
-                if contract_info:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Contract '{request.contract_name}' found but file path lookup failed"
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=404,
-                        detail=f"Contract '{request.contract_name}' not found in {request.contract_type} registry. "
-                               f"Use GET /api/v1/contracts/available to see available contracts, "
-                               f"or provide custom source_code."
-                    )
+        if not file_path:
+            # Get contract info to provide helpful error message
+            contract_info = get_contract_info(request.contract_name, request.contract_type)
+            if contract_info:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Contract '{request.contract_name}' found but file path lookup failed"
+                )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Contract '{request.contract_name}' not found in {request.contract_type} registry. "
+                           f"Use GET /api/v1/contracts/available to see available contracts. "
+                           f"For custom contracts, use POST /api/v1/contracts/compile-custom"
+                )
 
-            # Compile from registered contract file
-            full_path = f"src/terrasacha_contracts/{file_path}"
-            contract = await contract_service.compile_contract_from_file(
-                contract_path=full_path,
-                contract_name=request.contract_name,
-                network=db_wallet.network,
-                contract_type=request.contract_type,
-                wallet_id=core_wallet.wallet_id,
-                compilation_params=request.compilation_params
-            )
+        # Compile from registered contract file
+        full_path = f"src/terrasacha_contracts/{file_path}"
+        contract = await contract_service.compile_contract_from_file(
+            contract_path=full_path,
+            contract_name=request.contract_name,
+            network=db_wallet.network,
+            contract_type=request.contract_type,
+            wallet_id=core_wallet.wallet_id,
+            compilation_params=request.compilation_params
+        )
 
         # Add registry linkage fields
-        if request.source_code:
-            # Custom contract
-            contract.is_custom_contract = True
-            contract.registry_contract_name = None
-            contract.category = None
-        else:
-            # Registry contract
-            contract.is_custom_contract = False
-            contract.registry_contract_name = definition.name.value if definition else None
-            contract.category = definition.category.value if definition else None
+        contract.is_custom_contract = False
+        contract.registry_contract_name = definition.name.value if definition else None
+        contract.category = definition.category.value if definition else None
 
         # Save updated contract with registry linkage fields
         if tenant_db is not None:
@@ -320,6 +312,156 @@ async def compile_contract(
         raise HTTPException(status_code=500, detail=f"Failed to compile contract: {str(e)}")
 
 
+@router.post(
+    "/compile-custom",
+    response_model=CompileContractResponse,
+    summary="Compile custom contract from source (CORE only)",
+    description="Compile a custom Opshin smart contract from source code. Requires CORE wallet and tenant permission.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid source code or compilation failed"},
+        401: {"model": ContractErrorResponse, "description": "Authentication required"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required or custom contracts not allowed for tenant"},
+        500: {"model": ContractErrorResponse, "description": "Compilation failed"},
+    },
+)
+async def compile_custom_contract(
+    request: CompileCustomContractRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    tenant_id: str = Depends(get_tenant_context)
+) -> CompileContractResponse:
+    """
+    Compile a custom Opshin smart contract from source code (CORE wallets only).
+
+    This endpoint allows you to compile **custom smart contracts** from raw Opshin source code.
+
+    **⚠️ Important:**
+    - Custom contracts are NOT audited
+    - Test thoroughly before using on mainnet
+    - Requires tenant permission (`allow_custom_contracts = true`)
+    - Admin API key always allowed
+    - Results in `is_custom_contract = true` in database
+
+    **Use Cases:**
+    - Experimental contracts
+    - Tenant-specific business logic
+    - Rapid prototyping
+    - Testing new contract ideas
+
+    ---
+
+    **Authentication Required:**
+    - CORE wallet (Bearer token)
+    - Valid API key (admin or tenant)
+
+    **Tenant Permissions:**
+    - Requires `allow_custom_contracts = true` in tenant configuration
+    - Admin API key bypasses this requirement
+
+    ---
+
+    **Source Code Requirements:**
+    - Must start with `#!opshin` shebang
+    - For spending validators: `def validator(datum, redeemer, context) -> None`
+    - For minting policies: `def validator(redeemer, context) -> None`
+
+    ---
+
+    **Example: Always-succeeds validator**
+    ```json
+    {
+        "contract_name": "my_test_validator",
+        "contract_type": "spending",
+        "source_code": "#!opshin\\nfrom opshin.prelude import *\\n\\ndef validator(datum: Nothing, redeemer: Nothing, context: ScriptContext) -> None:\\n    assert True, \\"Always succeeds\\""
+    }
+    ```
+
+    **Example: Signature-check minting policy**
+    ```json
+    {
+        "contract_name": "my_nft_policy",
+        "contract_type": "minting",
+        "source_code": "#!opshin\\nfrom opshin.prelude import *\\n\\ndef validator(redeemer: Nothing, context: ScriptContext) -> None:\\n    tx_info: TxInfo = context.tx_info\\n    required_pkh = bytes.fromhex(\\"fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d\\")\\n    assert required_pkh in tx_info.signatories, \\"Must be signed\\""
+    }
+    ```
+
+    ---
+
+    **For registry contracts:** Use `POST /api/v1/contracts/compile` instead.
+    """
+    try:
+        # Create registry service for tenant validation
+        registry_service = ContractRegistryService(_registry)
+
+        # Check if custom contracts are allowed for tenant
+        if tenant_id != "admin":  # Admin can always compile custom contracts
+            is_allowed = await registry_service.is_custom_contract_allowed(tenant_id)
+            if not is_allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Custom contract compilation is not allowed for your tenant. Please contact your administrator."
+                )
+
+        # Get wallet's network from database (MongoDB)
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": core_wallet.wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {core_wallet.wallet_id} not found")
+
+        # Convert to model to access network field
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        # Create contract service
+        contract_service = MongoContractService(database=tenant_db)
+
+        # Compile from custom source code
+        contract = await contract_service.compile_contract_from_source(
+            source_code=request.source_code,
+            contract_name=request.contract_name,
+            network=db_wallet.network,
+            contract_type=request.contract_type,
+            wallet_id=core_wallet.wallet_id,
+            compilation_params=None  # Custom contracts don't support parameters in this version
+        )
+
+        # Mark as custom contract
+        contract.is_custom_contract = True
+        contract.registry_contract_name = None
+        contract.category = None
+
+        # Save contract to database
+        if tenant_db is not None:
+            collection = tenant_db.get_collection("contracts")
+            contract_dict = contract.model_dump(by_alias=True, exclude={"id"})
+            contract_dict["_id"] = contract.policy_id
+            contract_dict.pop("policy_id", None)
+            await collection.replace_one({"_id": contract.policy_id}, contract_dict, upsert=True)
+
+        return CompileContractResponse(
+            success=True,
+            policy_id=contract.policy_id,
+            contract_name=contract.name,
+            cbor_hex=contract.cbor_hex,
+            testnet_address=contract.testnet_addr,
+            mainnet_address=contract.mainnet_addr,
+            contract_type=contract.contract_type,
+            source_hash=contract.source_hash,
+            version=contract.version,
+            compiled_at=contract.compiled_at,
+            category=contract.category,
+            is_custom_contract=contract.is_custom_contract
+        )
+
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compile custom contract: {str(e)}")
+
+
 # ============================================================================
 # Contract Query Endpoints
 # ============================================================================
@@ -328,12 +470,11 @@ async def compile_contract(
 @router.get(
     "/",
     response_model=DbContractListResponse,
-    summary="List all compiled contracts (CORE only)",
-    description="Get list of all compiled contracts stored in database. Optionally filter by network. Requires CORE wallet.",
+    summary="List all compiled contracts",
+    description="Get list of all compiled contracts stored in database. Optionally filter by network.",
 )
 async def list_contracts(
     network: str | None = None,
-    _core_wallet: WalletAuthContext = Depends(require_core_wallet),
     tenant_db=Depends(get_tenant_database),
 ) -> DbContractListResponse:
     """
@@ -344,6 +485,9 @@ async def list_contracts(
     - Addresses (testnet/mainnet)
     - Version and compilation timestamp
     - Network (testnet/mainnet)
+
+    **Authentication Required:**
+    - Valid API key (admin or tenant)
 
     **Query Parameters:**
     - `network` (optional): Filter by network ("testnet" or "mainnet")
