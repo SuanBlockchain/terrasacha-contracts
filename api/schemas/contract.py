@@ -73,33 +73,10 @@ class CompileContractRequest(BaseModel):
 
     class Config:
         json_schema_extra = {
-            "examples": [
-                {
-                    "summary": "Simple contract (no parameters)",
-                    "description": "Compile myUSDFree minting policy",
-                    "value": {
-                        "contract_name": "myUSDFree",
-                        "contract_type": "minting"
-                    }
-                },
-                {
-                    "summary": "Parameterized contract",
-                    "description": "Compile grey minting policy with project NFT policy ID",
-                    "value": {
-                        "contract_name": "grey",
-                        "contract_type": "minting",
-                        "compilation_params": ["<project_nfts_policy_id_bytes>"]
-                    }
-                },
-                {
-                    "summary": "Spending validator",
-                    "description": "Compile protocol spending validator",
-                    "value": {
-                        "contract_name": "protocol",
-                        "contract_type": "spending"
-                    }
-                }
-            ]
+            "example": {
+                "contract_name": "myUSDFree",
+                "contract_type": "minting"
+            }
         }
 
 
@@ -126,26 +103,11 @@ class CompileCustomContractRequest(BaseModel):
 
     class Config:
         json_schema_extra = {
-            "examples": [
-                {
-                    "summary": "Custom spending validator",
-                    "description": "Always-succeeds validator for testing",
-                    "value": {
-                        "contract_name": "my_test_validator",
-                        "contract_type": "spending",
-                        "source_code": "#!opshin\nfrom opshin.prelude import *\n\ndef validator(datum: Nothing, redeemer: Nothing, context: ScriptContext) -> None:\n    \"\"\"Always succeeds - for testing only\"\"\"\n    assert True, \"Always succeeds\""
-                    }
-                },
-                {
-                    "summary": "Custom minting policy",
-                    "description": "Minting policy with signature check",
-                    "value": {
-                        "contract_name": "my_nft_policy",
-                        "contract_type": "minting",
-                        "source_code": "#!opshin\nfrom opshin.prelude import *\n\ndef validator(redeemer: Nothing, context: ScriptContext) -> None:\n    \"\"\"Requires specific signature to mint\"\"\"\n    tx_info: TxInfo = context.tx_info\n    required_pkh = bytes.fromhex(\"fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d\")\n    assert required_pkh in tx_info.signatories, \"Must be signed by authorized wallet\""
-                    }
-                }
-            ]
+            "example": {
+                "contract_name": "my_test_validator",
+                "contract_type": "spending",
+                "source_code": "#!opshin\nfrom opshin.prelude import *\n\ndef validator(datum: Nothing, redeemer: Nothing, context: ScriptContext) -> None:\n    \"\"\"Always succeeds - for testing only\"\"\"\n    assert True, \"Always succeeds\""
+            }
         }
 
 
@@ -155,6 +117,7 @@ class CompileContractResponse(BaseModel):
     success: bool = Field(default=True)
     policy_id: str = Field(description="Contract policy ID (primary key / script hash)")
     contract_name: str = Field(description="Contract name")
+    description: str | None = Field(None, description="Contract description (from registry for pre-defined contracts, None for custom)")
     cbor_hex: str = Field(description="Compiled CBOR hex string")
     testnet_address: str | None = Field(None, description="Testnet address")
     mainnet_address: str | None = Field(None, description="Mainnet address")
@@ -295,6 +258,7 @@ class DbContractListItem(BaseModel):
 
     policy_id: str = Field(description="Contract policy ID (primary key)")
     name: str = Field(description="Contract name")
+    description: str | None = Field(None, description="Contract description (from registry for pre-defined contracts, None for custom)")
     contract_type: str = Field(description="Type of contract (spending/minting)")
     testnet_address: str | None = Field(None, description="Testnet address")
     mainnet_address: str | None = Field(None, description="Mainnet address")

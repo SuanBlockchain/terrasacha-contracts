@@ -515,22 +515,31 @@ async def list_contracts(
 
         contracts, total = await contract_service.list_contracts(network=network_filter)
 
-        contract_items = [
-            DbContractListItem(
-                policy_id=c.policy_id,
-                name=c.name,
-                contract_type=c.contract_type,
-                testnet_address=c.testnet_addr,
-                mainnet_address=c.mainnet_addr,
-                version=c.version,
-                source_hash=c.source_hash,
-                compiled_at=c.compiled_at,
-                network=c.network,
-                category=c.category,
-                is_custom_contract=c.is_custom_contract
+        contract_items = []
+        for c in contracts:
+            # Get description from registry for pre-defined contracts
+            description = None
+            if not c.is_custom_contract:
+                contract_info = get_contract_info(c.name, c.contract_type)
+                if contract_info:
+                    description = contract_info["description"]
+
+            contract_items.append(
+                DbContractListItem(
+                    policy_id=c.policy_id,
+                    name=c.name,
+                    description=description,
+                    contract_type=c.contract_type,
+                    testnet_address=c.testnet_addr,
+                    mainnet_address=c.mainnet_addr,
+                    version=c.version,
+                    source_hash=c.source_hash,
+                    compiled_at=c.compiled_at,
+                    network=c.network,
+                    category=c.category,
+                    is_custom_contract=c.is_custom_contract
+                )
             )
-            for c in contracts
-        ]
 
         return DbContractListResponse(
             contracts=contract_items,
@@ -574,10 +583,18 @@ async def get_contract(
         contract_service = MongoContractService(database=tenant_db)
         contract = await contract_service.get_contract(policy_id)
 
+        # Get description from registry for pre-defined contracts
+        description = None
+        if not contract.is_custom_contract:
+            contract_info = get_contract_info(contract.name, contract.contract_type)
+            if contract_info:
+                description = contract_info["description"]
+
         return CompileContractResponse(
             success=True,
             policy_id=contract.policy_id,
             contract_name=contract.name,
+            description=description,
             cbor_hex=contract.cbor_hex,
             testnet_address=contract.testnet_addr,
             mainnet_address=contract.mainnet_addr,
