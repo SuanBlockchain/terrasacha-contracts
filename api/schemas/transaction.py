@@ -359,6 +359,36 @@ class BuildTransactionResponse(BaseModel):
     metadata: dict | None = Field(None, description="Transaction metadata (if provided)")
     status: str = Field(default="BUILT", description="Transaction status")
 
+    # Detailed transaction information (matches BlockchainTransactionItem format)
+    inputs: list[BlockchainTransactionInput] = Field(
+        default_factory=list,
+        description="Detailed transaction inputs with UTXO amounts"
+    )
+    outputs: list[BlockchainTransactionOutput] = Field(
+        default_factory=list,
+        description="Detailed transaction outputs with amounts and indexes"
+    )
+    fee_lovelace: int = Field(
+        default=0,
+        description="Actual calculated fee in lovelace"
+    )
+    fee_ada: float = Field(
+        default=0.0,
+        description="Actual calculated fee in ADA"
+    )
+    tx_size: int | None = Field(
+        None,
+        description="Transaction size in bytes"
+    )
+    total_input_lovelace: int = Field(
+        default=0,
+        description="Total ADA in all inputs (lovelace)"
+    )
+    total_output_lovelace: int = Field(
+        default=0,
+        description="Total ADA in all outputs including change (lovelace)"
+    )
+
     class Config:
         json_schema_extra = {
             "example": {

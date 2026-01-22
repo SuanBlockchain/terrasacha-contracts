@@ -1698,23 +1698,19 @@ async def unpromote_wallet(
     "/{wallet_id}/balance",
     response_model=WalletBalanceResponse,
     summary="Check wallet balance",
-    description="Get ADA balance for wallet addresses. Requires wallet to be unlocked.",
+    description="Get ADA balance for wallet addresses. Only requires API key authentication.",
     responses={
-        401: {"model": ErrorResponse, "description": "Not authenticated"},
-        403: {"model": ErrorResponse, "description": "Not authorized to check this wallet's balance"},
         404: {"model": ErrorResponse, "description": "Wallet not found"},
         500: {"model": ErrorResponse, "description": "Server error"},
     },
 )
 async def get_wallet_balance(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    limit_addresses: int = Query(5, ge=1, le=20, description="Number of derived addresses to check"),
-    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
     chain_context: CardanoChainContext = Depends(get_chain_context),
     tenant_db = Depends(get_tenant_database),
 ) -> WalletBalanceResponse:
     """
-    Check wallet balance across all addresses.
+    Check wallet balance for main addresses.
 
     This endpoint:
     1. Queries the blockchain for UTXOs on wallet addresses
@@ -1723,61 +1719,70 @@ async def get_wallet_balance(
 
     **Usage:**
     - Checks main enterprise and staking addresses
-    - Checks first N derived addresses (configurable)
     - Returns both lovelace and ADA amounts
 
     **Authorization:**
-    - Requires valid access token (wallet must be unlocked)
-    - Can only check balance of own wallet
+    - Requires API key (X-API-Key header)
+    - Bearer token NOT required
     """
     try:
-        # Verify wallet ownership
-        if wallet_auth.wallet_id != wallet_id:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Cannot check balance of another wallet. "
-                       f"You are authenticated as '{wallet_auth.wallet_id}'"
-            )
-
-        # Get balance using service
+        # Get wallet from database
         wallet_service = MongoWalletService(database=tenant_db)
-        balances_data = await wallet_service.get_wallet_balance(
-            wallet_auth.cardano_wallet,
-            chain_context.api,
-            limit_addresses
-        )
+        wallet = await wallet_service.get_wallet(wallet_id)
 
-        # Convert to response format
+        # Get balance for main addresses using blockchain API
         main_addresses_balance = {}
-        for addr_type, addr_data in balances_data["main_addresses"].items():
-            balance_lovelace = addr_data["balance"]
-            main_addresses_balance[addr_type] = WalletBalanceInfo(
-                address=addr_data["address"],
-                balance_lovelace=balance_lovelace,
-                balance_ada=balance_lovelace / 1_000_000
-            )
+        total_lovelace = 0
 
-        derived_addresses_balance = []
-        for addr_data in balances_data.get("derived_addresses", []):
-            balance_lovelace = addr_data["balance"]
-            derived_addresses_balance.append(WalletBalanceInfo(
-                address=addr_data["address"],
-                balance_lovelace=balance_lovelace,
-                balance_ada=balance_lovelace / 1_000_000
-            ))
+        # Check enterprise address balance
+        if wallet.enterprise_address:
+            try:
+                balance = chain_context.api.address(wallet.enterprise_address).amount
+                lovelace_balance = sum(int(a.quantity) for a in balance if a.unit == "lovelace")
+                main_addresses_balance["enterprise"] = WalletBalanceInfo(
+                    address=wallet.enterprise_address,
+                    balance_lovelace=lovelace_balance,
+                    balance_ada=lovelace_balance / 1_000_000
+                )
+                total_lovelace += lovelace_balance
+            except Exception:
+                # Address might not have any UTXOs yet
+                main_addresses_balance["enterprise"] = WalletBalanceInfo(
+                    address=wallet.enterprise_address,
+                    balance_lovelace=0,
+                    balance_ada=0.0
+                )
 
-        total_lovelace = balances_data["total_balance"]
+        # Check staking address balance if available
+        if wallet.staking_address:
+            try:
+                balance = chain_context.api.address(wallet.staking_address).amount
+                lovelace_balance = sum(int(a.quantity) for a in balance if a.unit == "lovelace")
+                main_addresses_balance["staking"] = WalletBalanceInfo(
+                    address=wallet.staking_address,
+                    balance_lovelace=lovelace_balance,
+                    balance_ada=lovelace_balance / 1_000_000
+                )
+                total_lovelace += lovelace_balance
+            except Exception:
+                main_addresses_balance["staking"] = WalletBalanceInfo(
+                    address=wallet.staking_address,
+                    balance_lovelace=0,
+                    balance_ada=0.0
+                )
 
         return WalletBalanceResponse(
-            wallet_name=wallet_auth.wallet_name,
+            wallet_name=wallet.name,
             balances=WalletBalances(
                 main_addresses=main_addresses_balance,
-                derived_addresses=derived_addresses_balance,
+                derived_addresses=[],
                 total_balance_lovelace=total_lovelace,
                 total_balance_ada=total_lovelace / 1_000_000
             )
         )
 
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -1867,19 +1872,15 @@ async def get_wallet_addresses(
     "/{wallet_id}/utxos",
     response_model=UtxoResponse,
     summary="Get wallet UTXOs",
-    description="Get unspent transaction outputs for wallet addresses. Requires wallet to be unlocked.",
+    description="Get unspent transaction outputs for wallet addresses. Only requires API key authentication.",
     responses={
-        401: {"model": ErrorResponse, "description": "Not authenticated"},
-        403: {"model": ErrorResponse, "description": "Not authorized to access this wallet"},
         404: {"model": ErrorResponse, "description": "Wallet not found"},
         500: {"model": ErrorResponse, "description": "Server error"},
     },
 )
 async def get_wallet_utxos(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    address_index: int | None = Query(None, ge=0, description="Specific address index (None = all main addresses)"),
     min_ada: float | None = Query(None, ge=0, description="Minimum ADA value filter"),
-    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
     chain_context: CardanoChainContext = Depends(get_chain_context),
     tenant_db = Depends(get_tenant_database),
 ) -> UtxoResponse:
@@ -1889,7 +1890,7 @@ async def get_wallet_utxos(
     This endpoint:
     1. Queries the blockchain for available UTXOs
     2. Returns detailed UTXO information including native tokens
-    3. Supports filtering by address and minimum value
+    3. Supports filtering by minimum value
 
     **Use Cases:**
     - Debugging transaction building
@@ -1898,47 +1899,87 @@ async def get_wallet_utxos(
     - Advanced transaction construction
 
     **Authorization:**
-    - Requires valid access token (wallet must be unlocked)
-    - Can only access own wallet's UTXOs
+    - Requires API key (X-API-Key header)
+    - Bearer token NOT required
     """
     try:
-        # Verify wallet ownership
-        if wallet_auth.wallet_id != wallet_id:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Cannot access another wallet's UTXOs. "
-                       f"You are authenticated as '{wallet_auth.wallet_id}'"
-            )
-
-        # Get UTXOs using service
+        # Get wallet from database
         wallet_service = MongoWalletService(database=tenant_db)
-        utxos_data = await wallet_service.get_wallet_utxos(
-            wallet_auth.cardano_wallet,
-            chain_context.api,
-            address_index,
-            min_ada
-        )
+        wallet = await wallet_service.get_wallet(wallet_id)
 
-        # Convert to response format
+        # Collect UTXOs from main addresses
         utxos = []
-        for utxo_data in utxos_data["utxos"]:
-            utxos.append(UtxoInfo(
-                tx_hash=utxo_data["tx_hash"],
-                output_index=utxo_data["output_index"],
-                address=utxo_data["address"],
-                amount_lovelace=utxo_data["amount_lovelace"],
-                amount_ada=utxo_data["amount_ada"],
-                tokens=utxo_data.get("tokens")
-            ))
+        total_lovelace = 0
+        min_lovelace = int(min_ada * 1_000_000) if min_ada else 0
+
+        # Query UTXOs for enterprise address
+        if wallet.enterprise_address:
+            try:
+                address_utxos = chain_context.api.address_utxos(wallet.enterprise_address)
+                for utxo in address_utxos:
+                    # Calculate lovelace amount
+                    lovelace_amount = sum(int(a.quantity) for a in utxo.amount if a.unit == "lovelace")
+
+                    # Apply minimum filter
+                    if lovelace_amount < min_lovelace:
+                        continue
+
+                    # Extract native tokens
+                    tokens = {}
+                    for amount in utxo.amount:
+                        if amount.unit != "lovelace":
+                            tokens[amount.unit] = int(amount.quantity)
+
+                    utxos.append(UtxoInfo(
+                        tx_hash=utxo.tx_hash,
+                        output_index=utxo.output_index,
+                        address=wallet.enterprise_address,
+                        amount_lovelace=lovelace_amount,
+                        amount_ada=lovelace_amount / 1_000_000,
+                        tokens=tokens if tokens else None
+                    ))
+                    total_lovelace += lovelace_amount
+            except Exception:
+                # Address might not have any UTXOs
+                pass
+
+        # Query UTXOs for staking address if available
+        if wallet.staking_address:
+            try:
+                address_utxos = chain_context.api.address_utxos(wallet.staking_address)
+                for utxo in address_utxos:
+                    lovelace_amount = sum(int(a.quantity) for a in utxo.amount if a.unit == "lovelace")
+
+                    if lovelace_amount < min_lovelace:
+                        continue
+
+                    tokens = {}
+                    for amount in utxo.amount:
+                        if amount.unit != "lovelace":
+                            tokens[amount.unit] = int(amount.quantity)
+
+                    utxos.append(UtxoInfo(
+                        tx_hash=utxo.tx_hash,
+                        output_index=utxo.output_index,
+                        address=wallet.staking_address,
+                        amount_lovelace=lovelace_amount,
+                        amount_ada=lovelace_amount / 1_000_000,
+                        tokens=tokens if tokens else None
+                    ))
+                    total_lovelace += lovelace_amount
+            except Exception:
+                pass
 
         return UtxoResponse(
             wallet_id=wallet_id,
-            wallet_name=wallet_auth.wallet_name,
+            wallet_name=wallet.name,
             utxos=utxos,
-            total_ada=utxos_data["total_ada"],
-            total_lovelace=utxos_data["total_lovelace"]
+            total_ada=total_lovelace / 1_000_000,
+            total_lovelace=total_lovelace
         )
 
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:

@@ -18,6 +18,51 @@ from api.utils.metadata import prepare_metadata, validate_metadata_size
 from cardano_offchain.wallet import CardanoWallet
 from cardano_offchain.chain_context import CardanoChainContext
 import pycardano as pc
+from bson import ObjectId
+
+
+def _extract_amount_from_value(value: pc.Value) -> list[dict]:
+    """
+    Extract amounts from PyCardano Value in Blockfrost-compatible format.
+
+    Returns a list of dicts with 'unit' and 'quantity' keys:
+    - lovelace: {"unit": "lovelace", "quantity": "1000000"}
+    - native assets: {"unit": "<policy_id><asset_name>", "quantity": "1"}
+    """
+    amounts = [{"unit": "lovelace", "quantity": str(value.coin)}]
+    if value.multi_asset:
+        for policy_id, assets in value.multi_asset.items():
+            for asset_name, qty in assets.items():
+                unit = policy_id.payload.hex() + asset_name.payload.hex()
+                amounts.append({"unit": unit, "quantity": str(qty)})
+    return amounts
+
+
+def _prepare_tx_dict_for_validation(tx_dict: dict) -> dict:
+    """
+    Prepare a MongoDB transaction document for Pydantic model validation.
+
+    Handles:
+    - Converting _id to tx_hash (preserving existing tx_hash if present)
+    - Converting ObjectId to string
+    - Adding default values for required fields missing in legacy documents
+    """
+    # Handle _id field - but preserve existing tx_hash if it exists
+    if "_id" in tx_dict:
+        _id_value = tx_dict.pop("_id")
+        # Only use _id as tx_hash if tx_hash is not already set
+        if "tx_hash" not in tx_dict or not tx_dict["tx_hash"]:
+            # Convert ObjectId to string if necessary
+            if isinstance(_id_value, ObjectId):
+                tx_dict["tx_hash"] = str(_id_value)
+            else:
+                tx_dict["tx_hash"] = _id_value
+
+    # Ensure required fields have defaults for legacy documents
+    if "operation" not in tx_dict or not tx_dict["operation"]:
+        tx_dict["operation"] = "send_ada"
+
+    return tx_dict
 
 
 # Custom exceptions
@@ -90,10 +135,7 @@ class MongoTransactionService:
             tx_dict = await collection.find_one({"_id": tx_hash})
             if tx_dict:
                 logger.info(f"✅ Found transaction {tx_hash} in MongoDB")
-                # Convert _id back to tx_hash for the model and remove _id
-                if "_id" in tx_dict:
-                    tx_dict["tx_hash"] = tx_dict["_id"]
-                    del tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                tx_dict = _prepare_tx_dict_for_validation(tx_dict)
                 return TransactionMongo.model_validate(tx_dict)
             else:
                 logger.warning(f"❌ Transaction {tx_hash} NOT FOUND in MongoDB")
@@ -203,9 +245,12 @@ class MongoTransactionService:
         # Build transaction
         builder = pc.TransactionBuilder(chain_context.context)
 
-        # Add inputs (all available UTXOs)
+        # Add inputs (all available UTXOs) and track in lookup map for later extraction
+        utxo_map = {}  # tx_hash:index -> utxo
         for utxo in utxos:
             builder.add_input(utxo)
+            key = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+            utxo_map[key] = utxo
 
         # Add output
         builder.add_output(
@@ -259,21 +304,45 @@ class MongoTransactionService:
             else:
                 raise Exception(f"Failed to calculate transaction hash: {str(e)}")
 
-        # Extract inputs and outputs for database storage
+        # Extract detailed inputs with full UTXO amount data (Blockfrost-compatible format)
         inputs = []
+        total_input_lovelace = 0
         for tx_input in tx_body.inputs:
-            inputs.append({
-                "address": str(from_address),
-                "tx_hash": str(tx_input.transaction_id.payload.hex()),
-                "index": tx_input.index
-            })
+            tx_hash_hex = tx_input.transaction_id.payload.hex()
+            idx = tx_input.index
+            utxo = utxo_map.get(f"{tx_hash_hex}:{idx}")
+            if utxo:
+                amount = _extract_amount_from_value(utxo.output.amount)
+                total_input_lovelace += utxo.output.amount.coin
+                inputs.append({
+                    "address": str(utxo.output.address),
+                    "tx_hash": tx_hash_hex,
+                    "output_index": idx,
+                    "amount": amount,
+                    "collateral": False,
+                    "data_hash": utxo.output.datum_hash.payload.hex() if utxo.output.datum_hash else None,
+                    "inline_datum": None,
+                    "reference_script_hash": None
+                })
 
+        # Extract detailed outputs with amounts and indexes (Blockfrost-compatible format)
         outputs = []
-        for tx_output in tx_body.outputs:
+        total_output_lovelace = 0
+        for idx, tx_output in enumerate(tx_body.outputs):
+            amount = _extract_amount_from_value(tx_output.amount)
+            total_output_lovelace += tx_output.amount.coin
             outputs.append({
                 "address": str(tx_output.address),
-                "amount": int(tx_output.amount.coin)
+                "amount": amount,
+                "output_index": idx,
+                "data_hash": tx_output.datum_hash.payload.hex() if hasattr(tx_output, 'datum_hash') and tx_output.datum_hash else None,
+                "inline_datum": None,
+                "collateral": False,
+                "reference_script_hash": None
             })
+
+        # Calculate transaction size in bytes
+        tx_size = len(bytes.fromhex(unsigned_cbor))
 
         # Check for FAILED transaction with same parameters - auto-reset to BUILT
         if self.database is not None:
@@ -286,9 +355,7 @@ class MongoTransactionService:
                 "from_address_index": from_address_index
             })
             if failed_tx_dict:
-                if "_id" in failed_tx_dict:
-                    failed_tx_dict["tx_hash"] = failed_tx_dict["_id"]
-                    del failed_tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                failed_tx_dict = _prepare_tx_dict_for_validation(failed_tx_dict)
                 failed_tx = TransactionMongo.model_validate(failed_tx_dict)
             else:
                 failed_tx = None
@@ -302,21 +369,44 @@ class MongoTransactionService:
             )
 
         if failed_tx:
-            # Reset the failed transaction to BUILT with new transaction data
-            failed_tx.status = TransactionStatus.BUILT.value
-            failed_tx.unsigned_cbor = unsigned_cbor
-            failed_tx.tx_hash = tx_hash
-            failed_tx.inputs = inputs
-            failed_tx.outputs = outputs
-            failed_tx.estimated_fee = estimated_fee
-            failed_tx.tx_metadata = metadata if metadata else {}
-            failed_tx.error_message = None
-            failed_tx.signed_cbor = None
-            failed_tx.submitted_at = None
-            failed_tx.confirmed_at = None
-            failed_tx.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
-            await failed_tx.save()
-            return failed_tx
+            # Delete the old failed transaction and create a new one
+            # We can't just update because tx_hash (the primary key) changes when UTXOs change
+            old_tx_hash = failed_tx.tx_hash
+            if self.database is not None:
+                collection = self._get_transaction_collection()
+                await collection.delete_one({"_id": old_tx_hash})
+            else:
+                await TransactionMongo.find_one(
+                    TransactionMongo.tx_hash == old_tx_hash
+                ).delete()
+
+            # Create new transaction with the new tx_hash
+            new_transaction = TransactionMongo(
+                tx_hash=tx_hash,
+                wallet_id=wallet_id,
+                from_address=from_address,
+                from_address_index=from_address_index,
+                to_address=to_address,
+                amount_lovelace=amount_lovelace,
+                estimated_fee=estimated_fee,
+                fee_lovelace=int(tx_body.fee),
+                total_output_lovelace=total_output_lovelace,
+                inputs=inputs,
+                outputs=outputs,
+                unsigned_cbor=unsigned_cbor,
+                signed_cbor=None,
+                status=TransactionStatus.BUILT.value,
+                operation=failed_tx.operation or "send_ada",
+                description=failed_tx.description or f"Send {amount_ada} ADA to {to_address}",
+                tx_metadata=metadata if metadata else {},
+                error_message=None,
+                submitted_at=None,
+                confirmed_at=None,
+                created_at=failed_tx.created_at,  # Preserve original creation time
+                updated_at=datetime.now(timezone.utc).replace(tzinfo=None)
+            )
+            await self._insert_transaction(new_transaction)
+            return new_transaction
 
         # Check for duplicate transaction (same wallet, status BUILT, same to_address and amount)
         if self.database is not None:
@@ -329,10 +419,7 @@ class MongoTransactionService:
                 "from_address_index": from_address_index
             })
             if existing_tx_dict:
-                # Convert _id to tx_hash for the model and remove _id
-                if "_id" in existing_tx_dict:
-                    existing_tx_dict["tx_hash"] = existing_tx_dict["_id"]
-                    del existing_tx_dict["_id"]  # Remove _id to avoid Beanie validation error
+                existing_tx_dict = _prepare_tx_dict_for_validation(existing_tx_dict)
                 existing_tx = TransactionMongo.model_validate(existing_tx_dict)
             else:
                 existing_tx = None
@@ -370,6 +457,8 @@ class MongoTransactionService:
             to_address=to_address,
             amount_lovelace=amount_lovelace,
             estimated_fee=estimated_fee,
+            fee_lovelace=int(tx_body.fee),
+            total_output_lovelace=total_output_lovelace,
             inputs=inputs,
             outputs=outputs,
             tx_metadata=metadata if metadata else {},

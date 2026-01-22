@@ -5,8 +5,12 @@ FastAPI endpoints for Cardano transaction operations.
 Provides ADA sending, transaction status checking, and transaction history.
 """
 
+import logging
 import os
+import traceback
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 import pycardano as pc
 from blockfrost import ApiError
@@ -46,6 +50,7 @@ from api.services.transaction_service_mongo import (
     InvalidTransactionStateError,
     TransactionNotFoundError,
     TransactionNotOwnedError,
+    _prepare_tx_dict_for_validation,
 )
 from cardano_offchain.chain_context import CardanoChainContext
 
@@ -139,6 +144,43 @@ async def build_transaction(
         network_name = "preview" if db_wallet.network == "testnet" else "mainnet"
         explorer_url = f"https://{network_name}.cardanoscan.io/transaction/{transaction.tx_hash}" if transaction.tx_hash else None
 
+        # Transform inputs to new format (handle legacy format without amount/output_index)
+        detailed_inputs = []
+        total_input_lovelace = 0
+        for inp in (transaction.inputs or []):
+            if "amount" in inp and "output_index" in inp:
+                # New format - use as-is
+                detailed_inputs.append(BlockchainTransactionInput(**inp))
+                for a in inp.get("amount", []):
+                    if a.get("unit") == "lovelace":
+                        total_input_lovelace += int(a["quantity"])
+            else:
+                # Legacy format - skip detailed input (not enough data)
+                pass
+
+        # Transform outputs to new format (handle legacy format without amount list/output_index)
+        detailed_outputs = []
+        total_output_lovelace = 0
+        for out in (transaction.outputs or []):
+            if "amount" in out and isinstance(out.get("amount"), list) and "output_index" in out:
+                # New format - use as-is
+                detailed_outputs.append(BlockchainTransactionOutput(**out))
+                for a in out.get("amount", []):
+                    if a.get("unit") == "lovelace":
+                        total_output_lovelace += int(a["quantity"])
+            else:
+                # Legacy format - skip detailed output (not enough data)
+                pass
+
+        # Use stored total_output_lovelace if available, otherwise use calculated
+        final_total_output = transaction.total_output_lovelace or total_output_lovelace
+
+        # Calculate transaction size from CBOR if available
+        tx_size = len(bytes.fromhex(transaction.unsigned_cbor)) if transaction.unsigned_cbor else None
+
+        # Get actual fee (fee_lovelace if available, otherwise estimated_fee)
+        actual_fee = transaction.fee_lovelace or transaction.estimated_fee
+
         return BuildTransactionResponse(
             success=True,
             transaction_id=transaction.tx_hash,
@@ -152,14 +194,35 @@ async def build_transaction(
             estimated_fee_ada=transaction.estimated_fee / 1_000_000,
             metadata=transaction.tx_metadata if transaction.tx_metadata else None,
             status=transaction.status,  # Already a string in MongoDB
+            # Detailed transaction information (empty if legacy format)
+            inputs=detailed_inputs,
+            outputs=detailed_outputs,
+            fee_lovelace=actual_fee,
+            fee_ada=actual_fee / 1_000_000,
+            tx_size=tx_size,
+            total_input_lovelace=total_input_lovelace,
+            total_output_lovelace=final_total_output,
         )
 
     except InsufficientFundsError as e:
+        logger.warning(f"Insufficient funds for wallet {wallet.wallet_id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except NotImplementedError as e:
+        logger.warning(f"Not implemented: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build transaction: {str(e)}")
+        # Log full exception details for debugging
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else "No error message"
+        logger.error(
+            f"Failed to build transaction for wallet {wallet.wallet_id}: "
+            f"[{error_type}] {error_msg}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to build transaction ({error_type}): {error_msg}"
+        )
 
 
 @router.post(
@@ -230,16 +293,30 @@ async def sign_transaction(
         )
 
     except TransactionNotFoundError as e:
+        logger.warning(f"Transaction not found: {request.transaction_id}")
         raise HTTPException(status_code=404, detail=str(e))
     except TransactionNotOwnedError as e:
+        logger.warning(f"Transaction not owned by wallet {wallet.wallet_id}: {request.transaction_id}")
         raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransactionStateError as e:
+        logger.warning(f"Invalid transaction state for {request.transaction_id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # Check for password error
         if "password" in str(e).lower() or "incorrect" in str(e).lower():
+            logger.warning(f"Password error for wallet {wallet.wallet_id}")
             raise HTTPException(status_code=401, detail=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to sign transaction: {str(e)}")
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else "No error message"
+        logger.error(
+            f"Failed to sign transaction {request.transaction_id}: "
+            f"[{error_type}] {error_msg}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sign transaction ({error_type}): {error_msg}"
+        )
 
 
 @router.post(
@@ -313,13 +390,26 @@ async def submit_transaction(
         )
 
     except TransactionNotFoundError as e:
+        logger.warning(f"Transaction not found for submit: {request.transaction_id}")
         raise HTTPException(status_code=404, detail=str(e))
     except TransactionNotOwnedError as e:
+        logger.warning(f"Transaction not owned by wallet {wallet.wallet_id} for submit: {request.transaction_id}")
         raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransactionStateError as e:
+        logger.warning(f"Invalid transaction state for submit {request.transaction_id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to submit transaction: {str(e)}")
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else "No error message"
+        logger.error(
+            f"Failed to submit transaction {request.transaction_id}: "
+            f"[{error_type}] {error_msg}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to submit transaction ({error_type}): {error_msg}"
+        )
 
 
 @router.post(
@@ -400,17 +490,32 @@ async def sign_and_submit_transaction(
         )
 
     except TransactionNotFoundError as e:
+        logger.warning(f"Transaction not found for sign-and-submit: {request.transaction_id}")
         raise HTTPException(status_code=404, detail=str(e))
     except TransactionNotOwnedError as e:
+        logger.warning(f"Transaction not owned by wallet {wallet.wallet_id} for sign-and-submit: {request.transaction_id}")
         raise HTTPException(status_code=403, detail=str(e))
     except InvalidTransactionStateError as e:
+        logger.warning(f"Invalid transaction state for sign-and-submit {request.transaction_id}: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # Check for password error
         if "password" in str(e).lower() or "incorrect" in str(e).lower():
+            logger.warning(f"Password error for sign-and-submit wallet {wallet.wallet_id}")
             raise HTTPException(status_code=401, detail=str(e))
-        raise HTTPException(status_code=500, detail=f"Failed to sign and submit transaction: {str(e)}")
-    
+        error_type = type(e).__name__
+        error_msg = str(e) if str(e) else "No error message"
+        logger.error(
+            f"Failed to sign-and-submit transaction {request.transaction_id}: "
+            f"[{error_type}] {error_msg}\n"
+            f"Traceback:\n{traceback.format_exc()}"
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to sign and submit transaction ({error_type}): {error_msg}"
+        )
+
+
 # ============================================================================
 # Transaction Status Endpoint
 # ============================================================================
@@ -591,10 +696,7 @@ async def get_transaction_history(
         # Convert to TransactionMongo models
         db_transactions = []
         for tx_dict in db_transactions_dicts:
-            # Convert _id to tx_hash for model validation
-            if "_id" in tx_dict:
-                tx_dict["tx_hash"] = tx_dict["_id"]
-                del tx_dict["_id"]
+            tx_dict = _prepare_tx_dict_for_validation(tx_dict)
             db_transactions.append(TransactionMongo.model_validate(tx_dict))
 
         # Convert to response models

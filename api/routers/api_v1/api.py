@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Security
 
-from api.routers.api_v1.endpoints import admin, contracts, transactions, wallets
+from api.routers.api_v1.endpoints import admin, assets, contracts, transactions, wallets
 from api.routers.admin import tenants as admin_tenants, tenant_contracts
 from api.utils.security import get_api_key
 
@@ -11,6 +11,7 @@ api_router.include_router(wallets.router, prefix="/wallets", tags=["Wallets"])
 api_router.include_router(
     transactions.router, prefix="/transactions", tags=["Transactions"]
 )
+api_router.include_router(assets.router, prefix="/assets", tags=["Assets"])
 api_router.include_router(
     contracts.router, prefix="/contracts", tags=["Contracts"]
 )

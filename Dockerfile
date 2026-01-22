@@ -18,7 +18,7 @@ COPY pyproject.toml ./
 # Install Python dependencies (MongoDB-only, no PostgreSQL)
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel && \
     pip install --no-cache-dir \
-    "opshin>=0.26.0" \
+    "opshin==0.26.0" \
     "python-dotenv>=1.1.1,<2.0.0" \
     "requests>=2.32.5,<3.0.0" \
     "fastapi[standard]>=0.119.0" \
