@@ -24,10 +24,15 @@ class CardanoChainContext:
         self.blockfrost_api_key = blockfrost_api_key
 
         # Set network configuration
-        if network == "testnet":
+        # Support both legacy "testnet" (maps to preview) and explicit preview/preprod
+        if network in ("testnet", "preview"):
             self.base_url = ApiUrls.preview.value
             self.cardano_network = pc.Network.TESTNET
             self.cardanoscan = "https://preview.cardanoscan.io"
+        elif network == "preprod":
+            self.base_url = ApiUrls.preprod.value
+            self.cardano_network = pc.Network.TESTNET
+            self.cardanoscan = "https://preprod.cardanoscan.io"
         else:
             self.base_url = ApiUrls.mainnet.value
             self.cardano_network = pc.Network.MAINNET

@@ -530,6 +530,7 @@ async def sign_and_submit_transaction(
 )
 async def get_transaction_status(
     tx_hash: str = Path(..., description="Transaction hash to query"),
+    _tenant: str = Depends(require_tenant_context),
     chain_context: CardanoChainContext = Depends(get_chain_context),
 ) -> TransactionStatusResponse:
     """
@@ -624,7 +625,10 @@ async def get_transaction_status(
     description="Get paginated transaction history with optional filters",
 )
 async def get_transaction_history(
-    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    wallet_id: str | None = Query(
+        None,
+        description="Filter by wallet ID (payment key hash). If not provided, returns all transactions for the tenant."
+    ),
     tx_type: TransactionType | None = Query(
         None,
         description="Filter by transaction type (send_ada, mint_token, mint_protocol, burn_token, stake, unstake, smart_contract)"
@@ -642,6 +646,9 @@ async def get_transaction_history(
     Get transaction history with filtering and pagination.
 
     **Filters:**
+    - `wallet_id`: Filter by wallet ID (payment key hash). Optional - if not provided,
+      returns all transactions for the tenant.
+
     - `tx_type`: Transaction type
       - `send_ada` - Simple ADA transfer
       - `mint_token` - Mint new tokens
@@ -664,15 +671,17 @@ async def get_transaction_history(
     - `offset`: Skip this many results (for pagination)
 
     **Authentication Required:**
-    - JWT token from unlocked wallet
-    - Returns only transactions for the authenticated wallet
+    - API key header (X-API-Key)
+    - Returns transactions for the tenant
     """
     try:
         # Get transaction collection from tenant database
         collection = tenant_db.get_collection("transactions")
 
-        # Build query filters for the authenticated wallet
-        query_filter = {"wallet_id": wallet.wallet_id}
+        # Build query filters (wallet_id is optional)
+        query_filter = {}
+        if wallet_id:
+            query_filter["wallet_id"] = wallet_id
 
         # Filter by operation type if provided
         if tx_type:
@@ -760,6 +769,7 @@ async def get_transaction_history(
 )
 async def get_transaction_detail(
     tx_hash: str = Path(..., description="Transaction hash to query"),
+    _tenant: str = Depends(require_tenant_context),
     chain_context: CardanoChainContext = Depends(get_chain_context),
 ) -> TransactionDetailResponse:
     """
@@ -860,9 +870,8 @@ async def get_transaction_detail(
 )
 async def calculate_min_lovelace(
     request: AddressDestin,
-    wallet: WalletAuthContext = Depends(get_wallet_from_token),
+    _tenant: str = Depends(require_tenant_context),
     chain_context: CardanoChainContext = Depends(get_chain_context),
-    tenant_db = Depends(get_tenant_database),
 ) -> MinLovelaceResponse:
     """
     Calculate minimum lovelace required for a UTXO output.
@@ -874,7 +883,7 @@ async def calculate_min_lovelace(
     - Current Cardano protocol parameters
 
     **Authentication Required:**
-    - JWT token from unlocked wallet
+    - API key header (X-API-Key)
 
     **Use cases:**
     - Determine min ADA before creating transaction outputs

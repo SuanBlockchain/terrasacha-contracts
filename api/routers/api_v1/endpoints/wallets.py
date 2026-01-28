@@ -5,15 +5,19 @@ FastAPI endpoints for wallet management operations.
 Provides wallet information, balance checking, address generation, and switching.
 """
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Request
+
+logger = logging.getLogger(__name__)
 
 from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.dependencies.chain_context import get_chain_context
 from api.dependencies.tenant import get_tenant_database, require_tenant_context
 from api.enums import NetworkType, WalletRole
 from api.schemas.wallet import (
+    AddressUtxoResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     CreateWalletRequest,
@@ -1796,75 +1800,56 @@ async def get_wallet_balance(
     "/{wallet_id}/addresses",
     response_model=GenerateAddressesResponse,
     summary="List wallet addresses",
-    description="Get deterministic HD wallet addresses. Requires wallet to be unlocked.",
+    description="Get wallet addresses stored in the database. Only requires API key authentication.",
     responses={
-        401: {"model": ErrorResponse, "description": "Not authenticated"},
-        403: {"model": ErrorResponse, "description": "Not authorized to access this wallet"},
         404: {"model": ErrorResponse, "description": "Wallet not found"},
         500: {"model": ErrorResponse, "description": "Server error"},
     },
 )
 async def get_wallet_addresses(
     wallet_id: str = Path(..., description="Wallet ID (payment key hash)"),
-    count: int = Query(10, ge=1, le=20, description="Number of addresses to generate"),
-    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
     tenant_db = Depends(get_tenant_database),
 ) -> GenerateAddressesResponse:
     """
-    Get deterministic HD wallet addresses.
+    Get wallet addresses stored in the database.
 
-    This endpoint:
-    1. Derives addresses from the wallet's seed
-    2. Generates both enterprise (payment-only) and staking addresses
-    3. Returns addresses with derivation paths and indexes
-
-    **Features:**
-    - Deterministic address generation (same seed = same addresses)
-    - BIP44 compliant derivation paths
-    - Both enterprise and staking address types
+    This endpoint returns the main addresses for a wallet:
+    - Enterprise address (payment-only)
+    - Staking address (if available)
 
     **Authorization:**
-    - Requires valid access token (wallet must be unlocked)
-    - Can only access own wallet's addresses
+    - Requires API key header (X-API-Key)
+    - Bearer token NOT required
     """
     try:
-        # Verify wallet ownership
-        if wallet_auth.wallet_id != wallet_id:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Cannot access another wallet's addresses. "
-                       f"You are authenticated as '{wallet_auth.wallet_id}'"
-            )
-
-        # Generate addresses using service
+        # Get wallet from database
         wallet_service = MongoWalletService(database=tenant_db)
-        addresses_data = await wallet_service.get_wallet_addresses(
-            wallet_auth.cardano_wallet,
-            count
-        )
+        wallet = await wallet_service.get_wallet(wallet_id)
 
-        # Convert to response format
+        # Build address list from stored addresses
         addresses = []
-        for addr_data in addresses_data:
+        if wallet.enterprise_address or wallet.staking_address:
             addresses.append(DerivedAddressInfo(
-                index=addr_data["index"],
-                path=addr_data["derivation_path"],
-                enterprise_address=str(addr_data["enterprise_address"]),
-                staking_address=str(addr_data["staking_address"])
+                index=0,
+                path="m/1852'/1815'/0'/0/0",
+                enterprise_address=wallet.enterprise_address or "",
+                staking_address=wallet.staking_address or ""
             ))
 
         return GenerateAddressesResponse(
-            wallet_name=wallet_auth.wallet_name,
+            wallet_name=wallet.name,
             addresses=addresses,
             count=len(addresses)
         )
 
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to generate addresses: {str(e)}"
+            detail=f"Failed to get wallet addresses: {str(e)}"
         )
 
 
@@ -1907,6 +1892,12 @@ async def get_wallet_utxos(
         wallet_service = MongoWalletService(database=tenant_db)
         wallet = await wallet_service.get_wallet(wallet_id)
 
+        # Check if wallet was found
+        if wallet is None:
+            raise HTTPException(status_code=404, detail=f"Wallet with ID {wallet_id} not found")
+
+        logger.debug(f"Found wallet {wallet_id}: enterprise_address={wallet.enterprise_address}, network={wallet.network}")
+
         # Collect UTXOs from main addresses
         utxos = []
         total_lovelace = 0
@@ -1915,7 +1906,9 @@ async def get_wallet_utxos(
         # Query UTXOs for enterprise address
         if wallet.enterprise_address:
             try:
+                logger.debug(f"Querying UTXOs for enterprise address: {wallet.enterprise_address}")
                 address_utxos = chain_context.api.address_utxos(wallet.enterprise_address)
+                logger.debug(f"Found {len(address_utxos)} UTXOs for enterprise address")
                 for utxo in address_utxos:
                     # Calculate lovelace amount
                     lovelace_amount = sum(int(a.quantity) for a in utxo.amount if a.unit == "lovelace")
@@ -1939,43 +1932,21 @@ async def get_wallet_utxos(
                         tokens=tokens if tokens else None
                     ))
                     total_lovelace += lovelace_amount
-            except Exception:
-                # Address might not have any UTXOs
-                pass
+            except Exception as e:
+                # Log the actual error for debugging
+                logger.warning(f"Error querying UTXOs for enterprise address {wallet.enterprise_address}: {type(e).__name__}: {e}")
 
-        # Query UTXOs for staking address if available
-        if wallet.staking_address:
-            try:
-                address_utxos = chain_context.api.address_utxos(wallet.staking_address)
-                for utxo in address_utxos:
-                    lovelace_amount = sum(int(a.quantity) for a in utxo.amount if a.unit == "lovelace")
-
-                    if lovelace_amount < min_lovelace:
-                        continue
-
-                    tokens = {}
-                    for amount in utxo.amount:
-                        if amount.unit != "lovelace":
-                            tokens[amount.unit] = int(amount.quantity)
-
-                    utxos.append(UtxoInfo(
-                        tx_hash=utxo.tx_hash,
-                        output_index=utxo.output_index,
-                        address=wallet.staking_address,
-                        amount_lovelace=lovelace_amount,
-                        amount_ada=lovelace_amount / 1_000_000,
-                        tokens=tokens if tokens else None
-                    ))
-                    total_lovelace += lovelace_amount
-            except Exception:
-                pass
+        # Note: Staking addresses don't hold UTXOs directly - only enterprise addresses do
+        # Staking addresses are used for delegation, not for holding funds
 
         return UtxoResponse(
             wallet_id=wallet_id,
             wallet_name=wallet.name,
             utxos=utxos,
             total_ada=total_lovelace / 1_000_000,
-            total_lovelace=total_lovelace
+            total_lovelace=total_lovelace,
+            queried_address=wallet.enterprise_address,
+            queried_network=chain_context.network,
         )
 
     except WalletNotFoundError as e:
@@ -1986,4 +1957,108 @@ async def get_wallet_utxos(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get wallet UTXOs: {str(e)}"
+        )
+
+
+@router.get(
+    "/address/{address}/utxos",
+    response_model=AddressUtxoResponse,
+    summary="Get UTXOs for any address",
+    description="Get unspent transaction outputs for any Cardano address (no wallet required). Only requires API key authentication.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid address format"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def get_address_utxos(
+    address: str = Path(..., description="Cardano address (bech32 format, e.g., addr_test1...)"),
+    min_ada: float | None = Query(None, ge=0, description="Minimum ADA value filter"),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> AddressUtxoResponse:
+    """
+    Get unspent transaction outputs (UTXOs) for any Cardano address.
+
+    This endpoint:
+    1. Queries the blockchain for available UTXOs at the given address
+    2. Returns detailed UTXO information including native tokens
+    3. Supports filtering by minimum value
+    4. Does NOT require a wallet to be stored in the system
+
+    **Use Cases:**
+    - Checking UTXOs for any address without wallet setup
+    - Verifying funds at contract addresses
+    - Debugging transaction building
+    - Checking token holdings at any address
+
+    **Authorization:**
+    - Requires API key (X-API-Key header)
+    - Bearer token NOT required
+    """
+    try:
+        # Basic address validation
+        if not address or len(address) < 10:
+            raise HTTPException(status_code=400, detail="Invalid address format")
+
+        logger.debug(f"Querying UTXOs for address: {address}")
+
+        utxos = []
+        total_lovelace = 0
+        min_lovelace = int(min_ada * 1_000_000) if min_ada else 0
+
+        try:
+            address_utxos = chain_context.api.address_utxos(address)
+            logger.debug(f"Found {len(address_utxos)} UTXOs for address {address}")
+
+            for utxo in address_utxos:
+                # Calculate lovelace amount
+                lovelace_amount = sum(int(a.quantity) for a in utxo.amount if a.unit == "lovelace")
+
+                # Apply minimum filter
+                if lovelace_amount < min_lovelace:
+                    continue
+
+                # Extract native tokens
+                tokens = {}
+                for amount in utxo.amount:
+                    if amount.unit != "lovelace":
+                        tokens[amount.unit] = int(amount.quantity)
+
+                utxos.append(UtxoInfo(
+                    tx_hash=utxo.tx_hash,
+                    output_index=utxo.output_index,
+                    address=address,
+                    amount_lovelace=lovelace_amount,
+                    amount_ada=lovelace_amount / 1_000_000,
+                    tokens=tokens if tokens else None
+                ))
+                total_lovelace += lovelace_amount
+
+        except Exception as e:
+            error_str = str(e)
+            logger.warning(f"Error querying UTXOs for address {address}: {type(e).__name__}: {e}")
+            # Check if it's a 404 (address has no history)
+            if "404" in error_str or "not found" in error_str.lower():
+                # Address has no on-chain history - return empty
+                pass
+            else:
+                # Re-raise other errors
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to query blockchain: {error_str}"
+                )
+
+        return AddressUtxoResponse(
+            address=address,
+            utxos=utxos,
+            total_ada=total_lovelace / 1_000_000,
+            total_lovelace=total_lovelace,
+            queried_network=chain_context.network,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get address UTXOs: {str(e)}"
         )

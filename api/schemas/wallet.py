@@ -534,7 +534,7 @@ class UtxoInfo(BaseModel):
     address: str = Field(description="Address owning this UTXO")
     amount_lovelace: int = Field(description="Amount in lovelace")
     amount_ada: float = Field(description="Amount in ADA")
-    tokens: list[dict] | None = Field(None, description="Native tokens (if any)")
+    tokens: dict[str, int] | None = Field(None, description="Native tokens as {unit: quantity}")
 
 
 class UtxoResponse(BaseModel):
@@ -546,6 +546,20 @@ class UtxoResponse(BaseModel):
     total_ada: float = Field(description="Total ADA across all UTXOs")
     total_lovelace: int = Field(description="Total lovelace across all UTXOs")
     checked_at: datetime = Field(default_factory=datetime.utcnow, description="When UTXOs were queried")
+    # Debug info
+    queried_address: str | None = Field(None, description="The address that was queried (for debugging)")
+    queried_network: str | None = Field(None, description="Network used for query (preview/preprod/mainnet)")
+
+
+class AddressUtxoResponse(BaseModel):
+    """Response with UTXOs for any address (no wallet required)"""
+
+    address: str = Field(description="The queried address")
+    utxos: list[UtxoInfo] = Field(description="List of unspent transaction outputs")
+    total_ada: float = Field(description="Total ADA across all UTXOs")
+    total_lovelace: int = Field(description="Total lovelace across all UTXOs")
+    checked_at: datetime = Field(default_factory=datetime.utcnow, description="When UTXOs were queried")
+    queried_network: str | None = Field(None, description="Network used for query (preview/preprod/mainnet)")
 
 
 class DeleteWalletRequest(BaseModel):

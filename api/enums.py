@@ -16,7 +16,9 @@ from enum import Enum
 class NetworkType(str, Enum):
     """Blockchain network types"""
 
-    TESTNET = "testnet"
+    TESTNET = "testnet"  # Alias for preview (for backwards compatibility)
+    PREVIEW = "preview"  # Cardano Preview testnet
+    PREPROD = "preprod"  # Cardano Pre-production testnet
     MAINNET = "mainnet"
 
 
