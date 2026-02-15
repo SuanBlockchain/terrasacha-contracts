@@ -542,8 +542,18 @@ class MongoTransactionService:
             signing_key.sign(unsigned_tx_body.hash())
         )
 
-        # Create witness set with the signature
-        witness_set = pc.TransactionWitnessSet(vkey_witnesses=[vkey_witness])
+        # Handle Plutus transactions (have script witnesses stored separately)
+        if transaction.witness_cbor:
+            partial_witness = pc.TransactionWitnessSet.from_cbor(transaction.witness_cbor)
+            witness_set = pc.TransactionWitnessSet(
+                vkey_witnesses=[vkey_witness],
+                plutus_v2_script=partial_witness.plutus_v2_script,
+                redeemer=partial_witness.redeemer,
+                plutus_data=partial_witness.plutus_data,
+            )
+        else:
+            # Simple transactions (existing behavior)
+            witness_set = pc.TransactionWitnessSet(vkey_witnesses=[vkey_witness])
 
         # Reconstruct auxiliary data if transaction has metadata
         auxiliary_data = None

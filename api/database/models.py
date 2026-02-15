@@ -286,6 +286,7 @@ class TransactionMongo(Document):
     # Two-stage transaction support
     unsigned_cbor: str | None = None  # Unsigned CBOR after BUILD
     signed_cbor: str | None = None  # Signed CBOR after SIGN
+    witness_cbor: str | None = None  # Partial witness set CBOR for Plutus transactions (scripts + redeemers)
     from_address_index: int | None = None  # Derivation index (0 = main)
     from_address: str | None = None
     to_address: str | None = None

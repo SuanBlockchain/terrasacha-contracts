@@ -146,25 +146,177 @@ class CompileContractResponse(BaseModel):
 
 
 class CompileProtocolRequest(BaseModel):
-    """Request to compile protocol contracts"""
+    """Request to compile protocol contracts (protocol_nfts and protocol)"""
 
-    wallet_name: str | None = Field(
-        default=None, description="Wallet to use for UTXO (default wallet if not specified)"
+    wallet_id: str | None = Field(
+        default=None,
+        description="Wallet ID to use for UTXO source. If not provided, uses the authenticated CORE wallet."
     )
-    force: bool = Field(default=False, description="Force recompilation even if contracts exist")
+    utxo_ref: str | None = Field(
+        default=None,
+        description="Specific UTXO reference (tx_hash:index) to use for compilation. If not provided, auto-selects a suitable UTXO with >3 ADA."
+    )
+    force: bool = Field(
+        default=False,
+        description="Force recompilation even if contracts with same parameters already exist."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
+                "utxo_ref": "abc123...def:0",
+                "force": False
+            }
+        }
+
+
+class CompilationUtxoInfo(BaseModel):
+    """Information about the UTXO used for contract compilation"""
+
+    tx_id: str = Field(description="Transaction ID (hex)")
+    index: int = Field(description="Output index")
+    amount_lovelace: int = Field(description="Amount in lovelace")
+    amount_ada: float = Field(description="Amount in ADA")
+
+
+class CompiledProtocolContractInfo(BaseModel):
+    """Information about a compiled protocol contract"""
+
+    policy_id: str = Field(description="Contract policy ID (script hash)")
+    contract_name: str = Field(description="Contract name")
+    contract_type: str = Field(description="Contract type (minting/spending)")
+    cbor_hex: str = Field(description="Compiled CBOR hex string")
+    testnet_address: str | None = Field(None, description="Testnet address (for spending validators)")
+    mainnet_address: str | None = Field(None, description="Mainnet address (for spending validators)")
+    version: int = Field(description="Contract version")
+    compiled_at: datetime = Field(description="Compilation timestamp")
 
 
 class CompileProtocolResponse(BaseModel):
-    """Response for protocol compilation"""
+    """Response for protocol contracts compilation"""
 
-    success: bool
-    message: str | None = None
-    contracts: list[str] | None = Field(None, description="List of compiled contract names")
-    protocol_policy_id: str | None = Field(None, description="Protocol validator policy ID")
-    protocol_nfts_policy_id: str | None = Field(None, description="Protocol NFTs minting policy ID")
-    compilation_utxo: dict | None = Field(None, description="UTXO used for compilation")
-    skipped: bool = Field(False, description="Whether compilation was skipped (already exists)")
+    success: bool = Field(description="Whether compilation succeeded")
+    message: str = Field(description="Status message")
+
+    # Compiled contracts
+    protocol_nfts: CompiledProtocolContractInfo | None = Field(
+        None, description="Compiled protocol_nfts minting policy"
+    )
+    protocol: CompiledProtocolContractInfo | None = Field(
+        None, description="Compiled protocol spending validator"
+    )
+
+    # Compilation metadata
+    compilation_utxo: CompilationUtxoInfo | None = Field(
+        None, description="UTXO used for contract compilation (determines uniqueness)"
+    )
+
+    # Status flags
+    skipped: bool = Field(False, description="Whether compilation was skipped (contracts already exist)")
     error: str | None = Field(None, description="Error message if failed")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Successfully compiled 2 protocol contracts",
+                "protocol_nfts": {
+                    "policy_id": "abc123...",
+                    "contract_name": "protocol_nfts",
+                    "contract_type": "minting",
+                    "cbor_hex": "590abc...",
+                    "version": 1,
+                    "compiled_at": "2025-01-27T12:00:00Z"
+                },
+                "protocol": {
+                    "policy_id": "def456...",
+                    "contract_name": "protocol",
+                    "contract_type": "spending",
+                    "cbor_hex": "590def...",
+                    "testnet_address": "addr_test1...",
+                    "mainnet_address": "addr1...",
+                    "version": 1,
+                    "compiled_at": "2025-01-27T12:00:00Z"
+                },
+                "compilation_utxo": {
+                    "tx_id": "abc123...",
+                    "index": 0,
+                    "amount_lovelace": 5000000,
+                    "amount_ada": 5.0
+                },
+                "skipped": False
+            }
+        }
+
+
+class MintProtocolRequest(BaseModel):
+    """Request to build an unsigned minting transaction for protocol NFTs"""
+
+    protocol_nfts_policy_id: str = Field(
+        description=(
+            "Policy ID of the compiled protocol_nfts minting policy to use. "
+            "Obtained from the compile-protocol response or GET /contracts/."
+        )
+    )
+    wallet_id: str | None = Field(
+        default=None,
+        description=(
+            "Wallet ID whose UTXO was used during compilation. "
+            "If not provided, uses the authenticated CORE wallet."
+        )
+    )
+    destination_address: str | None = Field(
+        default=None,
+        description="Address to send USER token to. If not provided, uses the wallet address."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "protocol_nfts_policy_id": "abc123def456...",
+                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
+                "destination_address": "addr_test1qz..."
+            }
+        }
+
+
+class MintProtocolResponse(BaseModel):
+    """Response after building an unsigned minting transaction for protocol NFTs"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
+    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
+    protocol_token_name: str = Field(description="Hex name of minted REF token")
+    user_token_name: str = Field(description="Hex name of minted USER token")
+    minting_policy_id: str = Field(description="Protocol NFTs minting policy ID")
+    protocol_contract_address: str = Field(description="Address where REF token is sent")
+    compilation_utxo: CompilationUtxoInfo = Field(description="UTXO being consumed in the mint")
+    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    inputs: list[dict] = Field(description="Transaction inputs")
+    outputs: list[dict] = Field(description="Transaction outputs")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "abc123...def",
+                "tx_cbor": "84a400...",
+                "protocol_token_name": "5245465f...",
+                "user_token_name": "555345525f...",
+                "minting_policy_id": "abc123...",
+                "protocol_contract_address": "addr_test1wz...",
+                "compilation_utxo": {
+                    "tx_id": "abc123...",
+                    "index": 0,
+                    "amount_lovelace": 5000000,
+                    "amount_ada": 5.0
+                },
+                "fee_lovelace": 300000,
+                "inputs": [],
+                "outputs": []
+            }
+        }
 
 
 class CompileProjectRequest(BaseModel):

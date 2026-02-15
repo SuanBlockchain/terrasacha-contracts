@@ -17,18 +17,27 @@ from api.dependencies.auth import WalletAuthContext, require_core_wallet
 from api.schemas.contract import (
     AvailableContractInfo,
     AvailableContractsResponse,
+    CompilationUtxoInfo,
+    CompiledProtocolContractInfo,
     CompileContractRequest,
     CompileCustomContractRequest,
     CompileContractResponse,
+    CompileProtocolRequest,
+    CompileProtocolResponse,
     ContractErrorResponse,
     DbContractListItem,
     DbContractListResponse,
+    MintProtocolRequest,
+    MintProtocolResponse,
 )
 from api.services.contract_service_mongo import (
     MongoContractService,
     ContractCompilationError,
     ContractNotFoundError,
+    InvalidContractParametersError,
 )
+from api.dependencies.chain_context import get_chain_context
+from cardano_offchain.chain_context import CardanoChainContext
 
 
 router = APIRouter()
@@ -460,6 +469,290 @@ async def compile_custom_contract(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compile custom contract: {str(e)}")
+
+
+@router.post(
+    "/compile-protocol",
+    response_model=CompileProtocolResponse,
+    summary="Compile protocol contracts (CORE only)",
+    description="Compile protocol_nfts minting policy and protocol spending validator. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or no suitable UTXO"},
+        401: {"model": ContractErrorResponse, "description": "Authentication required"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Wallet not found"},
+        500: {"model": ContractErrorResponse, "description": "Compilation failed"},
+    },
+)
+async def compile_protocol_contracts(
+    request: CompileProtocolRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> CompileProtocolResponse:
+    """
+    Compile protocol contracts (protocol_nfts and protocol).
+
+    This endpoint replicates the CLI "Compile Protocol Contracts" functionality (option 2).
+    It compiles the core protocol contracts needed for the Terrasacha system:
+
+    1. **protocol_nfts** - Minting policy for protocol authentication NFTs
+    2. **protocol** - Spending validator for managing projects
+
+    **Compilation Process:**
+    1. Finds a suitable UTXO (>3 ADA) from the specified wallet
+    2. Compiles `protocol_nfts.py` using the UTXO reference (makes policy unique)
+    3. Compiles `protocol.py` using the protocol_nfts policy ID
+
+    **UTXO Selection:**
+    - By default, auto-selects the first UTXO with >3 ADA
+    - Use `utxo_ref` parameter to specify a specific UTXO (format: `tx_hash:index`)
+
+    ---
+
+    **Authentication Required:**
+    - CORE wallet (Bearer token)
+    - Valid API key (admin or tenant)
+
+    ---
+
+    **Examples:**
+
+    Auto-select UTXO:
+    ```json
+    {
+        "force": true
+    }
+    ```
+
+    Use authenticated wallet:
+    ```json
+    {
+        "wallet_id": null,
+        "force": true
+    }
+    ```
+
+    Specify UTXO:
+    ```json
+    {
+        "wallet_id": "abc123...",
+        "utxo_ref": "abcd1234...ef:0",
+        "force": true
+    }
+    ```
+
+    ---
+
+    **Response:**
+    ```json
+    {
+        "success": true,
+        "message": "Successfully compiled 2 protocol contracts",
+        "protocol_nfts": {
+            "policy_id": "abc123...",
+            "contract_name": "protocol_nfts",
+            "contract_type": "minting",
+            "cbor_hex": "590abc..."
+        },
+        "protocol": {
+            "policy_id": "def456...",
+            "contract_name": "protocol",
+            "contract_type": "spending",
+            "testnet_address": "addr_test1..."
+        },
+        "compilation_utxo": {
+            "tx_id": "abc123...",
+            "index": 0,
+            "amount_lovelace": 5000000,
+            "amount_ada": 5.0
+        }
+    }
+    ```
+    """
+    try:
+        # Determine which wallet to use
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        # Get wallet from database
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        # Convert to model
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        # Create contract service
+        contract_service = MongoContractService(database=tenant_db)
+
+        # Compile protocol contracts
+        result = await contract_service.compile_protocol_contracts(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=core_wallet.wallet_id,
+            chain_context=chain_context,
+            utxo_ref=request.utxo_ref,
+            force=request.force,
+        )
+
+        # Build response
+        protocol_nfts_info = None
+        protocol_info = None
+
+        if result.get("protocol_nfts"):
+            contract = result["protocol_nfts"]
+            protocol_nfts_info = CompiledProtocolContractInfo(
+                policy_id=contract.policy_id,
+                contract_name=contract.name,
+                contract_type=contract.contract_type,
+                cbor_hex=contract.cbor_hex,
+                testnet_address=contract.testnet_addr,
+                mainnet_address=contract.mainnet_addr,
+                version=contract.version,
+                compiled_at=contract.compiled_at,
+            )
+
+        if result.get("protocol"):
+            contract = result["protocol"]
+            protocol_info = CompiledProtocolContractInfo(
+                policy_id=contract.policy_id,
+                contract_name=contract.name,
+                contract_type=contract.contract_type,
+                cbor_hex=contract.cbor_hex,
+                testnet_address=contract.testnet_addr,
+                mainnet_address=contract.mainnet_addr,
+                version=contract.version,
+                compiled_at=contract.compiled_at,
+            )
+
+        compilation_utxo = None
+        if result.get("compilation_utxo"):
+            utxo = result["compilation_utxo"]
+            compilation_utxo = CompilationUtxoInfo(
+                tx_id=utxo["tx_id"],
+                index=utxo["index"],
+                amount_lovelace=utxo["amount_lovelace"],
+                amount_ada=utxo["amount_ada"],
+            )
+
+        return CompileProtocolResponse(
+            success=result["success"],
+            message=result["message"],
+            protocol_nfts=protocol_nfts_info,
+            protocol=protocol_info,
+            compilation_utxo=compilation_utxo,
+            skipped=result.get("skipped", False),
+            error=result.get("error"),
+        )
+
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compile protocol contracts: {str(e)}")
+
+
+@router.post(
+    "/mint-protocol",
+    response_model=MintProtocolResponse,
+    summary="Build mint protocol NFTs transaction (CORE only)",
+    description="Build an unsigned transaction to mint protocol REF and USER NFTs. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or compilation UTXO not found"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Protocol contracts not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def mint_protocol_nfts(
+    request: MintProtocolRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> MintProtocolResponse:
+    """
+    Build an unsigned minting transaction for protocol NFTs (CORE wallets only).
+
+    This endpoint builds the transaction to mint protocol authentication NFTs:
+    - **REF token**: Sent to the protocol contract address with a DatumProtocol
+    - **USER token**: Sent to the destination address (or wallet address)
+
+    **Prerequisites:**
+    - Protocol contracts must be compiled first: `POST /api/v1/contracts/compile-protocol`
+    - The compilation UTXO must still be unspent on-chain
+
+    **Required Fields:**
+    - `protocol_nfts_policy_id`: Which compiled protocol_nfts to use. Get this from
+      the `compile-protocol` response or `GET /api/v1/contracts/`
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /api/v1/contracts/compile-protocol` -> note `protocol_nfts.policy_id`
+    2. `POST /api/v1/contracts/mint-protocol` (this endpoint) -> get `transaction_id`
+    3. `POST /api/v1/transactions/sign` with `transaction_id` + password
+    4. `POST /api/v1/transactions/submit` with `transaction_id`
+    """
+    try:
+        # Determine which wallet to use
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        # Get wallet from database
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        # Build minting transaction
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_mint_protocol_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            protocol_nfts_policy_id=request.protocol_nfts_policy_id,
+            destination_address=request.destination_address,
+        )
+
+        return MintProtocolResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_cbor=result["tx_cbor"],
+            protocol_token_name=result["protocol_token_name"],
+            user_token_name=result["user_token_name"],
+            minting_policy_id=result["minting_policy_id"],
+            protocol_contract_address=result["protocol_contract_address"],
+            compilation_utxo=CompilationUtxoInfo(
+                tx_id=result["compilation_utxo"]["tx_id"],
+                index=result["compilation_utxo"]["index"],
+                amount_lovelace=result["compilation_utxo"]["amount_lovelace"],
+                amount_ada=result["compilation_utxo"]["amount_ada"],
+            ),
+            fee_lovelace=result["fee_lovelace"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build minting transaction: {str(e)}")
 
 
 # ============================================================================
