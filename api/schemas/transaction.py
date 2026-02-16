@@ -6,7 +6,7 @@ Pydantic models for transaction-related API requests and responses.
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from api.enums import TransactionStatus, TransactionType
 
@@ -24,7 +24,6 @@ class SendAdaRequest(BaseModel):
     Use the /wallets/{wallet_id}/unlock endpoint to get a token first.
     """
 
-    from_address_index: int = Field(default=0, ge=0, le=100, description="Source address index (0 = main address)")
     to_address: str = Field(description="Destination Cardano address")
     amount_ada: float = Field(gt=0, description="Amount in ADA to send (must be > 0)")
 
@@ -315,14 +314,31 @@ class BuildTransactionRequest(BaseModel):
     The source wallet is determined from the JWT token.
     No password required for building - just queries chain state.
 
+    Supports two modes:
+    - **ADA-only**: Provide `amount_ada` (existing behavior)
+    - **Native tokens**: Provide `assets` list (auto-calculates min lovelace)
+    - **Both**: Provide `amount_ada` + `assets` (uses max of amount_ada and min lovelace)
+
+    At least one of `amount_ada` or `assets` must be provided.
+
     Metadata formats supported:
     - CIP-20: {"msg": "Your message here"} or {"msg": ["chunk1", "chunk2"]}
     - Custom: {"1337": {"app": "MyApp", "data": {...}}}
     """
 
-    from_address_index: int = Field(default=0, ge=0, le=100, description="Source address index (0 = main address)")
     to_address: str = Field(description="Destination Cardano address")
-    amount_ada: float = Field(gt=0, description="Amount in ADA to send (must be > 0)")
+    amount_ada: float | None = Field(
+        default=None,
+        gt=0,
+        description="Amount in ADA to send. Required for ADA-only transfers. "
+                    "Optional when assets provided (auto-calculates min lovelace). "
+                    "When provided with assets, uses max(amount_ada, min_lovelace)."
+    )
+    assets: list[MultiAssetItem] | None = Field(
+        None,
+        description="Native tokens/assets to send. Each item has a policy ID and token name/quantity map. "
+                    "When provided without amount_ada, min lovelace is auto-calculated."
+    )
     metadata: dict | None = Field(
         None,
         description="Optional transaction metadata (CIP-20 or custom format). "
@@ -330,12 +346,23 @@ class BuildTransactionRequest(BaseModel):
                     "Custom example: {'1337': {'app': 'Terrasacha', 'data': {...}}}"
     )
 
+    @model_validator(mode="after")
+    def validate_amount_or_assets(self):
+        if self.amount_ada is None and self.assets is None:
+            raise ValueError("At least one of 'amount_ada' or 'assets' must be provided")
+        return self
+
     class Config:
         json_schema_extra = {
             "example": {
-                "from_address_index": 0,
                 "to_address": "addr_test1qz...",
-                "amount_ada": 10.5,
+                "amount_ada": 5.0,
+                "assets": [
+                    {
+                        "policyid": "abc123def456...",
+                        "tokens": {"MyToken": 100}
+                    }
+                ],
                 "metadata": {
                     "msg": "Carbon credit transaction for Project XYZ"
                 }
@@ -356,6 +383,8 @@ class BuildTransactionResponse(BaseModel):
     amount_ada: float = Field(description="Amount being sent in ADA")
     estimated_fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
     estimated_fee_ada: float = Field(description="Estimated transaction fee in ADA")
+    assets: list[MultiAssetItem] | None = Field(None, description="Native tokens/assets included in the transaction")
+    min_lovelace_calculated: int | None = Field(None, description="Min lovelace calculated for the output (when assets are present)")
     metadata: dict | None = Field(None, description="Transaction metadata (if provided)")
     status: str = Field(default="BUILT", description="Transaction status")
 

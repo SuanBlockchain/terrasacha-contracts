@@ -307,6 +307,10 @@ class TransactionMongo(Document):
     confirmed_at: datetime | None = None
     block_height: int | None = None
 
+    # Native token/asset tracking
+    assets_sent: list[dict] | None = None  # Original asset request for audit trail
+    assets_hash: str | None = None  # Deterministic hash for duplicate detection
+
     # Error tracking
     error_message: str | None = None
 
@@ -363,9 +367,14 @@ class ContractMongo(Document):
     is_custom_contract: bool = False  # True if compiled from custom source (not in registry)
     category: str | None = None  # ContractCategory value from registry (None for custom contracts)
 
-    # Reference script support (Phase 2 future enhancement)
+    # Reference script support
+    storage_type: str = "local"  # "local" or "reference_script"
     reference_utxo: str | None = None  # UTXO where reference script is stored
     reference_tx_hash: str | None = None  # Transaction hash of reference script
+
+    # Lifecycle status
+    is_active: bool = True  # False after protocol burn invalidation
+    invalidated_at: datetime | None = None  # When contract was marked invalid
 
     # Timestamps
     compiled_at: datetime  # When this version was compiled

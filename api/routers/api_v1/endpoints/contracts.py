@@ -17,22 +17,31 @@ from api.dependencies.auth import WalletAuthContext, require_core_wallet
 from api.schemas.contract import (
     AvailableContractInfo,
     AvailableContractsResponse,
+    BurnProtocolRequest,
+    BurnProtocolResponse,
     CompilationUtxoInfo,
     CompiledProtocolContractInfo,
     CompileContractRequest,
     CompileCustomContractRequest,
     CompileContractResponse,
+    CompileProjectRequest,
+    CompileProjectResponse,
     CompileProtocolRequest,
     CompileProtocolResponse,
     ContractErrorResponse,
     DbContractListItem,
     DbContractListResponse,
+    InvalidateContractRequest,
+    InvalidateContractResponse,
+    InvalidatedContractInfo,
     MintProtocolRequest,
     MintProtocolResponse,
 )
 from api.services.contract_service_mongo import (
     MongoContractService,
+    ContractAlreadyExistsError,
     ContractCompilationError,
+    ContractInvalidationError,
     ContractNotFoundError,
     InvalidContractParametersError,
 )
@@ -755,6 +764,295 @@ async def mint_protocol_nfts(
         raise HTTPException(status_code=500, detail=f"Failed to build minting transaction: {str(e)}")
 
 
+@router.post(
+    "/burn-protocol",
+    response_model=BurnProtocolResponse,
+    summary="Build burn protocol NFTs transaction (CORE only)",
+    description="Build an unsigned transaction to burn protocol REF and USER NFTs. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or tokens not found on-chain"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Protocol contracts not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def burn_protocol_nfts(
+    request: BurnProtocolRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> BurnProtocolResponse:
+    """
+    Build an unsigned burn transaction for protocol NFTs (CORE wallets only).
+
+    This endpoint builds the transaction to burn (destroy) protocol authentication NFTs:
+    - **REF token**: Consumed from the protocol contract address
+    - **USER token**: Consumed from the wallet address
+
+    Both tokens are burned (negative mint) and cease to exist on-chain.
+
+    **Prerequisites:**
+    - Protocol NFTs must already be minted (REF at contract, USER at wallet)
+
+    **Required Fields:**
+    - `protocol_nfts_policy_id`: Which policy's tokens to burn
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /api/v1/contracts/burn-protocol` (this endpoint) -> get `transaction_id`
+    2. `POST /api/v1/transactions/sign` with `transaction_id` + password
+    3. `POST /api/v1/transactions/submit` with `transaction_id`
+    """
+    try:
+        # Determine which wallet to use
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        # Get wallet from database
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        # Build burn transaction
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_burn_protocol_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            protocol_nfts_policy_id=request.protocol_nfts_policy_id,
+        )
+
+        return BurnProtocolResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_cbor=result["tx_cbor"],
+            protocol_token_name=result["protocol_token_name"],
+            user_token_name=result["user_token_name"],
+            minting_policy_id=result["minting_policy_id"],
+            protocol_contract_address=result["protocol_contract_address"],
+            fee_lovelace=result["fee_lovelace"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build burn transaction: {str(e)}")
+
+
+@router.post(
+    "/invalidate",
+    response_model=InvalidateContractResponse,
+    summary="Invalidate contracts after burn (CORE only)",
+    description="Mark a contract and its dependents as inactive after confirming the burn transaction landed on-chain. Works for protocol, project, and other contract types. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Already invalidated or no burn transaction found"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Contract not found"},
+        500: {"model": ContractErrorResponse, "description": "Invalidation failed"},
+    },
+)
+async def invalidate_contracts(
+    request: InvalidateContractRequest,
+    _core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+) -> InvalidateContractResponse:
+    """
+    Invalidate contracts after burn confirmation (CORE wallets only).
+
+    After burning tokens (burn → sign → submit), the contracts are no longer
+    functional on-chain. This endpoint marks them as inactive in the database.
+
+    Works for any contract type: protocol, project, etc.
+
+    **Prerequisites:**
+    - A burn transaction (`burn_protocol`, `burn_project`, etc.) must exist in
+      SUBMITTED or CONFIRMED state for the given policy_id
+
+    **What it does:**
+    - Marks the target contract as `is_active=false`
+    - Finds any contracts compiled with this policy_id as a parameter
+      (e.g., protocol spending validator depends on protocol_nfts policy_id)
+      and marks them as `is_active=false` too
+    - Records `invalidated_at` timestamp on all affected contracts
+
+    **Idempotent guard:** Returns 400 if the contract is already invalidated.
+
+    **Flow:**
+    1. Burn: `POST /burn-protocol` (or project equivalent) → sign → submit
+    2. Verify burn tx landed on-chain
+    3. `POST /invalidate` (this endpoint) with the minting policy's `policy_id`
+    """
+    try:
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.invalidate_contracts(
+            policy_id=request.policy_id,
+        )
+
+        return InvalidateContractResponse(
+            success=result["success"],
+            message=result["message"],
+            invalidated_contracts=[
+                InvalidatedContractInfo(**c) for c in result["invalidated_contracts"]
+            ],
+            burn_tx_hash=result["burn_tx_hash"],
+            burn_tx_status=result["burn_tx_status"],
+            invalidated_at=result["invalidated_at"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ContractInvalidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to invalidate contracts: {str(e)}")
+
+
+@router.post(
+    "/compile-project",
+    response_model=CompileProjectResponse,
+    summary="Compile project contracts (CORE only)",
+    description="Compile project_nfts minting policy and project spending validator. Requires CORE wallet and existing protocol contracts.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request, no suitable UTXO, or name conflict"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Wallet or protocol contracts not found"},
+        409: {"model": ContractErrorResponse, "description": "Contract name already exists"},
+        500: {"model": ContractErrorResponse, "description": "Compilation failed"},
+    },
+)
+async def compile_project_contracts(
+    request: CompileProjectRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> CompileProjectResponse:
+    """
+    Compile project contracts (project_nfts and project).
+
+    Compiles project-level contracts needed for a specific project:
+
+    1. **project_nfts** - Minting policy for project authentication NFTs
+    2. **project** - Spending validator for managing the project
+
+    **Prerequisites:**
+    - Protocol contracts must be compiled first: `POST /api/v1/contracts/compile-protocol`
+    - A `protocol_nfts_policy_id` from the compile-protocol response
+
+    **Compilation Process:**
+    1. Finds a suitable UTXO (>3 ADA) from the specified wallet
+    2. Compiles `project_nfts.py` using the UTXO + protocol_nfts_policy_id
+    3. Compiles `project.py` using the project_nfts policy ID
+
+    **Flow:**
+    1. `POST /contracts/compile-protocol` -> note `protocol_nfts.policy_id`
+    2. `POST /contracts/compile-project` (this endpoint)
+    3. Deploy as reference script if needed: `POST /contracts/deploy-reference-script`
+    """
+    try:
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": request.wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {request.wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        contract_service = MongoContractService(database=tenant_db)
+
+        result = await contract_service.compile_project_contracts(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=request.wallet_id,
+            chain_context=chain_context,
+            project_name=request.project_name,
+            protocol_nfts_policy_id=request.protocol_nfts_policy_id,
+            utxo_ref=request.utxo_ref,
+            force=request.force,
+        )
+
+        # Build response
+        project_nfts_info = None
+        project_info = None
+
+        if result.get("project_nfts"):
+            contract = result["project_nfts"]
+            project_nfts_info = CompiledProtocolContractInfo(
+                policy_id=contract.policy_id,
+                contract_name=contract.name,
+                contract_type=contract.contract_type,
+                cbor_hex=contract.cbor_hex,
+                testnet_address=contract.testnet_addr,
+                mainnet_address=contract.mainnet_addr,
+                version=contract.version,
+                compiled_at=contract.compiled_at,
+            )
+
+        if result.get("project"):
+            contract = result["project"]
+            project_info = CompiledProtocolContractInfo(
+                policy_id=contract.policy_id,
+                contract_name=contract.name,
+                contract_type=contract.contract_type,
+                cbor_hex=contract.cbor_hex,
+                testnet_address=contract.testnet_addr,
+                mainnet_address=contract.mainnet_addr,
+                version=contract.version,
+                compiled_at=contract.compiled_at,
+            )
+
+        compilation_utxo = None
+        if result.get("compilation_utxo"):
+            utxo = result["compilation_utxo"]
+            compilation_utxo = CompilationUtxoInfo(
+                tx_id=utxo["tx_id"],
+                index=utxo["index"],
+                amount_lovelace=utxo["amount_lovelace"],
+                amount_ada=utxo["amount_ada"],
+            )
+
+        return CompileProjectResponse(
+            success=result["success"],
+            message=result["message"],
+            project_nfts=project_nfts_info,
+            project=project_info,
+            compilation_utxo=compilation_utxo,
+            protocol_nfts_policy_id=result.get("protocol_nfts_policy_id"),
+            project_name=result.get("project_name"),
+            skipped=result.get("skipped", False),
+            error=result.get("error"),
+        )
+
+    except ContractAlreadyExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compile project contracts: {str(e)}")
+
+
 # ============================================================================
 # Contract Query Endpoints
 # ============================================================================
@@ -830,7 +1128,9 @@ async def list_contracts(
                     compiled_at=c.compiled_at,
                     network=c.network,
                     category=c.category,
-                    is_custom_contract=c.is_custom_contract
+                    is_custom_contract=c.is_custom_contract,
+                    is_active=c.is_active,
+                    invalidated_at=c.invalidated_at,
                 )
             )
 
@@ -896,7 +1196,9 @@ async def get_contract(
             version=contract.version,
             compiled_at=contract.compiled_at,
             category=contract.category,
-            is_custom_contract=contract.is_custom_contract
+            is_custom_contract=contract.is_custom_contract,
+            is_active=contract.is_active,
+            invalidated_at=contract.invalidated_at,
         )
 
     except ContractNotFoundError as e:

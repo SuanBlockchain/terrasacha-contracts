@@ -69,12 +69,14 @@ class TransactionType(str, Enum):
     """
 
     SEND_ADA = "send_ada"
+    SEND_TOKENS = "send_tokens"
     MINT_TOKEN = "mint_token"
     MINT_PROTOCOL = "mint_protocol"
     BURN_TOKEN = "burn_token"
     STAKE = "stake"
     UNSTAKE = "unstake"
     SMART_CONTRACT = "smart_contract"
+    DEPLOY_REFERENCE_SCRIPT = "deploy_reference_script"
 
 
 # ============================================================================

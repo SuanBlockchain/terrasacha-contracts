@@ -7,6 +7,8 @@ Supports two-stage flow: BUILD → SIGN → SUBMIT
 MongoDB/Beanie version for multi-tenant architecture.
 """
 
+import hashlib
+import json
 import os
 from datetime import datetime, timezone
 
@@ -63,6 +65,87 @@ def _prepare_tx_dict_for_validation(tx_dict: dict) -> dict:
         tx_dict["operation"] = "send_ada"
 
     return tx_dict
+
+
+def _compute_assets_hash(assets: list[dict]) -> str:
+    """
+    Compute a deterministic SHA256 hash of an assets list for duplicate detection.
+
+    Normalizes by sorting policy IDs and token names to ensure consistent hashing
+    regardless of input ordering.
+    """
+    normalized = []
+    for asset in sorted(assets, key=lambda a: a.get("policyid", "")):
+        tokens = asset.get("tokens", {})
+        sorted_tokens = dict(sorted(tokens.items()))
+        normalized.append({"policyid": asset["policyid"], "tokens": sorted_tokens})
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()
+
+
+def _build_multi_asset_from_items(assets: list[dict]) -> pc.MultiAsset:
+    """
+    Convert a list of asset dicts (MultiAssetItem format) into a PyCardano MultiAsset.
+
+    Each dict has:
+    - policyid: hex string
+    - tokens: {token_name: quantity}
+
+    Token names are parsed as hex first, falling back to UTF-8 encoding.
+    """
+    multi_asset_dict = {}
+    for item in assets:
+        policy_id = pc.ScriptHash.from_primitive(item["policyid"])
+        assets_dict = {}
+        for token_name, amount in item["tokens"].items():
+            try:
+                asset_name = pc.AssetName(bytes.fromhex(token_name))
+            except ValueError:
+                asset_name = pc.AssetName(token_name.encode("utf-8"))
+            assets_dict[asset_name] = amount
+        multi_asset_dict[policy_id] = pc.Asset(assets_dict)
+    return pc.MultiAsset(multi_asset_dict)
+
+
+def _validate_wallet_has_tokens(
+    utxos: list, required_assets: list[dict]
+) -> None:
+    """
+    Validate that UTXOs contain enough of each requested token.
+
+    Aggregates token balances across all UTXOs and compares against required amounts.
+
+    Raises:
+        InsufficientFundsError: If the wallet lacks any of the requested tokens.
+    """
+    # Aggregate available token balances from UTXOs
+    available: dict[str, dict[str, int]] = {}  # {policy_id: {asset_name_hex: qty}}
+    for utxo in utxos:
+        value = utxo.output.amount
+        if isinstance(value, pc.Value) and value.multi_asset:
+            for policy_id, assets in value.multi_asset.items():
+                pid_hex = policy_id.payload.hex()
+                if pid_hex not in available:
+                    available[pid_hex] = {}
+                for asset_name, qty in assets.items():
+                    aname_hex = asset_name.payload.hex()
+                    available[pid_hex][aname_hex] = available[pid_hex].get(aname_hex, 0) + qty
+
+    # Check each required asset
+    for item in required_assets:
+        pid = item["policyid"]
+        for token_name, required_qty in item["tokens"].items():
+            # Normalize token name to hex for comparison
+            try:
+                token_hex = bytes.fromhex(token_name).hex()  # Already hex
+            except ValueError:
+                token_hex = token_name.encode("utf-8").hex()
+
+            wallet_qty = available.get(pid, {}).get(token_hex, 0)
+            if wallet_qty < required_qty:
+                raise InsufficientFundsError(
+                    f"Insufficient token balance for policy {pid}, "
+                    f"token {token_name}: have {wallet_qty}, need {required_qty}"
+                )
 
 
 # Custom exceptions
@@ -186,28 +269,28 @@ class MongoTransactionService:
     async def build_transaction(
         self,
         wallet_id: str,
-        from_address_index: int,
         to_address: str,
-        amount_ada: float,
+        amount_ada: float | None,
         network: str,  # NetworkType as string ("testnet" or "mainnet")
-        metadata: dict | None = None
+        metadata: dict | None = None,
+        assets: list[dict] | None = None
     ) -> TransactionMongo:
         """
         Build an unsigned transaction.
 
         Args:
             wallet_id: Payment key hash (wallet ID)
-            from_address_index: Index of source address (0 = main)
             to_address: Destination Cardano address
-            amount_ada: Amount to send in ADA
+            amount_ada: Amount to send in ADA (required for ADA-only, optional with assets)
             network: testnet or mainnet
             metadata: Optional transaction metadata (CIP-20 or custom format)
+            assets: Optional list of native tokens/assets to send
 
         Returns:
             TransactionMongo record with unsigned CBOR
 
         Raises:
-            InsufficientFundsError: Not enough funds
+            InsufficientFundsError: Not enough funds or tokens
             Exception: Other blockchain errors
         """
         # Get wallet from MongoDB
@@ -223,17 +306,11 @@ class MongoTransactionService:
 
         chain_context = CardanoChainContext(network=network, blockfrost_api_key=blockfrost_api_key)
 
-        # Simplified: Use wallet.enterprise_address for index 0
-        if from_address_index == 0:
-            from_address = wallet.enterprise_address
-        else:
-            raise NotImplementedError(
-                "Derived addresses (index > 0) not yet supported in build phase. "
-                "Use index 0 (main address) or implement address storage."
-            )
+        # Use wallet's enterprise address as the source
+        from_address = wallet.enterprise_address
 
-        # Convert ADA to lovelace
-        amount_lovelace = int(amount_ada * 1_000_000)
+        # Determine operation type
+        operation = "send_tokens" if assets else "send_ada"
 
         # Get UTXOs for the address
         context = chain_context.get_context()
@@ -252,13 +329,50 @@ class MongoTransactionService:
             key = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
             utxo_map[key] = utxo
 
-        # Add output
-        builder.add_output(
-            pc.TransactionOutput(
+        # Build the output (ADA-only or multi-asset)
+        min_lovelace_calculated = None
+        assets_hash = None
+
+        if assets:
+            # Validate wallet has the requested tokens
+            _validate_wallet_has_tokens(utxos, assets)
+
+            # Build PyCardano MultiAsset
+            multi_asset = _build_multi_asset_from_items(assets)
+
+            # Calculate min lovelace for this output
+            test_output = pc.TransactionOutput(
                 pc.Address.from_primitive(to_address),
-                pc.Value(amount_lovelace)
+                pc.Value(0, multi_asset)
             )
-        )
+            min_lovelace_calculated = pc.min_lovelace(context, output=test_output)
+
+            # Determine coin amount: max(requested, min_lovelace)
+            if amount_ada is not None:
+                requested_lovelace = int(amount_ada * 1_000_000)
+                amount_lovelace = max(requested_lovelace, min_lovelace_calculated)
+            else:
+                amount_lovelace = min_lovelace_calculated
+
+            # Create multi-asset output
+            builder.add_output(
+                pc.TransactionOutput(
+                    pc.Address.from_primitive(to_address),
+                    pc.Value(amount_lovelace, multi_asset)
+                )
+            )
+
+            # Compute assets hash for duplicate detection
+            assets_hash = _compute_assets_hash(assets)
+        else:
+            # ADA-only transfer (existing behavior)
+            amount_lovelace = int(amount_ada * 1_000_000)
+            builder.add_output(
+                pc.TransactionOutput(
+                    pc.Address.from_primitive(to_address),
+                    pc.Value(amount_lovelace)
+                )
+            )
 
         # Set fee buffer (will be calculated properly during build)
         builder.fee_buffer = 1_000_000  # 1 ADA fee buffer
@@ -345,15 +459,18 @@ class MongoTransactionService:
         tx_size = len(bytes.fromhex(unsigned_cbor))
 
         # Check for FAILED transaction with same parameters - auto-reset to BUILT
+        failed_query = {
+            "wallet_id": wallet_id,
+            "status": TransactionStatus.FAILED.value,
+            "to_address": to_address,
+            "amount_lovelace": amount_lovelace,
+        }
+        if assets_hash:
+            failed_query["assets_hash"] = assets_hash
+
         if self.database is not None:
             collection = self._get_transaction_collection()
-            failed_tx_dict = await collection.find_one({
-                "wallet_id": wallet_id,
-                "status": TransactionStatus.FAILED.value,
-                "to_address": to_address,
-                "amount_lovelace": amount_lovelace,
-                "from_address_index": from_address_index
-            })
+            failed_tx_dict = await collection.find_one(failed_query)
             if failed_tx_dict:
                 failed_tx_dict = _prepare_tx_dict_for_validation(failed_tx_dict)
                 failed_tx = TransactionMongo.model_validate(failed_tx_dict)
@@ -365,7 +482,6 @@ class MongoTransactionService:
                 TransactionMongo.status == TransactionStatus.FAILED.value,
                 TransactionMongo.to_address == to_address,
                 TransactionMongo.amount_lovelace == amount_lovelace,
-                TransactionMongo.from_address_index == from_address_index
             )
 
         if failed_tx:
@@ -385,7 +501,6 @@ class MongoTransactionService:
                 tx_hash=tx_hash,
                 wallet_id=wallet_id,
                 from_address=from_address,
-                from_address_index=from_address_index,
                 to_address=to_address,
                 amount_lovelace=amount_lovelace,
                 estimated_fee=estimated_fee,
@@ -396,9 +511,13 @@ class MongoTransactionService:
                 unsigned_cbor=unsigned_cbor,
                 signed_cbor=None,
                 status=TransactionStatus.BUILT.value,
-                operation=failed_tx.operation or "send_ada",
-                description=failed_tx.description or f"Send {amount_ada} ADA to {to_address}",
+                operation=operation,
+                description=failed_tx.description or (
+                    f"Send tokens to {to_address}" if assets else f"Send {amount_ada} ADA to {to_address}"
+                ),
                 tx_metadata=metadata if metadata else {},
+                assets_sent=assets,
+                assets_hash=assets_hash,
                 error_message=None,
                 submitted_at=None,
                 confirmed_at=None,
@@ -409,15 +528,18 @@ class MongoTransactionService:
             return new_transaction
 
         # Check for duplicate transaction (same wallet, status BUILT, same to_address and amount)
+        built_query = {
+            "wallet_id": wallet_id,
+            "status": TransactionStatus.BUILT.value,
+            "to_address": to_address,
+            "amount_lovelace": amount_lovelace,
+        }
+        if assets_hash:
+            built_query["assets_hash"] = assets_hash
+
         if self.database is not None:
             collection = self._get_transaction_collection()
-            existing_tx_dict = await collection.find_one({
-                "wallet_id": wallet_id,
-                "status": TransactionStatus.BUILT.value,
-                "to_address": to_address,
-                "amount_lovelace": amount_lovelace,
-                "from_address_index": from_address_index
-            })
+            existing_tx_dict = await collection.find_one(built_query)
             if existing_tx_dict:
                 existing_tx_dict = _prepare_tx_dict_for_validation(existing_tx_dict)
                 existing_tx = TransactionMongo.model_validate(existing_tx_dict)
@@ -429,7 +551,6 @@ class MongoTransactionService:
                 TransactionMongo.status == TransactionStatus.BUILT.value,
                 TransactionMongo.to_address == to_address,
                 TransactionMongo.amount_lovelace == amount_lovelace,
-                TransactionMongo.from_address_index == from_address_index
             )
 
         if existing_tx:
@@ -445,14 +566,17 @@ class MongoTransactionService:
             )
 
         # Create transaction record in MongoDB
+        description = (
+            f"Send tokens to {to_address}" if assets
+            else f"Send {amount_ada} ADA to {to_address}"
+        )
         transaction = TransactionMongo(
             wallet_id=wallet_id,
             tx_hash=tx_hash,
             status=TransactionStatus.BUILT.value,
-            operation="send_ada",
-            description=f"Send {amount_ada} ADA to {to_address}",
+            operation=operation,
+            description=description,
             unsigned_cbor=unsigned_cbor,
-            from_address_index=from_address_index,
             from_address=from_address,
             to_address=to_address,
             amount_lovelace=amount_lovelace,
@@ -462,6 +586,8 @@ class MongoTransactionService:
             inputs=inputs,
             outputs=outputs,
             tx_metadata=metadata if metadata else {},
+            assets_sent=assets,
+            assets_hash=assets_hash,
         )
 
         await self._insert_transaction(transaction)
@@ -530,8 +656,8 @@ class MongoTransactionService:
         # Create CardanoWallet instance (network is already a string)
         cardano_wallet = CardanoWallet(mnemonic, network)
 
-        # Get signing key for the address index
-        signing_key = cardano_wallet.get_signing_key(transaction.from_address_index)
+        # Get signing key for the enterprise address (index 0)
+        signing_key = cardano_wallet.get_signing_key(0)
 
         # Parse unsigned CBOR back into transaction body
         unsigned_tx_body = pc.TransactionBody.from_cbor(transaction.unsigned_cbor)

@@ -17,10 +17,17 @@ from blockfrost import ApiError
 from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from api.database.models import TransactionMongo, WalletMongo
-from api.dependencies.auth import WalletAuthContext, get_wallet_from_token
+from api.dependencies.auth import WalletAuthContext, get_wallet_from_token, require_core_wallet
 from api.dependencies.tenant import require_tenant_context, get_tenant_database
 from api.services.transaction_service_mongo import MongoTransactionService
 from api.enums import TransactionStatus as DBTransactionStatus
+from api.schemas.contract import (
+    ConfirmReferenceScriptRequest,
+    ConfirmReferenceScriptResponse,
+    ContractErrorResponse,
+    DeployReferenceScriptRequest,
+    DeployReferenceScriptResponse,
+)
 from api.schemas.transaction import (
     AddressDestin,
     BlockchainTransactionHistoryResponse,
@@ -45,6 +52,12 @@ from api.schemas.transaction import (
     TransactionStatusResponse,
 )
 from api.enums import TransactionType
+from api.services.contract_service_mongo import (
+    MongoContractService,
+    ContractCompilationError,
+    ContractNotFoundError,
+    InvalidContractParametersError,
+)
 from api.services.transaction_service_mongo import (
     InsufficientFundsError,
     InvalidTransactionStateError,
@@ -130,14 +143,17 @@ async def build_transaction(
         # Create transaction service with tenant database
         tx_service = MongoTransactionService(database=tenant_db)
 
+        # Convert assets to dicts for the service layer
+        assets_dicts = [item.model_dump() for item in request.assets] if request.assets else None
+
         # Build the transaction
         transaction = await tx_service.build_transaction(
             wallet_id=wallet.wallet_id,
-            from_address_index=request.from_address_index,
             to_address=request.to_address,
             amount_ada=request.amount_ada,
             network=db_wallet.network,
-            metadata=request.metadata
+            metadata=request.metadata,
+            assets=assets_dicts
         )
 
         # Get explorer URL (network is stored as string in MongoDB)
@@ -181,6 +197,29 @@ async def build_transaction(
         # Get actual fee (fee_lovelace if available, otherwise estimated_fee)
         actual_fee = transaction.fee_lovelace or transaction.estimated_fee
 
+        # Reconstruct assets from stored data for response
+        response_assets = None
+        min_lovelace_calculated = None
+        if transaction.assets_sent:
+            response_assets = [MultiAssetItem(**a) for a in transaction.assets_sent]
+            # Re-derive min_lovelace from the stored amount and request
+            # If the operation is send_tokens, the amount_lovelace includes min_lovelace consideration
+            if transaction.operation == "send_tokens":
+                # Calculate what min_lovelace was (for informational purposes)
+                try:
+                    from api.services.transaction_service_mongo import _build_multi_asset_from_items
+                    ma = _build_multi_asset_from_items(transaction.assets_sent)
+                    test_out = pc.TransactionOutput(
+                        pc.Address.from_primitive(transaction.to_address),
+                        pc.Value(0, ma)
+                    )
+                    cc = get_chain_context()
+                    ctx = cc.get_context()
+                    min_lovelace_calculated = pc.min_lovelace(ctx, output=test_out)
+                except Exception:
+                    # Non-critical: min_lovelace is informational
+                    pass
+
         return BuildTransactionResponse(
             success=True,
             transaction_id=transaction.tx_hash,
@@ -192,6 +231,8 @@ async def build_transaction(
             amount_ada=transaction.amount_lovelace / 1_000_000,
             estimated_fee_lovelace=transaction.estimated_fee,
             estimated_fee_ada=transaction.estimated_fee / 1_000_000,
+            assets=response_assets,
+            min_lovelace_calculated=min_lovelace_calculated,
             metadata=transaction.tx_metadata if transaction.tx_metadata else None,
             status=transaction.status,  # Already a string in MongoDB
             # Detailed transaction information (empty if legacy format)
@@ -206,9 +247,6 @@ async def build_transaction(
 
     except InsufficientFundsError as e:
         logger.warning(f"Insufficient funds for wallet {wallet.wallet_id}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-    except NotImplementedError as e:
-        logger.warning(f"Not implemented: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         # Log full exception details for debugging
@@ -514,6 +552,153 @@ async def sign_and_submit_transaction(
             status_code=500,
             detail=f"Failed to sign and submit transaction ({error_type}): {error_msg}"
         )
+
+
+# ============================================================================
+# Reference Script Deployment Endpoints
+# ============================================================================
+
+
+@router.post(
+    "/deploy-reference-script",
+    response_model=DeployReferenceScriptResponse,
+    summary="Deploy contract as reference script (CORE only)",
+    description="Build an unsigned transaction to deploy a compiled contract as an on-chain reference script. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request, already deployed, or insufficient funds"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Contract or wallet not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def deploy_reference_script(
+    request: DeployReferenceScriptRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> DeployReferenceScriptResponse:
+    """
+    Build an unsigned transaction to deploy a contract as an on-chain reference script.
+
+    Reference scripts allow transactions to reference the script on-chain instead of
+    including it in every transaction, significantly reducing transaction fees.
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /transactions/deploy-reference-script` (this endpoint) -> get `transaction_id`
+    2. `POST /transactions/sign` with `transaction_id` + password
+    3. `POST /transactions/submit` with `transaction_id`
+    4. `POST /transactions/confirm-reference-script` with `transaction_id`
+    """
+    try:
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_deploy_reference_script_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            policy_id=request.policy_id,
+            destination_address=request.destination_address,
+        )
+
+        return DeployReferenceScriptResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_cbor=result["tx_cbor"],
+            contract_policy_id=result["contract_policy_id"],
+            contract_name=result["contract_name"],
+            destination_address=result["destination_address"],
+            min_lovelace=result["min_lovelace"],
+            reference_output_index=result["reference_output_index"],
+            fee_lovelace=result["fee_lovelace"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build reference script transaction: {str(e)}")
+
+
+@router.post(
+    "/confirm-reference-script",
+    response_model=ConfirmReferenceScriptResponse,
+    summary="Confirm reference script deployment (CORE only)",
+    description="Confirm that a reference script deployment transaction has been submitted, updating the contract record. Requires CORE wallet.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Transaction not submitted or invalid operation"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Transaction or contract not found"},
+        500: {"model": ContractErrorResponse, "description": "Confirmation failed"},
+    },
+)
+async def confirm_reference_script(
+    request: ConfirmReferenceScriptRequest,
+    _core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+) -> ConfirmReferenceScriptResponse:
+    """
+    Confirm reference script deployment after transaction submission.
+
+    After deploying a reference script (deploy → sign → submit), this endpoint
+    updates the contract record with the on-chain reference UTXO information.
+
+    **Prerequisites:**
+    - The deploy-reference-script transaction must be in SUBMITTED or CONFIRMED state
+
+    **What it does:**
+    - Updates the contract's `reference_utxo`, `reference_tx_hash`, and `storage_type`
+    - The contract can then be referenced in future transactions instead of being included inline
+
+    **Flow:**
+    1. `POST /transactions/deploy-reference-script` -> get `transaction_id`
+    2. `POST /transactions/sign` + `POST /transactions/submit`
+    3. `POST /transactions/confirm-reference-script` (this endpoint)
+    """
+    try:
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.confirm_reference_script_deployment(
+            transaction_id=request.transaction_id,
+        )
+
+        return ConfirmReferenceScriptResponse(
+            success=result["success"],
+            message=result["message"],
+            policy_id=result["policy_id"],
+            contract_name=result["contract_name"],
+            reference_utxo=result["reference_utxo"],
+            reference_tx_hash=result["reference_tx_hash"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to confirm reference script deployment: {str(e)}")
 
 
 # ============================================================================
