@@ -27,6 +27,12 @@ from api.schemas.contract import (
     ContractErrorResponse,
     DeployReferenceScriptRequest,
     DeployReferenceScriptResponse,
+    ProjectDatum,
+    ProtocolDatum,
+    UpdateProjectRequest,
+    UpdateProjectResponse,
+    UpdateProtocolRequest,
+    UpdateProtocolResponse,
 )
 from api.schemas.transaction import (
     AddressDestin,
@@ -702,6 +708,192 @@ async def confirm_reference_script(
 
 
 # ============================================================================
+# Protocol Update Endpoint
+# ============================================================================
+
+
+@router.post(
+    "/{policy_id}/update-protocol",
+    response_model=UpdateProtocolResponse,
+    summary="Build update protocol datum transaction (CORE only)",
+    description="Build an unsigned transaction to update the on-chain protocol datum. Requires CORE wallet holding the USER token.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or protocol UTXO not found"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Protocol contracts not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def update_protocol(
+    request: UpdateProtocolRequest,
+    policy_id: str = Path(..., description="Policy ID of the protocol_nfts minting policy identifying which protocol to update"),
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> UpdateProtocolResponse:
+    """
+    Build an unsigned transaction to update the protocol datum (CORE wallets only).
+
+    This endpoint modifies the on-chain DatumProtocol stored at the protocol
+    contract address. Any field set to `null` keeps its current on-chain value.
+
+    **Prerequisites:**
+    - Protocol NFTs must be minted (REF token at contract, USER token at wallet)
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /transactions/{policy_id}/update-protocol` (this endpoint) -> get `transaction_id`
+    2. `POST /transactions/sign` with `transaction_id` + password
+    3. `POST /transactions/submit` with `transaction_id`
+    """
+    try:
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_update_protocol_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            protocol_nfts_policy_id=policy_id,
+            protocol_admins=request.protocol_admins,
+            protocol_fee=request.protocol_fee,
+            oracle_id=request.oracle_id,
+            projects=request.projects,
+        )
+
+        return UpdateProtocolResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_cbor=result["tx_cbor"],
+            protocol_contract_address=result["protocol_contract_address"],
+            old_datum=ProtocolDatum(**result["old_datum"]),
+            new_datum=ProtocolDatum(**result["new_datum"]),
+            fee_lovelace=result["fee_lovelace"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build update protocol transaction: {str(e)}")
+
+
+# ============================================================================
+# Project Update Endpoint
+# ============================================================================
+
+
+@router.post(
+    "/{policy_id}/update-project",
+    response_model=UpdateProjectResponse,
+    summary="Build update project datum transaction (CORE only)",
+    description="Build an unsigned transaction to update the on-chain project datum. Requires CORE wallet holding the USER token.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or project UTXO not found"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Project contracts not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def update_project(
+    request: UpdateProjectRequest,
+    policy_id: str = Path(..., description="Policy ID of the project_nfts minting policy identifying which project to update"),
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> UpdateProjectResponse:
+    """
+    Build an unsigned transaction to update the project datum (CORE wallets only).
+
+    This endpoint modifies the on-chain DatumProject stored at the project
+    contract address. Any field set to `null` keeps its current on-chain value.
+
+    **Prerequisites:**
+    - Project NFTs must be minted (REF token at contract, USER token at wallet)
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /transactions/{policy_id}/update-project` (this endpoint) -> get `transaction_id`
+    2. `POST /transactions/sign` with `transaction_id` + password
+    3. `POST /transactions/submit` with `transaction_id`
+    """
+    try:
+        wallet_id = request.wallet_id or core_wallet.wallet_id
+
+        wallet_collection = tenant_db.get_collection("wallets")
+        wallet_dict = await wallet_collection.find_one({"_id": wallet_id})
+
+        if not wallet_dict:
+            raise HTTPException(status_code=404, detail=f"Wallet {wallet_id} not found")
+
+        wallet_dict["id"] = wallet_dict.pop("_id")
+        db_wallet = WalletMongo.model_validate(wallet_dict)
+
+        # Convert stakeholder/certification Pydantic models to dicts for service layer
+        stakeholders_dicts = [s.model_dump() for s in request.stakeholders] if request.stakeholders else None
+        certifications_dicts = [c.model_dump() for c in request.certifications] if request.certifications else None
+
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_update_project_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            project_nfts_policy_id=policy_id,
+            project_id=request.project_id,
+            project_metadata=request.project_metadata,
+            project_state=request.project_state,
+            project_token_policy_id=request.project_token_policy_id,
+            project_token_name=request.project_token_name,
+            total_supply=request.total_supply,
+            stakeholders=stakeholders_dicts,
+            certifications=certifications_dicts,
+        )
+
+        return UpdateProjectResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_cbor=result["tx_cbor"],
+            project_contract_address=result["project_contract_address"],
+            old_datum=ProjectDatum(**result["old_datum"]),
+            new_datum=ProjectDatum(**result["new_datum"]),
+            fee_lovelace=result["fee_lovelace"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build update project transaction: {str(e)}")
+
+
+# ============================================================================
 # Transaction Status Endpoint
 # ============================================================================
 
@@ -909,7 +1101,13 @@ async def get_transaction_history(
 
             if db_tx.outputs and len(db_tx.outputs) > 0:
                 to_address = db_tx.outputs[0].get("address")
-                amount_lovelace = db_tx.outputs[0].get("amount")
+                raw_amount = db_tx.outputs[0].get("amount")
+                if isinstance(raw_amount, int):
+                    amount_lovelace = raw_amount
+                elif isinstance(raw_amount, dict):
+                    amount_lovelace = raw_amount.get("coin") or raw_amount.get("lovelace")
+                elif isinstance(raw_amount, list) and len(raw_amount) > 0:
+                    amount_lovelace = raw_amount[0] if isinstance(raw_amount[0], int) else None
 
             transactions.append(
                 TransactionHistoryItem(

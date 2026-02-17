@@ -319,6 +319,21 @@ class MongoTransactionService:
         if not utxos:
             raise InsufficientFundsError(f"No UTXOs found at address {from_address}")
 
+        # Exclude UTXOs reserved for contract compilation (not yet minted)
+        from api.services.contract_service_mongo import MongoContractService
+        contract_service = MongoContractService(database=self.database)
+        reserved_utxos = await contract_service.get_reserved_compilation_utxos()
+        if reserved_utxos:
+            utxos = [
+                u for u in utxos
+                if f"{u.input.transaction_id.payload.hex()}:{u.input.index}" not in reserved_utxos
+            ]
+            if not utxos:
+                raise InsufficientFundsError(
+                    f"No available UTXOs at address {from_address} "
+                    "(all UTXOs are reserved for contract compilation)"
+                )
+
         # Build transaction
         builder = pc.TransactionBuilder(chain_context.context)
 

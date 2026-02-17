@@ -77,6 +77,9 @@ class TransactionType(str, Enum):
     UNSTAKE = "unstake"
     SMART_CONTRACT = "smart_contract"
     DEPLOY_REFERENCE_SCRIPT = "deploy_reference_script"
+    UPDATE_PROTOCOL = "update_protocol"
+    MINT_PROJECT = "mint_project"
+    UPDATE_PROJECT = "update_project"
 
 
 # ============================================================================

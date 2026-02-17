@@ -122,6 +122,7 @@ class CompileContractResponse(BaseModel):
     testnet_address: str | None = Field(None, description="Testnet address")
     mainnet_address: str | None = Field(None, description="Mainnet address")
     contract_type: str = Field(description="Contract type (spending/minting)")
+    compilation_params: list | None = Field(None, description="Compilation parameters (e.g. ['tx_hash:index'] for minting policies, ['tx_hash:index', 'protocol_nfts_policy_id'] for project)")
     source_hash: str = Field(description="SHA256 hash of source code (for versioning)")
     version: int = Field(description="Contract version (auto-increments on recompile)")
     compiled_at: datetime = Field(description="Compilation timestamp")
@@ -253,32 +254,37 @@ class CompileProtocolResponse(BaseModel):
 
 
 class MintProtocolRequest(BaseModel):
-    """Request to build an unsigned minting transaction for protocol NFTs"""
+    """Request to build an unsigned minting transaction for protocol NFTs.
 
-    protocol_nfts_policy_id: str = Field(
-        description=(
-            "Policy ID of the compiled protocol_nfts minting policy to use. "
-            "Obtained from the compile-protocol response or GET /contracts/."
-        )
+    Contract identified by policy_id path parameter.
+    USER token destination set via destination_address query parameter.
+    """
+
+    # Initial datum parameters
+    protocol_admins: list[str] = Field(
+        default=[],
+        description="List of admin public key hashes (hex). Max 10."
     )
-    wallet_id: str | None = Field(
-        default=None,
-        description=(
-            "Wallet ID whose UTXO was used during compilation. "
-            "If not provided, uses the authenticated CORE wallet."
-        )
+    protocol_fee: int = Field(
+        default=1_000_000,
+        description="Protocol fee in lovelace (default: 1 ADA = 1000000)"
     )
-    destination_address: str | None = Field(
-        default=None,
-        description="Address to send USER token to. If not provided, uses the wallet address."
+    oracle_id: str = Field(
+        default="",
+        description="Oracle policy ID hex string. Empty string for none."
+    )
+    projects: list[str] = Field(
+        default=[],
+        description="List of initial project ID hashes (hex). Usually empty at mint."
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "protocol_nfts_policy_id": "abc123def456...",
-                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
-                "destination_address": "addr_test1qz..."
+                "protocol_admins": ["fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d"],
+                "protocol_fee": 2000000,
+                "oracle_id": "",
+                "projects": []
             }
         }
 
@@ -715,6 +721,7 @@ class DbContractListItem(BaseModel):
     contract_type: str = Field(description="Type of contract (spending/minting)")
     testnet_address: str | None = Field(None, description="Testnet address")
     mainnet_address: str | None = Field(None, description="Mainnet address")
+    compilation_params: list | None = Field(None, description="Compilation parameters (e.g. ['tx_hash:index'] for minting policies, ['tx_hash:index', 'protocol_nfts_policy_id'] for project)")
     version: int = Field(description="Contract version (increments on recompile)")
     source_hash: str = Field(description="SHA256 hash of source code")
     compiled_at: datetime = Field(description="Compilation timestamp")
@@ -723,6 +730,17 @@ class DbContractListItem(BaseModel):
     is_custom_contract: bool = Field(False, description="True if compiled from custom source (not in registry)")
     is_active: bool = Field(True, description="Whether the contract is still active (False after burn invalidation)")
     invalidated_at: datetime | None = Field(None, description="When contract was invalidated (None if still active)")
+    has_minted_tokens: bool | None = Field(
+        None,
+        description="Whether this contract has active tokens on-chain. "
+        "Only populated when ?enrich=true is passed. "
+        "For spending validators: balance > 0. "
+        "For minting policies: associated spending validator has balance > 0."
+    )
+    balance_lovelace: int | None = Field(
+        None,
+        description="On-chain balance in lovelace (spending validators only, requires ?enrich=true)"
+    )
 
 
 class DbContractListResponse(BaseModel):
@@ -769,6 +787,83 @@ class ProtocolDatum(BaseModel):
     projects: list[str] = Field(description="List of project ID hashes")
 
 
+class UpdateProtocolRequest(BaseModel):
+    """Request to build an unsigned update transaction for protocol datum.
+
+    The protocol is identified by the policy_id path parameter, not in the body.
+    """
+
+    wallet_id: str | None = Field(
+        default=None,
+        description="Wallet ID holding the USER token. If not provided, uses the authenticated CORE wallet."
+    )
+    protocol_admins: list[str] | None = Field(
+        default=None,
+        description="New admin public key hashes (hex). None = keep current. Max 10."
+    )
+    protocol_fee: int | None = Field(
+        default=None,
+        description="New protocol fee in lovelace. None = keep current."
+    )
+    oracle_id: str | None = Field(
+        default=None,
+        description="New oracle policy ID hex string. None = keep current. Empty string to clear."
+    )
+    projects: list[str] | None = Field(
+        default=None,
+        description="New projects list (hex hashes). None = keep current."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "protocol_admins": ["fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d"],
+                "protocol_fee": 3000000,
+                "oracle_id": "",
+                "projects": [],
+            }
+        }
+
+
+class UpdateProtocolResponse(BaseModel):
+    """Response after building an unsigned update transaction for protocol datum"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
+    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
+    protocol_contract_address: str = Field(description="Protocol contract address")
+    old_datum: ProtocolDatum = Field(description="Previous datum values")
+    new_datum: ProtocolDatum = Field(description="New datum values")
+    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    inputs: list[dict] = Field(description="Transaction inputs")
+    outputs: list[dict] = Field(description="Transaction outputs")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "abc123...def",
+                "tx_cbor": "84a400...",
+                "protocol_contract_address": "addr_test1wz...",
+                "old_datum": {
+                    "project_admins": [],
+                    "protocol_fee": 1000000,
+                    "oracle_id": "",
+                    "projects": []
+                },
+                "new_datum": {
+                    "project_admins": ["fe2d2b5b..."],
+                    "protocol_fee": 3000000,
+                    "oracle_id": "",
+                    "projects": []
+                },
+                "fee_lovelace": 400000,
+                "inputs": [],
+                "outputs": []
+            }
+        }
+
+
 class ProjectTokenInfo(BaseModel):
     """Project token information"""
 
@@ -810,6 +905,199 @@ class ProjectDatum(BaseModel):
     project_token: ProjectTokenInfo
     stakeholders: list[StakeholderInfo]
     certifications: list[CertificationInfo]
+
+
+# ============================================================================
+# Project Mint/Update Schemas
+# ============================================================================
+
+
+class StakeholderInput(BaseModel):
+    """Stakeholder definition for project creation/update"""
+
+    stakeholder: str = Field(description="Stakeholder name (hex bytes)")
+    pkh: str = Field(description="Public key hash (hex)")
+    participation: int = Field(description="Grey token allocation")
+
+
+class CertificationInput(BaseModel):
+    """Certification definition for project creation/update"""
+
+    certification_date: int = Field(description="Certification date POSIX timestamp")
+    quantity: int = Field(description="Promised carbon credits")
+    real_certification_date: int = Field(default=0, description="Actual certification date")
+    real_quantity: int = Field(default=0, description="Actual verified carbon credits")
+
+
+class MintProjectRequest(BaseModel):
+    """Request to build an unsigned minting transaction for project NFTs.
+
+    Contract identified by policy_id path parameter.
+    USER token destination set via destination_address query parameter.
+    """
+
+    # Initial datum parameters
+    project_id: str = Field(description="Project identifier (hex bytes)")
+    project_metadata: str = Field(
+        default="",
+        description="Project metadata (hex bytes). Default: empty."
+    )
+    stakeholders: list[StakeholderInput] = Field(
+        default=[],
+        description="List of stakeholders with name, PKH, and participation."
+    )
+    certifications: list[CertificationInput] | None = Field(
+        default=None,
+        description="List of certifications. None = single empty default certification."
+    )
+    investment_tokens: int = Field(
+        default=0,
+        description="Grey tokens for investment pool (added to total supply)."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "project_id": "0a1b2c3d...",
+                "stakeholders": [
+                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5b...", "participation": 500000}
+                ],
+                "investment_tokens": 100000,
+            }
+        }
+
+
+class MintProjectResponse(BaseModel):
+    """Response after building an unsigned minting transaction for project NFTs"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
+    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
+    project_token_name: str = Field(description="Hex name of minted REF token")
+    user_token_name: str = Field(description="Hex name of minted USER token")
+    minting_policy_id: str = Field(description="Project NFTs minting policy ID")
+    project_contract_address: str = Field(description="Address where REF token is sent")
+    compilation_utxo: CompilationUtxoInfo = Field(description="UTXO being consumed in the mint")
+    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    inputs: list[dict] = Field(description="Transaction inputs")
+    outputs: list[dict] = Field(description="Transaction outputs")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "abc123...def",
+                "tx_cbor": "84a400...",
+                "project_token_name": "5245465f...",
+                "user_token_name": "555345525f...",
+                "minting_policy_id": "abc123...",
+                "project_contract_address": "addr_test1wz...",
+                "compilation_utxo": {
+                    "tx_id": "abc123...",
+                    "index": 0,
+                    "amount_lovelace": 5000000,
+                    "amount_ada": 5.0,
+                },
+                "fee_lovelace": 300000,
+                "inputs": [],
+                "outputs": [],
+            }
+        }
+
+
+class UpdateProjectRequest(BaseModel):
+    """Request to build an unsigned update transaction for project datum.
+
+    The project is identified by the policy_id path parameter, not in the body.
+    """
+
+    wallet_id: str | None = Field(
+        default=None,
+        description="Wallet ID holding the USER token. If not provided, uses the authenticated CORE wallet."
+    )
+
+    # All optional — None = keep current on-chain value
+    project_id: str | None = Field(
+        default=None, description="New project ID hex. None = keep current."
+    )
+    project_metadata: str | None = Field(
+        default=None, description="New metadata hex. None = keep current."
+    )
+    project_state: int | None = Field(
+        default=None, description="New project state (0-3). None = keep current."
+    )
+    project_token_policy_id: str | None = Field(
+        default=None, description="New token policy ID hex. None = keep current."
+    )
+    project_token_name: str | None = Field(
+        default=None, description="New token name hex. None = keep current."
+    )
+    total_supply: int | None = Field(
+        default=None, description="New total supply. None = keep current."
+    )
+    stakeholders: list[StakeholderInput] | None = Field(
+        default=None, description="New stakeholders list. None = keep current."
+    )
+    certifications: list[CertificationInput] | None = Field(
+        default=None, description="New certifications list. None = keep current."
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "project_id": "0a1b2c3d...",
+                "project_metadata": "",
+                "project_state": 1,
+                "project_token_policy_id": "abc123...",
+                "project_token_name": "475245595f...",
+                "total_supply": 500000,
+                "stakeholders": [
+                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5b...", "participation": 500000}
+                ],
+                "certifications": [
+                    {"certification_date": 1700000000, "quantity": 1000, "real_certification_date": 0, "real_quantity": 0}
+                ],
+            }
+        }
+
+
+class UpdateProjectResponse(BaseModel):
+    """Response after building an unsigned update transaction for project datum"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
+    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
+    project_contract_address: str = Field(description="Project contract address")
+    old_datum: ProjectDatum = Field(description="Previous datum values")
+    new_datum: ProjectDatum = Field(description="New datum values")
+    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    inputs: list[dict] = Field(description="Transaction inputs")
+    outputs: list[dict] = Field(description="Transaction outputs")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "abc123...def",
+                "tx_cbor": "84a400...",
+                "project_contract_address": "addr_test1wz...",
+                "old_datum": {
+                    "params": {"project_id": "0a1b2c...", "project_metadata": "", "project_state": 0},
+                    "project_token": {"policy_id": "", "token_name": "", "total_supply": 500000},
+                    "stakeholders": [],
+                    "certifications": [{"certification_date": 0, "quantity": 0, "real_certification_date": 0, "real_quantity": 0}],
+                },
+                "new_datum": {
+                    "params": {"project_id": "0a1b2c...", "project_metadata": "", "project_state": 1},
+                    "project_token": {"policy_id": "", "token_name": "", "total_supply": 500000},
+                    "stakeholders": [],
+                    "certifications": [{"certification_date": 0, "quantity": 0, "real_certification_date": 0, "real_quantity": 0}],
+                },
+                "fee_lovelace": 400000,
+                "inputs": [],
+                "outputs": [],
+            }
+        }
 
 
 class PriceWithPrecision(BaseModel):
