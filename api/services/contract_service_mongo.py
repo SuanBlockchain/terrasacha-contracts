@@ -718,18 +718,23 @@ class MongoContractService:
 
         return enrichment
 
-    async def delete_contract(self, policy_id: str, chain_context=None) -> None:
+    async def delete_contract(self, policy_id: str, chain_context=None) -> dict:
         """
-        Delete a contract by policy ID, with cascading validations.
+        Delete a contract by policy ID, with cascading validations and pair deletion.
 
         If chain_context is provided, checks on-chain state before allowing deletion:
-        - Blocks deletion of minting policies with active tokens on-chain
-        - Blocks deletion of spending validators with active tokens on-chain
+        - Blocks deletion if the spending contract has active tokens or lovelace on-chain
         - Blocks deletion of protocol contracts with dependent project contracts
+
+        After successful deletion, also deletes the paired contract
+        (protocol_nfts ↔ protocol, project_nfts ↔ project).
 
         Args:
             policy_id: The contract's policy ID (script hash)
             chain_context: Optional CardanoChainContext for on-chain validation
+
+        Returns:
+            dict with deleted_policy_ids list
 
         Raises:
             ContractNotFoundError: If contract not found
@@ -754,11 +759,22 @@ class MongoContractService:
             result = await collection.delete_one({"_id": policy_id})
             if result.deleted_count == 0:
                 raise ContractNotFoundError(f"Contract not found: {policy_id}")
+
+            deleted_ids = [policy_id]
+
+            # Cascade: find and delete the paired contract
+            pair_policy_id = await self._find_pair_policy_id(contract, collection)
+            if pair_policy_id:
+                await collection.delete_one({"_id": pair_policy_id})
+                deleted_ids.append(pair_policy_id)
+
+            return {"deleted_policy_ids": deleted_ids}
         else:
             contract = await self._find_contract_by_policy_id(policy_id)
             if not contract:
                 raise ContractNotFoundError(f"Contract not found: {policy_id}")
             await contract.delete()
+            return {"deleted_policy_ids": [policy_id]}
 
     async def _validate_delete(self, contract: ContractMongo, collection, chain_context) -> None:
         """
@@ -796,13 +812,18 @@ class MongoContractService:
                         sp_addr = pc.Address.from_primitive(addr)
                         utxos = chain_context.context.utxos(sp_addr)
                         has_tokens = any(u.output.amount.multi_asset for u in utxos)
-                        if has_tokens:
-                            total_lovelace = sum(u.output.amount.coin for u in utxos)
+                        total_lovelace = sum(u.output.amount.coin for u in utxos)
+                        if has_tokens or total_lovelace > 0:
                             balance_ada = total_lovelace / 1_000_000
+                            burn_endpoint = (
+                                "POST /contracts/burn-project"
+                                if registry_name == "project_nfts"
+                                else "POST /contracts/burn-protocol"
+                            )
                             raise ContractDeleteBlockedError(
-                                f"Cannot delete '{contract.name}': active tokens exist on-chain "
-                                f"at {addr} (balance: {balance_ada:.2f} ADA). "
-                                f"Burn tokens first using POST /contracts/burn-protocol, "
+                                f"Cannot delete '{contract.name}': contract is deployed on-chain "
+                                f"(has_minted_tokens={has_tokens}, balance={balance_ada:.2f} ADA) at {addr}. "
+                                f"Burn tokens first using {burn_endpoint}, "
                                 f"then POST /contracts/invalidate."
                             )
                     except ContractDeleteBlockedError:
@@ -820,13 +841,18 @@ class MongoContractService:
                     sp_addr = pc.Address.from_primitive(addr)
                     utxos = chain_context.context.utxos(sp_addr)
                     has_tokens = any(u.output.amount.multi_asset for u in utxos)
-                    if has_tokens:
-                        total_lovelace = sum(u.output.amount.coin for u in utxos)
+                    total_lovelace = sum(u.output.amount.coin for u in utxos)
+                    if has_tokens or total_lovelace > 0:
                         balance_ada = total_lovelace / 1_000_000
+                        burn_endpoint = (
+                            "POST /contracts/burn-project"
+                            if registry_name == "project"
+                            else "POST /contracts/burn-protocol"
+                        )
                         raise ContractDeleteBlockedError(
-                            f"Cannot delete '{contract.name}': active tokens exist on-chain "
-                            f"at {addr} (balance: {balance_ada:.2f} ADA). "
-                            f"Burn tokens first using POST /contracts/burn-protocol, "
+                            f"Cannot delete '{contract.name}': contract is deployed on-chain "
+                            f"(has_minted_tokens={has_tokens}, balance={balance_ada:.2f} ADA) at {addr}. "
+                            f"Burn tokens first using {burn_endpoint}, "
                             f"then POST /contracts/invalidate."
                         )
                 except ContractDeleteBlockedError:
@@ -857,6 +883,40 @@ class MongoContractService:
                             f"Delete dependent projects first."
                         )
 
+    async def _find_pair_policy_id(self, contract: "ContractMongo", collection) -> Optional[str]:
+        """
+        Find the paired contract policy_id for cascade deletion.
+
+        Pairs:
+        - protocol_nfts (minting) ↔ protocol (spending): protocol.compilation_params[0] == protocol_nfts.policy_id
+        - project_nfts (minting) ↔ project (spending): project.compilation_params[0] == project_nfts.policy_id
+
+        Returns the paired contract's policy_id, or None if not found.
+        """
+        registry_name = contract.registry_contract_name
+        contract_type = contract.contract_type
+
+        minting_to_spending = {"protocol_nfts": "protocol", "project_nfts": "project"}
+        spending_to_minting = {"protocol": "protocol_nfts", "project": "project_nfts"}
+
+        if contract_type == "minting" and registry_name in minting_to_spending:
+            # Find the spending contract whose compilation_params[0] == this policy_id
+            pair_name = minting_to_spending[registry_name]
+            doc = await collection.find_one({
+                "registry_contract_name": pair_name,
+                "compilation_params.0": contract.policy_id,
+            })
+            return doc["_id"] if doc else None
+
+        elif contract_type == "spending" and registry_name in spending_to_minting:
+            # Find the minting contract by its policy_id (stored in this contract's compilation_params[0])
+            if contract.compilation_params and len(contract.compilation_params) > 0:
+                minting_policy_id = contract.compilation_params[0]
+                doc = await collection.find_one({"_id": minting_policy_id})
+                return doc["_id"] if doc else None
+
+        return None
+
     async def compile_protocol_contracts(
         self,
         wallet_address: str,
@@ -864,7 +924,6 @@ class MongoContractService:
         wallet_id: str,
         chain_context,
         utxo_ref: Optional[str] = None,
-        force: bool = False,
     ) -> dict:
         """
         Compile protocol contracts (protocol_nfts and protocol).
@@ -879,7 +938,6 @@ class MongoContractService:
             wallet_id: CORE wallet ID compiling the contracts
             chain_context: CardanoChainContext instance for blockchain queries
             utxo_ref: Optional specific UTXO reference (tx_hash:index)
-            force: Force recompilation
 
         Returns:
             Dictionary with compilation results including:
@@ -970,30 +1028,15 @@ class MongoContractService:
             protocol_nfts_plutus = PlutusContract(protocol_nfts_compiled)
 
             # Check if contract with this policy_id already exists
-            if self.database is not None and not force:
+            if self.database is not None:
                 collection = self._get_contract_collection()
                 existing_nfts = await collection.find_one({"_id": protocol_nfts_plutus.policy_id})
                 if existing_nfts:
-                    # Contract with same policy_id exists, check for protocol too
-                    # The protocol policy_id depends on protocol_nfts, so we need to compile to check
-                    protocol_nfts_policy_id_bytes = bytes.fromhex(protocol_nfts_plutus.policy_id)
-                    protocol_compiled = build(str(protocol_path), protocol_nfts_policy_id_bytes)
-                    protocol_plutus = PlutusContract(protocol_compiled)
-
-                    existing_protocol = await collection.find_one({"_id": protocol_plutus.policy_id})
-                    if existing_protocol:
-                        # Both contracts exist with same policy_ids - return existing
-                        existing_nfts["policy_id"] = existing_nfts.pop("_id")
-                        existing_protocol["policy_id"] = existing_protocol.pop("_id")
-                        return {
-                            "success": True,
-                            "message": "Protocol contracts already exist with same policy IDs (use force=true to recompile)",
-                            "protocol_nfts": ContractMongo.model_validate(existing_nfts),
-                            "protocol": ContractMongo.model_validate(existing_protocol),
-                            "compilation_utxo": compilation_utxo_info,
-                            "skipped": True,
-                            "error": None,
-                        }
+                    raise ContractAlreadyExistsError(
+                        f"Protocol contracts already exist for this UTXO "
+                        f"(protocol_nfts policy_id: {protocol_nfts_plutus.policy_id}). "
+                        "Delete the existing contracts before recompiling."
+                    )
 
             # Read source for hash
             with open(protocol_nfts_path, 'r') as f:
@@ -1668,6 +1711,311 @@ class MongoContractService:
             "user_token_name": user_token_name.payload.hex(),
             "minting_policy_id": protocol_nfts_contract.policy_id,
             "protocol_contract_address": str(protocol_address),
+            "fee_lovelace": int(tx_body.fee),
+            "inputs": inputs,
+            "outputs": outputs,
+        }
+
+    async def build_burn_project_transaction(
+        self,
+        wallet_address: str,
+        network: str,
+        wallet_id: str,
+        chain_context,
+        project_nfts_policy_id: str,
+    ) -> dict:
+        """
+        Build an unsigned burn transaction for project NFTs.
+
+        Destroys both the REF token (at the project contract address) and the
+        USER token (at the wallet address). Uses the protocol UTXO as a reference
+        input for admin signature validation.
+
+        Args:
+            wallet_address: Wallet enterprise address (holds USER token)
+            network: Network (testnet/mainnet)
+            wallet_id: CORE wallet ID
+            chain_context: CardanoChainContext instance
+            project_nfts_policy_id: Policy ID of the project_nfts to burn
+
+        Returns:
+            Dictionary with transaction details for the endpoint response
+        """
+        from terrasacha_contracts.minting_policies.project_nfts import BurnProject
+        from terrasacha_contracts.util import EndProject
+        from api.services.transaction_service_mongo import _extract_amount_from_value
+
+        if self.database is None:
+            raise ContractCompilationError("Database context required for burn operations")
+
+        collection = self._get_contract_collection()
+
+        # 1. Find project_nfts contract by policy_id
+        nfts_doc = await collection.find_one({"_id": project_nfts_policy_id})
+        if not nfts_doc:
+            raise ContractNotFoundError(
+                f"project_nfts contract with policy_id '{project_nfts_policy_id}' not found. "
+                "Use GET /contracts/ to list available compiled contracts."
+            )
+
+        nfts_doc["policy_id"] = nfts_doc.pop("_id")
+        project_nfts_contract = ContractMongo.model_validate(nfts_doc)
+
+        # 2. Find project spending validator (compilation_params[0] == project_nfts policy_id)
+        project_docs = await collection.find({
+            "registry_contract_name": "project",
+            "compilation_params": [project_nfts_contract.policy_id],
+        }).sort("compiled_at", -1).limit(1).to_list(1)
+
+        if not project_docs:
+            raise ContractNotFoundError(
+                "project spending validator not found. Run POST /compile-project first."
+            )
+
+        project_doc = project_docs[0]
+        project_doc["policy_id"] = project_doc.pop("_id")
+        project_contract = ContractMongo.model_validate(project_doc)
+
+        # 3. Derive protocol_nfts_policy_id from project_nfts compilation_params[1]
+        if not project_nfts_contract.compilation_params or len(project_nfts_contract.compilation_params) < 2:
+            raise InvalidContractParametersError(
+                "project_nfts contract missing compilation_params (need utxo_ref and protocol_nfts_policy_id)"
+            )
+
+        protocol_nfts_policy_id = project_nfts_contract.compilation_params[1]
+
+        # 4. Find protocol spending validator
+        protocol_docs = await collection.find({
+            "registry_contract_name": "protocol",
+            "compilation_params": [protocol_nfts_policy_id],
+        }).sort("compiled_at", -1).limit(1).to_list(1)
+
+        if not protocol_docs:
+            raise ContractNotFoundError(
+                "protocol spending validator not found. Ensure protocol contracts are compiled."
+            )
+
+        protocol_doc = protocol_docs[0]
+        protocol_doc["policy_id"] = protocol_doc.pop("_id")
+        protocol_contract = ContractMongo.model_validate(protocol_doc)
+
+        # 5. Reconstruct scripts and addresses
+        project_minting_script = pc.PlutusV2Script(bytes.fromhex(project_nfts_contract.cbor_hex))
+        project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
+        project_script = pc.PlutusV2Script(bytes.fromhex(project_contract.cbor_hex))
+        protocol_minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_policy_id))
+
+        if network == "testnet":
+            project_address = pc.Address.from_primitive(project_contract.testnet_addr)
+            protocol_address = pc.Address.from_primitive(protocol_contract.testnet_addr)
+        else:
+            project_address = pc.Address.from_primitive(project_contract.mainnet_addr)
+            protocol_address = pc.Address.from_primitive(protocol_contract.mainnet_addr)
+
+        address = pc.Address.from_primitive(wallet_address)
+
+        # 6. Find protocol UTXO on-chain (for reference input)
+        protocol_utxos = chain_context.context.utxos(protocol_address)
+        if not protocol_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at protocol address {protocol_address}. "
+                "Protocol NFTs must be minted first."
+            )
+
+        protocol_utxo = None
+        for utxo in protocol_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == protocol_minting_policy_id:
+                        protocol_utxo = utxo
+                        break
+            if protocol_utxo:
+                break
+
+        if not protocol_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with protocol policy {protocol_nfts_policy_id} found at protocol address"
+            )
+
+        # 7. Find REF UTXO at project contract address
+        project_utxos = chain_context.context.utxos(project_address)
+        if not project_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at project address {project_address}"
+            )
+
+        project_utxo = None
+        for utxo in project_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == project_minting_policy_id:
+                        project_utxo = utxo
+                        break
+            if project_utxo:
+                break
+
+        if not project_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with policy {project_nfts_policy_id} found at project address"
+            )
+
+        # 8. Find USER UTXO at wallet address
+        user_utxos = chain_context.context.utxos(address)
+        if not user_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at wallet address {wallet_address}"
+            )
+
+        # Exclude compilation UTXOs reserved for unminted contracts
+        reserved_utxos = await self.get_reserved_compilation_utxos()
+        if reserved_utxos:
+            user_utxos = [
+                u for u in user_utxos
+                if f"{u.input.transaction_id.payload.hex()}:{u.input.index}" not in reserved_utxos
+            ]
+
+        user_utxo = None
+        for utxo in user_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == project_minting_policy_id:
+                        user_utxo = utxo
+                        break
+            if user_utxo:
+                break
+
+        if not user_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with policy {project_nfts_policy_id} found at wallet address"
+            )
+
+        # 9. Calculate sorted input indices for EndProject redeemer
+        all_inputs = sorted(
+            user_utxos + [project_utxo],
+            key=lambda u: (u.input.transaction_id.payload, u.input.index),
+        )
+        project_input_index = all_inputs.index(project_utxo)
+        user_input_index = all_inputs.index(user_utxo)
+
+        # 10. Build transaction
+        builder = pc.TransactionBuilder(chain_context.context)
+
+        # Add all user UTXOs as regular inputs
+        for u in user_utxos:
+            builder.add_input(u)
+
+        # Add project UTXO as script input with EndProject redeemer
+        builder.add_script_input(
+            project_utxo,
+            script=project_script,
+            redeemer=pc.Redeemer(EndProject(
+                project_input_index=project_input_index,
+                user_input_index=user_input_index,
+            )),
+        )
+
+        # Add protocol UTXO as reference input (index 0 — only reference input)
+        builder.reference_inputs.add(protocol_utxo)
+
+        # Add minting script with BurnProject redeemer (protocol is reference_input[0])
+        builder.add_minting_script(
+            script=project_minting_script,
+            redeemer=pc.Redeemer(BurnProject(protocol_input_index=0)),
+        )
+
+        # Extract token names from UTXOs for burn amounts
+        project_asset = project_utxo.output.amount.multi_asset[project_minting_policy_id]
+        user_asset = user_utxo.output.amount.multi_asset[project_minting_policy_id]
+        project_token_name = list(project_asset.data.keys())[0]
+        user_token_name = list(user_asset.data.keys())[0]
+
+        # Set burn amounts (negative = burn)
+        builder.mint = pc.MultiAsset({
+            project_minting_policy_id: pc.Asset({
+                project_token_name: -1,
+                user_token_name: -1,
+            })
+        })
+
+        # Fee coverage
+        builder.add_input_address(address)
+
+        # 11. Build unsigned transaction
+        tx_body = builder.build(change_address=address)
+        partial_witness = builder.build_witness_set()
+
+        unsigned_cbor = tx_body.to_cbor_hex()
+        witness_cbor = partial_witness.to_cbor_hex()
+        tx_hash = tx_body.hash().hex()
+
+        # 12. Extract inputs/outputs for response
+        utxo_map = {}
+        for utxo in user_utxos:
+            key = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+            utxo_map[key] = utxo
+        pkey = f"{project_utxo.input.transaction_id.payload.hex()}:{project_utxo.input.index}"
+        utxo_map[pkey] = project_utxo
+
+        inputs = []
+        for tx_input in tx_body.inputs:
+            tx_hash_hex = tx_input.transaction_id.payload.hex()
+            idx = tx_input.index
+            utxo = utxo_map.get(f"{tx_hash_hex}:{idx}")
+            if utxo:
+                amount = _extract_amount_from_value(utxo.output.amount)
+                inputs.append({
+                    "address": str(utxo.output.address),
+                    "tx_hash": tx_hash_hex,
+                    "output_index": idx,
+                    "amount": amount,
+                })
+
+        outputs = []
+        for idx, tx_output in enumerate(tx_body.outputs):
+            amount = _extract_amount_from_value(tx_output.amount)
+            outputs.append({
+                "address": str(tx_output.address),
+                "amount": amount,
+                "output_index": idx,
+            })
+
+        # 13. Save TransactionMongo
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        transaction = TransactionMongo(
+            tx_hash=tx_hash,
+            wallet_id=wallet_id,
+            contract_policy_id=project_nfts_contract.policy_id,
+            status=TransactionStatus.BUILT.value,
+            operation="burn_project",
+            description="Burn project NFTs (REF + USER tokens)",
+            unsigned_cbor=unsigned_cbor,
+            witness_cbor=witness_cbor,
+            from_address=wallet_address,
+            from_address_index=0,
+            to_address=None,
+            fee_lovelace=int(tx_body.fee),
+            estimated_fee=int(tx_body.fee),
+            inputs=inputs,
+            outputs=outputs,
+            created_at=now,
+            updated_at=now,
+        )
+
+        tx_collection = self.database.get_collection("transactions")
+        tx_dict = transaction.model_dump(by_alias=True, exclude_unset=False)
+        if "id" in tx_dict:
+            tx_dict.pop("id")
+        tx_dict["_id"] = transaction.tx_hash
+        await tx_collection.insert_one(tx_dict)
+
+        return {
+            "success": True,
+            "transaction_id": tx_hash,
+            "tx_cbor": unsigned_cbor,
+            "project_token_name": project_token_name.payload.hex(),
+            "user_token_name": user_token_name.payload.hex(),
+            "minting_policy_id": project_nfts_contract.policy_id,
+            "project_contract_address": str(project_address),
             "fee_lovelace": int(tx_body.fee),
             "inputs": inputs,
             "outputs": outputs,
@@ -2901,7 +3249,6 @@ class MongoContractService:
         project_name: str,
         protocol_nfts_policy_id: str,
         utxo_ref: Optional[str] = None,
-        force: bool = False,
     ) -> dict:
         """
         Compile project contracts (project_nfts and project).
@@ -2917,7 +3264,6 @@ class MongoContractService:
             project_name: User-provided project name (e.g. "reforestation_guaviare")
             protocol_nfts_policy_id: Policy ID of the compiled protocol_nfts
             utxo_ref: Optional specific UTXO reference (tx_hash:index)
-            force: Force recompilation
 
         Returns:
             Dictionary with compilation results
@@ -2947,19 +3293,18 @@ class MongoContractService:
 
         # 2. Validate name uniqueness
         project_nfts_name = f"{project_name}_nfts"
-        if not force:
-            existing_name = await collection.find_one({"name": project_name, "is_active": {"$ne": False}})
-            if existing_name:
-                raise ContractAlreadyExistsError(
-                    f"Contract with name '{project_name}' already exists (policy_id: {existing_name['_id']}). "
-                    "Use a different project_name or force=true to recompile."
-                )
-            existing_nfts_name = await collection.find_one({"name": project_nfts_name, "is_active": {"$ne": False}})
-            if existing_nfts_name:
-                raise ContractAlreadyExistsError(
-                    f"Contract with name '{project_nfts_name}' already exists (policy_id: {existing_nfts_name['_id']}). "
-                    "Use a different project_name or force=true to recompile."
-                )
+        existing_name = await collection.find_one({"name": project_name, "is_active": {"$ne": False}})
+        if existing_name:
+            raise ContractAlreadyExistsError(
+                f"Contract with name '{project_name}' already exists (policy_id: {existing_name['_id']}). "
+                "Delete the existing contract before recompiling."
+            )
+        existing_nfts_name = await collection.find_one({"name": project_nfts_name, "is_active": {"$ne": False}})
+        if existing_nfts_name:
+            raise ContractAlreadyExistsError(
+                f"Contract with name '{project_nfts_name}' already exists (policy_id: {existing_nfts_name['_id']}). "
+                "Delete the existing contract before recompiling."
+            )
 
         # 3. Resolve source paths
         base_path = pathlib.Path("src/terrasacha_contracts")
@@ -3039,33 +3384,13 @@ class MongoContractService:
             project_nfts_plutus = PlutusContract(project_nfts_compiled)
 
             # Check if contracts already exist with same policy_id
-            if not force:
-                existing = await collection.find_one({"_id": project_nfts_plutus.policy_id})
-                if existing:
-                    project_nfts_policy_id_bytes_new = bytes.fromhex(project_nfts_plutus.policy_id)
-                    old_recursion_limit = sys.getrecursionlimit()
-                    sys.setrecursionlimit(2000)
-                    try:
-                        project_compiled = build(str(project_path), project_nfts_policy_id_bytes_new)
-                    finally:
-                        sys.setrecursionlimit(old_recursion_limit)
-                    project_plutus = PlutusContract(project_compiled)
-
-                    existing_project = await collection.find_one({"_id": project_plutus.policy_id})
-                    if existing_project:
-                        existing["policy_id"] = existing.pop("_id")
-                        existing_project["policy_id"] = existing_project.pop("_id")
-                        return {
-                            "success": True,
-                            "message": "Project contracts already exist with same policy IDs (use force=true to recompile)",
-                            "project_nfts": ContractMongo.model_validate(existing),
-                            "project": ContractMongo.model_validate(existing_project),
-                            "compilation_utxo": compilation_utxo_info,
-                            "protocol_nfts_policy_id": protocol_nfts_policy_id,
-                            "project_name": project_name,
-                            "skipped": True,
-                            "error": None,
-                        }
+            existing = await collection.find_one({"_id": project_nfts_plutus.policy_id})
+            if existing:
+                raise ContractAlreadyExistsError(
+                    f"Project contracts already exist for this UTXO "
+                    f"(project_nfts policy_id: {project_nfts_plutus.policy_id}). "
+                    "Delete the existing contracts before recompiling."
+                )
 
             # 6. Compile project with build(path, project_nfts_policy_id_bytes)
             project_nfts_policy_id_bytes_new = bytes.fromhex(project_nfts_plutus.policy_id)

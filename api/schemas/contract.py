@@ -130,6 +130,14 @@ class CompileContractResponse(BaseModel):
     is_custom_contract: bool = Field(False, description="True if compiled from custom source (not in registry)")
     is_active: bool = Field(True, description="Whether the contract is still active (False after burn invalidation)")
     invalidated_at: datetime | None = Field(None, description="When contract was invalidated (None if still active)")
+    has_minted_tokens: bool | None = Field(
+        None,
+        description="Whether this contract has active tokens on-chain. Only populated when ?enrich=true is passed."
+    )
+    balance_lovelace: int | None = Field(
+        None,
+        description="On-chain balance in lovelace (spending validators only, requires ?enrich=true)."
+    )
 
     class Config:
         json_schema_extra = {
@@ -151,25 +159,15 @@ class CompileContractResponse(BaseModel):
 class CompileProtocolRequest(BaseModel):
     """Request to compile protocol contracts (protocol_nfts and protocol)"""
 
-    wallet_id: str | None = Field(
-        default=None,
-        description="Wallet ID to use for UTXO source. If not provided, uses the authenticated CORE wallet."
-    )
     utxo_ref: str | None = Field(
         default=None,
         description="Specific UTXO reference (tx_hash:index) to use for compilation. If not provided, auto-selects a suitable UTXO with >3 ADA."
-    )
-    force: bool = Field(
-        default=False,
-        description="Force recompilation even if contracts with same parameters already exist."
     )
 
     class Config:
         json_schema_extra = {
             "example": {
-                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
-                "utxo_ref": "abc123...def:0",
-                "force": False
+                "utxo_ref": "abc123...def:0"
             }
         }
 
@@ -336,19 +334,11 @@ class BurnProtocolRequest(BaseModel):
             "Obtained from the compile-protocol response or GET /contracts/."
         )
     )
-    wallet_id: str | None = Field(
-        default=None,
-        description=(
-            "Wallet ID holding the USER token. "
-            "If not provided, uses the authenticated CORE wallet."
-        )
-    )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "protocol_nfts_policy_id": "abc123def456...",
-                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
             }
         }
 
@@ -377,6 +367,55 @@ class BurnProtocolResponse(BaseModel):
                 "user_token_name": "555345525f...",
                 "minting_policy_id": "abc123...",
                 "protocol_contract_address": "addr_test1wz...",
+                "fee_lovelace": 400000,
+                "inputs": [],
+                "outputs": []
+            }
+        }
+
+
+class BurnProjectRequest(BaseModel):
+    """Request to build an unsigned burn transaction for project NFTs"""
+
+    project_nfts_policy_id: str = Field(
+        description=(
+            "Policy ID of the project_nfts minting policy whose tokens to burn. "
+            "Obtained from the compile-project response or GET /contracts/."
+        )
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "project_nfts_policy_id": "abc123def456...",
+            }
+        }
+
+
+class BurnProjectResponse(BaseModel):
+    """Response after building an unsigned burn transaction for project NFTs"""
+
+    success: bool = Field(default=True)
+    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
+    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
+    project_token_name: str = Field(description="Hex name of REF token being burned")
+    user_token_name: str = Field(description="Hex name of USER token being burned")
+    minting_policy_id: str = Field(description="Project NFTs minting policy ID")
+    project_contract_address: str = Field(description="Address where REF token was held")
+    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
+    inputs: list[dict] = Field(description="Transaction inputs")
+    outputs: list[dict] = Field(description="Transaction outputs")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "transaction_id": "abc123...def",
+                "tx_cbor": "84a400...",
+                "project_token_name": "5245465f...",
+                "user_token_name": "555345525f...",
+                "minting_policy_id": "abc123...",
+                "project_contract_address": "addr_test1wz...",
                 "fee_lovelace": 400000,
                 "inputs": [],
                 "outputs": []
@@ -462,27 +501,17 @@ class CompileProjectRequest(BaseModel):
         description="Policy ID of the compiled protocol_nfts minting policy. "
         "Obtained from the compile-protocol response."
     )
-    wallet_id: str = Field(
-        description="Wallet ID whose UTXOs will be used for compilation. "
-        "A UTXO with >3 ADA is required to make the contract unique."
-    )
     utxo_ref: str | None = Field(
         default=None,
         description="Specific UTXO reference (tx_hash:index) to use for compilation. "
         "If not provided, auto-selects a suitable UTXO with >3 ADA that hasn't been used for another compilation."
-    )
-    force: bool = Field(
-        default=False,
-        description="Force recompilation even if contracts with same parameters already exist."
     )
 
     class Config:
         json_schema_extra = {
             "example": {
                 "project_name": "reforestation_guaviare",
-                "protocol_nfts_policy_id": "abc123def456...",
-                "wallet_id": "2337a77234f62a7ff63e4ca933c54918746bdddd295110d400d0110e",
-                "force": False
+                "protocol_nfts_policy_id": "abc123def456..."
             }
         }
 

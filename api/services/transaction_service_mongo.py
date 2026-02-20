@@ -674,13 +674,20 @@ class MongoTransactionService:
         # Get signing key for the enterprise address (index 0)
         signing_key = cardano_wallet.get_signing_key(0)
 
-        # Parse unsigned CBOR back into transaction body
+        # Parse unsigned CBOR to access fee and other fields
         unsigned_tx_body = pc.TransactionBody.from_cbor(transaction.unsigned_cbor)
+
+        # Sign using the hash of the ORIGINAL raw bytes — NOT the deserialized object.
+        # PyCardano's from_cbor → to_cbor can re-sort transaction inputs, producing
+        # different CBOR bytes and a different body hash than what the node computes
+        # from the submitted tx. Signing raw bytes keeps everything consistent.
+        tx_body_bytes = bytes.fromhex(transaction.unsigned_cbor)
+        tx_body_hash = hashlib.blake2b(tx_body_bytes, digest_size=32).digest()
 
         # Create verification key witness (signature)
         vkey_witness = pc.VerificationKeyWitness(
             signing_key.to_verification_key(),
-            signing_key.sign(unsigned_tx_body.hash())
+            signing_key.sign(tx_body_hash)
         )
 
         # Handle Plutus transactions (have script witnesses stored separately)
@@ -701,11 +708,18 @@ class MongoTransactionService:
         if transaction.tx_metadata:
             auxiliary_data = prepare_metadata(transaction.tx_metadata)
 
-        # Create signed transaction
-        signed_tx = pc.Transaction(unsigned_tx_body, witness_set, True, auxiliary_data)
-
-        # Get signed CBOR
-        signed_cbor = signed_tx.to_cbor_hex()
+        # Construct the signed CBOR manually to preserve original tx body bytes.
+        # Using pc.Transaction(...).to_cbor_hex() re-serializes the body and can
+        # change the byte layout (e.g. re-sorts inputs), producing a different body
+        # hash than what was signed above → InvalidWitnessesUTXOW on-chain.
+        # A Cardano transaction is CBOR array(4): [body, witnesses, true, aux|null]
+        witness_bytes = bytes.fromhex(witness_set.to_cbor_hex())
+        if auxiliary_data:
+            aux_bytes = bytes.fromhex(auxiliary_data.to_cbor_hex())
+            signed_cbor_bytes = bytes([0x84]) + tx_body_bytes + witness_bytes + bytes([0xf5]) + aux_bytes
+        else:
+            signed_cbor_bytes = bytes([0x84]) + tx_body_bytes + witness_bytes + bytes([0xf5, 0xf6])
+        signed_cbor = signed_cbor_bytes.hex()
 
         # NOTE: Do NOT update tx_hash! The transaction ID must remain constant.
         # The unsigned transaction hash is used as the permanent identifier.
@@ -772,12 +786,10 @@ class MongoTransactionService:
         chain_context = CardanoChainContext(network=network, blockfrost_api_key=blockfrost_api_key)
         context = chain_context.get_context()
 
-        # Parse signed transaction
-        signed_tx = pc.Transaction.from_cbor(transaction.signed_cbor)
-
-        # Submit to blockchain
+        # Submit raw CBOR hex directly — avoids parsing and re-serializing the
+        # Transaction object, which would re-sort inputs and change the body hash.
         try:
-            context.submit_tx(signed_tx)
+            context.submit_tx(transaction.signed_cbor)
         except Exception as e:
             # Update with error
             transaction.status = TransactionStatus.FAILED.value
