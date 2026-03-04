@@ -1302,20 +1302,10 @@ class MongoContractService:
 
         total_mint = protocol_nft_asset.union(user_nft_asset)
 
-        # Exclude reserved compilation UTXOs from coin selection so PyCardano
-        # doesn't accidentally spend another contract's compilation UTXO for fees
-        reserved_utxos = await self.get_reserved_compilation_utxos()
-        comp_utxo_ref = f"{comp_tx_hash}:{comp_index}"
-
         # Build transaction
         builder = pc.TransactionBuilder(chain_context.context)
         builder.add_input(utxo_to_spend)
-
-        # Add remaining non-reserved UTXOs as explicit inputs for fee coverage
-        for u in utxos:
-            ref = f"{u.input.transaction_id.payload.hex()}:{u.input.index}"
-            if ref != comp_utxo_ref and ref not in reserved_utxos:
-                builder.add_input(u)
+        builder.add_input_address(address)
         builder.mint = total_mint
         builder.add_minting_script(script=minting_script, redeemer=pc.Redeemer(Mint()))
 
@@ -1443,21 +1433,38 @@ class MongoContractService:
         tx_dict["_id"] = transaction.tx_hash
         await tx_collection.insert_one(tx_dict)
 
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(protocol_address)
+        _amount_lovelace = next((int(a["quantity"]) for out in outputs if out["address"] == _contract_addr for a in out["amount"] if a["unit"] == "lovelace"), 0)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": _amount_lovelace,
+            "amount_ada": _amount_lovelace / 1_000_000,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
             "protocol_token_name": protocol_token_name.hex(),
             "user_token_name": user_token_name.hex(),
             "minting_policy_id": protocol_nfts_contract.policy_id,
-            "protocol_contract_address": str(protocol_address),
+            "protocol_contract_address": _contract_addr,
             "compilation_utxo": {
                 "tx_id": comp_tx_hash,
                 "index": comp_index,
                 "amount_lovelace": utxo_to_spend.output.amount.coin,
                 "amount_ada": utxo_to_spend.output.amount.coin / 1_000_000,
             },
-            "fee_lovelace": int(tx_body.fee),
             "inputs": inputs,
             "outputs": outputs,
         }
@@ -1703,15 +1710,31 @@ class MongoContractService:
         tx_dict["_id"] = transaction.tx_hash
         await tx_collection.insert_one(tx_dict)
 
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(protocol_address)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": 0,
+            "amount_ada": 0.0,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
             "protocol_token_name": protocol_token_name.payload.hex(),
             "user_token_name": user_token_name.payload.hex(),
             "minting_policy_id": protocol_nfts_contract.policy_id,
-            "protocol_contract_address": str(protocol_address),
-            "fee_lovelace": int(tx_body.fee),
+            "protocol_contract_address": _contract_addr,
             "inputs": inputs,
             "outputs": outputs,
         }
@@ -2008,15 +2031,31 @@ class MongoContractService:
         tx_dict["_id"] = transaction.tx_hash
         await tx_collection.insert_one(tx_dict)
 
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(project_address)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": 0,
+            "amount_ada": 0.0,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
             "project_token_name": project_token_name.payload.hex(),
             "user_token_name": user_token_name.payload.hex(),
             "minting_policy_id": project_nfts_contract.policy_id,
-            "project_contract_address": str(project_address),
-            "fee_lovelace": int(tx_body.fee),
+            "project_contract_address": _contract_addr,
             "inputs": inputs,
             "outputs": outputs,
         }
@@ -2321,14 +2360,31 @@ class MongoContractService:
         await tx_collection.insert_one(tx_dict)
 
         # 14. Return response
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(protocol_address)
+        _amount_lovelace = next((int(a["quantity"]) for out in outputs if out["address"] == _contract_addr for a in out["amount"] if a["unit"] == "lovelace"), 0)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
-            "protocol_contract_address": str(protocol_address),
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": _amount_lovelace,
+            "amount_ada": _amount_lovelace / 1_000_000,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
+            "protocol_contract_address": _contract_addr,
             "old_datum": old_datum_dict,
             "new_datum": new_datum_dict,
-            "fee_lovelace": int(tx_body.fee),
             "inputs": inputs,
             "outputs": outputs,
         }
@@ -2585,19 +2641,9 @@ class MongoContractService:
         )
 
         # 11. Build transaction
-        # Exclude reserved compilation UTXOs from coin selection so PyCardano
-        # doesn't accidentally spend another contract's compilation UTXO for fees
-        reserved_utxos = await self.get_reserved_compilation_utxos()
-        comp_utxo_ref = f"{comp_tx_hash}:{comp_index}"
-
         builder = pc.TransactionBuilder(chain_context.context)
         builder.add_input(utxo_to_spend)
-
-        # Add remaining non-reserved UTXOs as explicit inputs for fee coverage
-        for u in utxos:
-            ref = f"{u.input.transaction_id.payload.hex()}:{u.input.index}"
-            if ref != comp_utxo_ref and ref not in reserved_utxos:
-                builder.add_input(u)
+        builder.add_input_address(address)
 
         builder.mint = total_mint
 
@@ -2706,21 +2752,38 @@ class MongoContractService:
         tx_dict["_id"] = transaction.tx_hash
         await tx_collection.insert_one(tx_dict)
 
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(project_address)
+        _amount_lovelace = next((int(a["quantity"]) for out in outputs if out["address"] == _contract_addr for a in out["amount"] if a["unit"] == "lovelace"), 0)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": _amount_lovelace,
+            "amount_ada": _amount_lovelace / 1_000_000,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
             "project_token_name": project_token_name.hex(),
             "user_token_name": user_token_name.hex(),
             "minting_policy_id": project_nfts_contract.policy_id,
-            "project_contract_address": str(project_address),
+            "project_contract_address": _contract_addr,
             "compilation_utxo": {
                 "tx_id": comp_tx_hash,
                 "index": comp_index,
                 "amount_lovelace": utxo_to_spend.output.amount.coin,
                 "amount_ada": utxo_to_spend.output.amount.coin / 1_000_000,
             },
-            "fee_lovelace": int(tx_body.fee),
             "inputs": inputs,
             "outputs": outputs,
         }
@@ -3128,14 +3191,31 @@ class MongoContractService:
         await tx_collection.insert_one(tx_dict)
 
         # 14. Return response
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        _contract_addr = str(project_address)
+        _amount_lovelace = next((int(a["quantity"]) for out in outputs if out["address"] == _contract_addr for a in out["amount"] if a["unit"] == "lovelace"), 0)
         return {
             "success": True,
             "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
             "tx_cbor": unsigned_cbor,
-            "project_contract_address": str(project_address),
+            "from_address": wallet_address,
+            "to_address": _contract_addr,
+            "amount_lovelace": _amount_lovelace,
+            "amount_ada": _amount_lovelace / 1_000_000,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
+            "project_contract_address": _contract_addr,
             "old_datum": old_datum_dict,
             "new_datum": new_datum_dict,
-            "fee_lovelace": int(tx_body.fee),
             "inputs": inputs,
             "outputs": outputs,
         }

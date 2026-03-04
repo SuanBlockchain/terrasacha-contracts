@@ -610,6 +610,37 @@ class ChangePasswordResponse(BaseModel):
         }
 
 
+class ChangeNameRequest(BaseModel):
+    """Request to change wallet name"""
+
+    new_name: str = Field(min_length=1, max_length=64, description="New wallet name")
+    password: str = Field(min_length=1, description="Current wallet password")
+
+    class Config:
+        json_schema_extra = {
+            "example": {"new_name": "my_renamed_wallet", "password": "MyP@ssw0rd"}
+        }
+
+
+class ChangeNameResponse(BaseModel):
+    """Response after changing wallet name"""
+
+    success: bool = Field(default=True)
+    message: str = Field(description="Success message")
+    wallet_id: str = Field(description="Wallet ID")
+    wallet_name: str = Field(description="Updated wallet name")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "message": "Wallet name changed successfully.",
+                "wallet_id": "abc123def456...",
+                "wallet_name": "my_renamed_wallet"
+            }
+        }
+
+
 class PromoteWalletResponse(BaseModel):
     """Response after promoting a wallet to CORE role"""
 

@@ -603,6 +603,40 @@ class MongoWalletService:
 
         return wallet
 
+    async def change_name(self, payment_key_hash: str, new_name: str, password: str) -> WalletMongo:
+        """
+        Rename a wallet.
+
+        Args:
+            payment_key_hash: Payment key hash (wallet ID)
+            new_name: New wallet name
+            password: Current wallet password (required for verification)
+
+        Returns:
+            Updated wallet
+
+        Raises:
+            WalletNotFoundError: If wallet doesn't exist
+            InvalidPasswordError: If password is incorrect
+            WalletAlreadyExistsError: If a wallet with new_name already exists
+        """
+        wallet = await self._find_wallet_by_id(payment_key_hash)
+        if not wallet:
+            raise WalletNotFoundError(f"Wallet with PKH {payment_key_hash} not found")
+
+        if not verify_password(password, wallet.password_hash):
+            raise InvalidPasswordError("Incorrect password")
+
+        existing = await self._find_wallet_by_name(new_name)
+        if existing and existing.id != payment_key_hash:
+            raise WalletAlreadyExistsError(f"A wallet named '{new_name}' already exists")
+
+        wallet.name = new_name
+        wallet.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await self._save_wallet(wallet)
+
+        return wallet
+
     async def set_default_wallet(self, payment_key_hash: str) -> WalletMongo:
         """
         Set a wallet as the default wallet (unsets previous default).

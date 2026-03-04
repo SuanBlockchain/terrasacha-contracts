@@ -9,6 +9,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from api.schemas.transaction import BuildTransactionResponse
+
 
 # ============================================================================
 # Enums
@@ -287,20 +289,14 @@ class MintProtocolRequest(BaseModel):
         }
 
 
-class MintProtocolResponse(BaseModel):
+class MintProtocolResponse(BuildTransactionResponse):
     """Response after building an unsigned minting transaction for protocol NFTs"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     protocol_token_name: str = Field(description="Hex name of minted REF token")
     user_token_name: str = Field(description="Hex name of minted USER token")
     minting_policy_id: str = Field(description="Protocol NFTs minting policy ID")
     protocol_contract_address: str = Field(description="Address where REF token is sent")
     compilation_utxo: CompilationUtxoInfo = Field(description="UTXO being consumed in the mint")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {
@@ -343,19 +339,13 @@ class BurnProtocolRequest(BaseModel):
         }
 
 
-class BurnProtocolResponse(BaseModel):
+class BurnProtocolResponse(BuildTransactionResponse):
     """Response after building an unsigned burn transaction for protocol NFTs"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     protocol_token_name: str = Field(description="Hex name of REF token being burned")
     user_token_name: str = Field(description="Hex name of USER token being burned")
     minting_policy_id: str = Field(description="Protocol NFTs minting policy ID")
     protocol_contract_address: str = Field(description="Address where REF token was held")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {
@@ -392,19 +382,13 @@ class BurnProjectRequest(BaseModel):
         }
 
 
-class BurnProjectResponse(BaseModel):
+class BurnProjectResponse(BuildTransactionResponse):
     """Response after building an unsigned burn transaction for project NFTs"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     project_token_name: str = Field(description="Hex name of REF token being burned")
     user_token_name: str = Field(description="Hex name of USER token being burned")
     minting_policy_id: str = Field(description="Project NFTs minting policy ID")
     project_contract_address: str = Field(description="Address where REF token was held")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {
@@ -854,18 +838,12 @@ class UpdateProtocolRequest(BaseModel):
         }
 
 
-class UpdateProtocolResponse(BaseModel):
+class UpdateProtocolResponse(BuildTransactionResponse):
     """Response after building an unsigned update transaction for protocol datum"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     protocol_contract_address: str = Field(description="Protocol contract address")
     old_datum: ProtocolDatum = Field(description="Previous datum values")
     new_datum: ProtocolDatum = Field(description="New datum values")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {
@@ -996,20 +974,14 @@ class MintProjectRequest(BaseModel):
         }
 
 
-class MintProjectResponse(BaseModel):
+class MintProjectResponse(BuildTransactionResponse):
     """Response after building an unsigned minting transaction for project NFTs"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     project_token_name: str = Field(description="Hex name of minted REF token")
     user_token_name: str = Field(description="Hex name of minted USER token")
     minting_policy_id: str = Field(description="Project NFTs minting policy ID")
     project_contract_address: str = Field(description="Address where REF token is sent")
     compilation_utxo: CompilationUtxoInfo = Field(description="UTXO being consumed in the mint")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {
@@ -1090,18 +1062,12 @@ class UpdateProjectRequest(BaseModel):
         }
 
 
-class UpdateProjectResponse(BaseModel):
+class UpdateProjectResponse(BuildTransactionResponse):
     """Response after building an unsigned update transaction for project datum"""
 
-    success: bool = Field(default=True)
-    transaction_id: str = Field(description="Transaction hash (use for sign/submit)")
-    tx_cbor: str = Field(description="Unsigned transaction body CBOR hex")
     project_contract_address: str = Field(description="Project contract address")
     old_datum: ProjectDatum = Field(description="Previous datum values")
     new_datum: ProjectDatum = Field(description="New datum values")
-    fee_lovelace: int = Field(description="Estimated transaction fee in lovelace")
-    inputs: list[dict] = Field(description="Transaction inputs")
-    outputs: list[dict] = Field(description="Transaction outputs")
 
     class Config:
         json_schema_extra = {

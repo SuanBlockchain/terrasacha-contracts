@@ -18,6 +18,8 @@ from api.dependencies.tenant import get_tenant_database, require_tenant_context
 from api.enums import NetworkType, WalletRole
 from api.schemas.wallet import (
     AddressUtxoResponse,
+    ChangeNameRequest,
+    ChangeNameResponse,
     ChangePasswordRequest,
     ChangePasswordResponse,
     CreateWalletRequest,
@@ -1380,6 +1382,59 @@ async def change_password(
         raise HTTPException(
             status_code=500,
             detail=f"Failed to change password: {str(e)}"
+        )
+
+
+@router.post(
+    "/change-name",
+    response_model=ChangeNameResponse,
+    summary="Change wallet name",
+    description="Rename the authenticated wallet. The wallet is identified by the bearer token.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Name already taken"},
+        401: {"model": ErrorResponse, "description": "Not authenticated or incorrect password"},
+        404: {"model": ErrorResponse, "description": "Wallet not found"},
+        500: {"model": ErrorResponse, "description": "Server error"},
+    },
+)
+async def change_name(
+    request: ChangeNameRequest,
+    wallet_auth: WalletAuthContext = Depends(get_wallet_from_token),
+    tenant_db = Depends(get_tenant_database),
+) -> ChangeNameResponse:
+    """
+    Change wallet name.
+
+    Renames the wallet identified by the bearer token.
+    The new name must be unique across all wallets.
+    """
+    try:
+        wallet_service = MongoWalletService(database=tenant_db)
+        updated_wallet = await wallet_service.change_name(
+            payment_key_hash=wallet_auth.wallet_id,
+            new_name=request.new_name,
+            password=request.password,
+        )
+
+        return ChangeNameResponse(
+            success=True,
+            message="Wallet name changed successfully.",
+            wallet_id=updated_wallet.id,
+            wallet_name=updated_wallet.name,
+        )
+
+    except WalletNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidPasswordError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    except WalletAlreadyExistsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to change wallet name: {str(e)}"
         )
 
 

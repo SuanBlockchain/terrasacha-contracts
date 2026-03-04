@@ -605,6 +605,25 @@ class MongoTransactionService:
             assets_hash=assets_hash,
         )
 
+        # If a BUILT transaction with this exact tx_hash already exists (same UTXOs → same
+        # body → same hash), update it in place instead of failing with a duplicate key error.
+        if self.database is not None:
+            collection = self._get_transaction_collection()
+            existing_by_hash_dict = await collection.find_one({"_id": tx_hash})
+            if existing_by_hash_dict:
+                existing_by_hash_dict = _prepare_tx_dict_for_validation(existing_by_hash_dict)
+                existing_by_hash = TransactionMongo.model_validate(existing_by_hash_dict)
+            else:
+                existing_by_hash = None
+        else:
+            existing_by_hash = await TransactionMongo.find_one(TransactionMongo.tx_hash == tx_hash)
+
+        if existing_by_hash and existing_by_hash.status == TransactionStatus.BUILT.value:
+            transaction.created_at = existing_by_hash.created_at  # preserve original creation time
+            transaction.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            await self._save_transaction(transaction)
+            return transaction
+
         await self._insert_transaction(transaction)
         return transaction
 
