@@ -2656,6 +2656,14 @@ class MongoContractService:
         # Add protocol UTXO as reference input
         builder.reference_inputs.add(protocol_utxo)
 
+        # Prevent PyCardano from auto-adding input vkey hashes as required_signers.
+        # The validator's validate_signatories asserts every required_signer is a
+        # protocol admin — if project_admins is empty, ANY required_signer causes
+        # failure. Security is provided by has_utxo(context, oref): only the wallet
+        # holding the compilation UTXO can mint. The wallet's VKey witness is still
+        # required for its UTxO inputs but does not need to appear in required_signers.
+        builder.required_signers = []
+
         # Add project output (REF token -> project contract address with datum)
         # NOTE: Opshin PlutusData serializes with indefinite-length CBOR lists
         # (9f...ff) but Cardano node uses canonical definite-length (84...) for
@@ -3868,4 +3876,772 @@ class MongoContractService:
             "contract_name": contract_doc.get("name", "unknown"),
             "reference_utxo": reference_utxo,
             "reference_tx_hash": transaction_id,
+        }
+
+    # =========================================================================
+    # Grey Token Operations
+    # =========================================================================
+
+    async def compile_grey_contract(
+        self,
+        wallet_address: str,
+        network: str,
+        wallet_id: str,
+        project_name: str,
+    ) -> dict:
+        """
+        Compile grey token minting policy for a specific project.
+
+        The grey minting policy is parameterized with the project NFTs policy ID.
+        Stores the compiled contract as '{project_name}_grey' in MongoDB.
+
+        Args:
+            wallet_address: CORE wallet address (for context)
+            network: Network (testnet/mainnet)
+            wallet_id: CORE wallet ID compiling the contract
+            project_name: Name of the project (e.g. 'reforestation_guaviare')
+
+        Returns:
+            Dictionary compatible with CompileGreyResponse
+        """
+        if self.database is None:
+            raise ContractCompilationError("Database context required for grey compilation")
+
+        collection = self._get_contract_collection()
+
+        # 1. Look up project_nfts contract by name convention
+        project_nfts_name = f"{project_name}_nfts"
+        nfts_doc = await collection.find_one({"name": project_nfts_name})
+        if not nfts_doc:
+            raise ContractNotFoundError(
+                f"project_nfts contract '{project_nfts_name}' not found. "
+                "Compile project contracts first with POST /compile-project."
+            )
+
+        if not nfts_doc.get("is_active", True):
+            raise InvalidContractParametersError(
+                f"project_nfts contract '{project_nfts_name}' is invalidated. "
+                "Compile new project contracts before creating grey contract."
+            )
+
+        project_nfts_policy_id = nfts_doc["_id"]
+
+        # 2. Check if grey contract already exists
+        grey_name = f"{project_name}_grey"
+        existing = await collection.find_one({"name": grey_name, "is_active": {"$ne": False}})
+        if existing:
+            raise ContractAlreadyExistsError(
+                f"Grey contract '{grey_name}' already exists (policy_id: {existing['_id']}). "
+                "Delete the existing contract before recompiling."
+            )
+
+        # 3. Resolve source path
+        grey_path = pathlib.Path("src/terrasacha_contracts/minting_policies/grey.py")
+        if not grey_path.exists():
+            raise ContractCompilationError(f"Grey contract source file not found: {grey_path}")
+
+        try:
+            # 4. Compile grey.py with project_nfts_policy_id as parameter
+            project_nfts_policy_id_bytes = bytes.fromhex(project_nfts_policy_id)
+            grey_compiled = build(str(grey_path), project_nfts_policy_id_bytes)
+            grey_plutus = PlutusContract(grey_compiled)
+
+            # 5. Check policy_id uniqueness
+            existing_by_id = await collection.find_one({"_id": grey_plutus.policy_id})
+            if existing_by_id:
+                raise ContractAlreadyExistsError(
+                    f"Grey contract already exists for this project_nfts policy "
+                    f"(grey policy_id: {grey_plutus.policy_id})."
+                )
+
+            # 6. Read source for hash
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            with open(grey_path, "r") as f:
+                grey_source = f.read()
+            grey_source_hash = hashlib.sha256(grey_source.encode()).hexdigest()
+
+            # 7. Version management
+            grey_version = 1
+            existing_ver = await collection.find_one({"_id": grey_plutus.policy_id})
+            if existing_ver:
+                grey_version = existing_ver.get("version", 0) + 1
+
+            # 8. Create contract record
+            grey_contract = ContractMongo(
+                policy_id=grey_plutus.policy_id,
+                name=grey_name,
+                contract_type="minting",
+                cbor_hex=grey_plutus.cbor.hex(),
+                testnet_addr=None,
+                mainnet_addr=None,
+                source_file=str(grey_path),
+                source_hash=grey_source_hash,
+                compilation_params=[project_nfts_policy_id],
+                version=grey_version,
+                network=network,
+                wallet_id=wallet_id,
+                description=f"Grey token minting policy for project {project_name}",
+                is_custom_contract=False,
+                registry_contract_name="grey",
+                category="token_management",
+                compiled_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+
+            # 9. Save to MongoDB
+            contract_dict = grey_contract.model_dump(by_alias=True, exclude={"id"})
+            contract_dict["_id"] = grey_contract.policy_id
+            await collection.replace_one(
+                {"_id": grey_contract.policy_id},
+                contract_dict,
+                upsert=True,
+            )
+
+            return {
+                "success": True,
+                "message": f"Grey contract compiled for project '{project_name}'",
+                "grey_contract_name": grey_name,
+                "grey_policy_id": grey_plutus.policy_id,
+                "project_name": project_name,
+                "project_nfts_policy_id": project_nfts_policy_id,
+                "saved": True,
+                "error": None,
+            }
+
+        except (ContractCompilationError, InvalidContractParametersError, ContractAlreadyExistsError):
+            raise
+        except Exception as e:
+            raise ContractCompilationError(f"Grey contract compilation failed: {str(e)}")
+
+    async def build_mint_grey_transaction(
+        self,
+        wallet_address: str,
+        network: str,
+        wallet_id: str,
+        chain_context,
+        grey_policy_id: str,
+        seller_pkh: str,
+        price: int,
+        precision: int,
+        min_purchase: int,
+        grey_token_quantity: int,
+    ) -> dict:
+        """
+        Build an unsigned minting transaction for grey tokens (free mode).
+
+        Free mode requires the wallet to hold the project USER token as authorization.
+        Grey tokens are sent to the investor contract with a DatumInvestor.
+        The project contract's datum is updated with project_state=1 (token sale).
+
+        Args:
+            wallet_address: Wallet enterprise address (must hold USER token for authorization)
+            network: Network (testnet/mainnet)
+            wallet_id: CORE wallet ID
+            chain_context: CardanoChainContext instance
+            grey_policy_id: Policy ID of the compiled grey minting contract
+            seller_pkh: Seller public key hash (hex) for DatumInvestor
+            price: Price per grey token as integer
+            precision: Price precision/decimals
+            min_purchase: Minimum purchase amount
+            grey_token_quantity: Number of grey tokens to mint
+
+        Returns:
+            Dictionary with transaction details for the endpoint response
+        """
+        from terrasacha_contracts.minting_policies.grey import MintGrey
+        from terrasacha_contracts.validators.project import UpdateProject, DatumProject, DatumProjectParams
+        from terrasacha_contracts.util import DatumInvestor, PriceWithPrecision
+        from api.services.transaction_service_mongo import _extract_amount_from_value
+
+        if self.database is None:
+            raise ContractCompilationError("Database context required for mint operations")
+
+        collection = self._get_contract_collection()
+
+        # 1. Look up grey contract
+        grey_doc = await collection.find_one({"_id": grey_policy_id})
+        if not grey_doc:
+            raise ContractNotFoundError(
+                f"Grey contract with policy_id '{grey_policy_id}' not found. "
+                "Compile grey contract first with POST /compile-grey."
+            )
+
+        grey_doc["policy_id"] = grey_doc.pop("_id")
+        grey_contract = ContractMongo.model_validate(grey_doc)
+
+        if not grey_contract.compilation_params or len(grey_contract.compilation_params) < 1:
+            raise InvalidContractParametersError(
+                "Grey contract missing compilation_params (expected [project_nfts_policy_id])"
+            )
+
+        project_nfts_policy_id = grey_contract.compilation_params[0]
+
+        # 2. Look up project spending validator
+        project_docs = await collection.find({
+            "registry_contract_name": "project",
+            "compilation_params": [project_nfts_policy_id],
+        }).sort("compiled_at", -1).limit(1).to_list(1)
+
+        if not project_docs:
+            raise ContractNotFoundError(
+                "Project spending validator not found. Run POST /compile-project first."
+            )
+
+        project_doc = project_docs[0]
+        project_doc["policy_id"] = project_doc.pop("_id")
+        project_contract = ContractMongo.model_validate(project_doc)
+
+        # 3. Derive project name from grey contract name (e.g. 'myproject_grey' → 'myproject')
+        project_name = grey_contract.name.removesuffix("_grey")
+
+        # 4. Look up investor contract
+        investor_name = f"{project_name}_investor"
+        investor_doc = await collection.find_one({"name": investor_name})
+        if not investor_doc:
+            raise ContractNotFoundError(
+                f"Investor contract '{investor_name}' not found. "
+                "Compile investor contract first with POST /compile-investor."
+            )
+
+        # 5. Build addresses and scripts
+        project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_policy_id))
+        project_script = pc.PlutusV2Script(bytes.fromhex(project_contract.cbor_hex))
+        grey_script = pc.PlutusV2Script(bytes.fromhex(grey_contract.cbor_hex))
+        grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_policy_id))
+
+        if network == "testnet":
+            project_address = pc.Address.from_primitive(project_contract.testnet_addr)
+            investor_address = pc.Address.from_primitive(investor_doc.get("testnet_addr"))
+        else:
+            project_address = pc.Address.from_primitive(project_contract.mainnet_addr)
+            investor_address = pc.Address.from_primitive(investor_doc.get("mainnet_addr"))
+
+        address = pc.Address.from_primitive(wallet_address)
+
+        # 6. Find project UTXO on-chain (holds REF token and DatumProject)
+        project_utxos = chain_context.context.utxos(project_address)
+        if not project_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at project address {project_address}. "
+                "Project NFTs must be minted first."
+            )
+
+        project_utxo = None
+        for utxo in project_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == project_minting_policy_id:
+                        project_utxo = utxo
+                        break
+            if project_utxo:
+                break
+
+        if not project_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with project policy {project_nfts_policy_id} found at project address."
+            )
+
+        # 7. Decode DatumProject to get grey token name
+        try:
+            project_datum = DatumProject.from_cbor(project_utxo.output.datum.cbor)
+        except Exception as e:
+            raise InvalidContractParametersError(f"Failed to decode project datum: {e}")
+
+        grey_token_name = project_datum.project_token.token_name
+
+        # 8. Find user UTXOs and locate USER token UTXO (authorization)
+        user_utxos = chain_context.context.utxos(address)
+        if not user_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at wallet address {wallet_address}"
+            )
+
+        user_token_utxo = None
+        for utxo in user_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == project_minting_policy_id:
+                        user_token_utxo = utxo
+                        break
+            if user_token_utxo:
+                break
+
+        if not user_token_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with project policy {project_nfts_policy_id} found in wallet. "
+                "Wallet must hold the project USER token for free-mode minting authorization."
+            )
+
+        # 9. Calculate sorted input indices
+        all_inputs_sorted = sorted(
+            user_utxos + [project_utxo],
+            key=lambda u: (u.input.transaction_id.payload, u.input.index),
+        )
+        project_index = all_inputs_sorted.index(project_utxo)
+        user_index = all_inputs_sorted.index(user_token_utxo)
+
+        # 10. Build transaction
+        builder = pc.TransactionBuilder(chain_context.context)
+
+        # Project script input with UpdateProject redeemer
+        builder.add_script_input(
+            project_utxo,
+            script=project_script,
+            redeemer=pc.Redeemer(UpdateProject(
+                project_input_index=project_index,
+                user_input_index=user_index,
+                project_output_index=0,
+            )),
+        )
+
+        # Add all user UTXOs for fees
+        for u in user_utxos:
+            builder.add_input(u)
+
+        # Grey minting script
+        builder.add_minting_script(
+            script=grey_script,
+            redeemer=pc.Redeemer(MintGrey(
+                project_input_index=project_index,
+                project_output_index=0,
+            )),
+        )
+
+        # Mint grey tokens
+        grey_asset = pc.MultiAsset({
+            grey_minting_policy_id: pc.Asset({pc.AssetName(grey_token_name): grey_token_quantity})
+        })
+        builder.mint = grey_asset
+
+        # 11. Build updated project datum (project_state → 1)
+        from terrasacha_contracts.validators.project import DatumProjectParams as _DPP
+        new_params = _DPP(
+            project_id=project_datum.params.project_id,
+            project_metadata=project_datum.params.project_metadata,
+            project_state=1,
+        )
+        new_project_datum = DatumProject(
+            params=new_params,
+            project_token=project_datum.project_token,
+            stakeholders=project_datum.stakeholders,
+            certifications=project_datum.certifications,
+        )
+
+        # Project output: return REF token + updated datum to project address
+        project_nft_asset = project_utxo.output.amount.multi_asset[project_minting_policy_id]
+        project_multi_asset = pc.MultiAsset({project_minting_policy_id: project_nft_asset})
+        project_value = pc.Value(0, project_multi_asset)
+        min_val_project = pc.min_lovelace(
+            chain_context.context,
+            output=pc.TransactionOutput(project_address, project_value, datum=new_project_datum),
+        ) + chain_context.context.protocol_param.coins_per_utxo_byte
+        project_output = pc.TransactionOutput(
+            address=project_address,
+            amount=pc.Value(coin=min_val_project, multi_asset=project_multi_asset),
+            datum=new_project_datum,
+        )
+        builder.add_output(project_output)
+
+        # 12. Build DatumInvestor and send grey tokens to investor contract
+        investor_datum = DatumInvestor(
+            seller_pkh=bytes.fromhex(seller_pkh),
+            grey_token_amount=grey_token_quantity,
+            price_per_token=PriceWithPrecision(price=price, precision=precision),
+            min_purchase_amount=min_purchase,
+        )
+        investor_value = pc.Value(0, grey_asset)
+        min_val_investor = pc.min_lovelace(
+            chain_context.context,
+            output=pc.TransactionOutput(investor_address, investor_value, datum=investor_datum),
+        ) + chain_context.context.protocol_param.coins_per_utxo_byte
+        investor_output = pc.TransactionOutput(
+            address=investor_address,
+            amount=pc.Value(coin=min_val_investor, multi_asset=grey_asset),
+            datum=investor_datum,
+        )
+        builder.add_output(investor_output)
+
+        # 13. Build unsigned transaction
+        tx_body = builder.build(change_address=address)
+        partial_witness = builder.build_witness_set()
+
+        unsigned_cbor = tx_body.to_cbor_hex()
+        witness_cbor = partial_witness.to_cbor_hex()
+        tx_hash = tx_body.hash().hex()
+
+        # 14. Extract inputs/outputs for response
+        utxo_map = {}
+        for utxo in user_utxos:
+            key = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+            utxo_map[key] = utxo
+        proj_key = f"{project_utxo.input.transaction_id.payload.hex()}:{project_utxo.input.index}"
+        utxo_map[proj_key] = project_utxo
+
+        inputs = []
+        for tx_input in tx_body.inputs:
+            tx_hash_hex = tx_input.transaction_id.payload.hex()
+            idx = tx_input.index
+            utxo = utxo_map.get(f"{tx_hash_hex}:{idx}")
+            if utxo:
+                amount = _extract_amount_from_value(utxo.output.amount)
+                inputs.append({
+                    "address": str(utxo.output.address),
+                    "tx_hash": tx_hash_hex,
+                    "output_index": idx,
+                    "amount": amount,
+                })
+
+        outputs = []
+        for idx, tx_output in enumerate(tx_body.outputs):
+            amount = _extract_amount_from_value(tx_output.amount)
+            outputs.append({
+                "address": str(tx_output.address),
+                "amount": amount,
+                "output_index": idx,
+            })
+
+        # 15. Save TransactionMongo
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        transaction = TransactionMongo(
+            tx_hash=tx_hash,
+            wallet_id=wallet_id,
+            contract_policy_id=grey_policy_id,
+            status=TransactionStatus.BUILT.value,
+            operation="mint_grey",
+            description=f"Mint {grey_token_quantity} grey token(s) to investor contract",
+            unsigned_cbor=unsigned_cbor,
+            witness_cbor=witness_cbor,
+            from_address=wallet_address,
+            from_address_index=0,
+            to_address=str(investor_address),
+            fee_lovelace=int(tx_body.fee),
+            estimated_fee=int(tx_body.fee),
+            inputs=inputs,
+            outputs=outputs,
+            created_at=now,
+            updated_at=now,
+        )
+
+        tx_collection = self.database.get_collection("transactions")
+        tx_dict = transaction.model_dump(by_alias=True, exclude_unset=False)
+        if "id" in tx_dict:
+            tx_dict.pop("id")
+        tx_dict["_id"] = transaction.tx_hash
+        await tx_collection.insert_one(tx_dict)
+
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        return {
+            "success": True,
+            "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
+            "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": str(investor_address),
+            "amount_lovelace": min_val_investor,
+            "amount_ada": min_val_investor / 1_000_000,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
+            "grey_token_name": grey_token_name.hex(),
+            "minting_policy_id": grey_policy_id,
+            "project_contract_address": str(project_address),
+            "investor_contract_address": str(investor_address),
+            "grey_token_quantity": grey_token_quantity,
+            "inputs": inputs,
+            "outputs": outputs,
+        }
+
+    async def build_burn_grey_transaction(
+        self,
+        wallet_address: str,
+        network: str,
+        wallet_id: str,
+        chain_context,
+        grey_policy_id: str,
+        burn_quantity: int,
+    ) -> dict:
+        """
+        Build an unsigned burn transaction for grey tokens.
+
+        The grey minting policy always succeeds for burning. The project UTXO is
+        added as a reference input (required by the BurnGrey redeemer).
+
+        Args:
+            wallet_address: Wallet enterprise address (holds grey tokens)
+            network: Network (testnet/mainnet)
+            wallet_id: CORE wallet ID
+            chain_context: CardanoChainContext instance
+            grey_policy_id: Policy ID of the grey minting contract
+            burn_quantity: Number of grey tokens to burn
+
+        Returns:
+            Dictionary with transaction details for the endpoint response
+        """
+        from terrasacha_contracts.minting_policies.grey import BurnGrey
+        from terrasacha_contracts.validators.project import DatumProject
+        from api.services.transaction_service_mongo import _extract_amount_from_value
+
+        if self.database is None:
+            raise ContractCompilationError("Database context required for burn operations")
+
+        collection = self._get_contract_collection()
+
+        # 1. Look up grey contract
+        grey_doc = await collection.find_one({"_id": grey_policy_id})
+        if not grey_doc:
+            raise ContractNotFoundError(
+                f"Grey contract with policy_id '{grey_policy_id}' not found."
+            )
+
+        grey_doc["policy_id"] = grey_doc.pop("_id")
+        grey_contract = ContractMongo.model_validate(grey_doc)
+
+        if not grey_contract.compilation_params or len(grey_contract.compilation_params) < 1:
+            raise InvalidContractParametersError(
+                "Grey contract missing compilation_params (expected [project_nfts_policy_id])"
+            )
+
+        project_nfts_policy_id = grey_contract.compilation_params[0]
+
+        # 2. Look up project spending validator
+        project_docs = await collection.find({
+            "registry_contract_name": "project",
+            "compilation_params": [project_nfts_policy_id],
+        }).sort("compiled_at", -1).limit(1).to_list(1)
+
+        if not project_docs:
+            raise ContractNotFoundError(
+                "Project spending validator not found for this grey contract."
+            )
+
+        project_doc = project_docs[0]
+        project_doc["policy_id"] = project_doc.pop("_id")
+        project_contract = ContractMongo.model_validate(project_doc)
+
+        # 3. Build addresses and scripts
+        project_minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_policy_id))
+        grey_script = pc.PlutusV2Script(bytes.fromhex(grey_contract.cbor_hex))
+        grey_minting_policy_id = pc.ScriptHash(bytes.fromhex(grey_policy_id))
+
+        if network == "testnet":
+            project_address = pc.Address.from_primitive(project_contract.testnet_addr)
+        else:
+            project_address = pc.Address.from_primitive(project_contract.mainnet_addr)
+
+        address = pc.Address.from_primitive(wallet_address)
+
+        # 4. Find project UTXO on-chain (used as reference input)
+        project_utxos = chain_context.context.utxos(project_address)
+        if not project_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at project address {project_address}. "
+                "Project NFTs must be minted first."
+            )
+
+        project_utxo = None
+        for utxo in project_utxos:
+            if utxo.output.amount.multi_asset:
+                for pi in utxo.output.amount.multi_asset.data:
+                    if pi == project_minting_policy_id:
+                        project_utxo = utxo
+                        break
+            if project_utxo:
+                break
+
+        if not project_utxo:
+            raise InvalidContractParametersError(
+                f"No UTXO with project policy {project_nfts_policy_id} found at project address."
+            )
+
+        # 5. Decode DatumProject to get grey token name
+        try:
+            project_datum = DatumProject.from_cbor(project_utxo.output.datum.cbor)
+        except Exception as e:
+            raise InvalidContractParametersError(f"Failed to decode project datum: {e}")
+
+        grey_token_name = project_datum.project_token.token_name
+
+        # 6. Find grey token UTXOs in wallet
+        user_utxos = chain_context.context.utxos(address)
+        if not user_utxos:
+            raise InvalidContractParametersError(
+                f"No UTXOs found at wallet address {wallet_address}"
+            )
+
+        grey_token_utxos = []
+        total_available = 0
+        for utxo in user_utxos:
+            if utxo.output.amount.multi_asset:
+                if grey_minting_policy_id in utxo.output.amount.multi_asset:
+                    asset_dict = utxo.output.amount.multi_asset[grey_minting_policy_id]
+                    if pc.AssetName(grey_token_name) in asset_dict:
+                        grey_token_utxos.append(utxo)
+                        total_available += asset_dict[pc.AssetName(grey_token_name)]
+
+        if total_available < burn_quantity:
+            raise InvalidContractParametersError(
+                f"Insufficient grey tokens. Available: {total_available}, Required: {burn_quantity}"
+            )
+
+        # 7. Select minimum UTXOs to cover burn amount
+        selected_utxos = []
+        selected_tokens = 0
+        for utxo in grey_token_utxos:
+            selected_utxos.append(utxo)
+            selected_tokens += utxo.output.amount.multi_asset[grey_minting_policy_id][pc.AssetName(grey_token_name)]
+            if selected_tokens >= burn_quantity:
+                break
+
+        remaining_tokens = selected_tokens - burn_quantity
+
+        # 8. Check if selected UTXOs have enough lovelace for fees; add extra if not
+        MIN_FEE_ESTIMATE = 2_000_000
+        total_lovelace_selected = sum(u.output.amount.coin for u in selected_utxos)
+
+        # 9. Build transaction
+        builder = pc.TransactionBuilder(chain_context.context)
+
+        # Project UTXO as reference input (index 0 — only reference input)
+        builder.reference_inputs.add(project_utxo)
+
+        # Add selected grey token UTXOs as inputs
+        for u in selected_utxos:
+            builder.add_input(u)
+
+        if total_lovelace_selected < MIN_FEE_ESTIMATE:
+            fee_utxos = [u for u in user_utxos if u not in selected_utxos and u.output.amount.coin >= 1_000_000]
+            if not fee_utxos:
+                raise InvalidContractParametersError(
+                    f"Insufficient lovelace for fees. Have {total_lovelace_selected / 1_000_000:.2f} ADA, "
+                    f"need ~{MIN_FEE_ESTIMATE / 1_000_000:.2f} ADA"
+                )
+            builder.add_input(fee_utxos[0])
+
+        # Burn minting script with BurnGrey redeemer
+        builder.add_minting_script(
+            script=grey_script,
+            redeemer=pc.Redeemer(BurnGrey(project_reference_index=0)),
+        )
+
+        # Set burn amounts (negative = burn)
+        builder.mint = pc.MultiAsset({
+            grey_minting_policy_id: pc.Asset({pc.AssetName(grey_token_name): -burn_quantity})
+        })
+
+        # Return remaining grey tokens to wallet if any
+        if remaining_tokens > 0:
+            remaining_asset = pc.Asset({pc.AssetName(grey_token_name): remaining_tokens})
+            remaining_multi_asset = pc.MultiAsset({grey_minting_policy_id: remaining_asset})
+            token_value = pc.Value(0, remaining_multi_asset)
+            min_val_tokens = pc.min_lovelace(
+                chain_context.context,
+                output=pc.TransactionOutput(address, token_value, datum=None),
+            )
+            token_output = pc.TransactionOutput(
+                address=address,
+                amount=pc.Value(coin=min_val_tokens, multi_asset=remaining_multi_asset),
+                datum=None,
+            )
+            builder.add_output(token_output)
+
+        # 10. Build unsigned transaction
+        tx_body = builder.build(change_address=address)
+        partial_witness = builder.build_witness_set()
+
+        unsigned_cbor = tx_body.to_cbor_hex()
+        witness_cbor = partial_witness.to_cbor_hex()
+        tx_hash = tx_body.hash().hex()
+
+        # 11. Extract inputs/outputs for response
+        utxo_map = {}
+        for utxo in user_utxos:
+            key = f"{utxo.input.transaction_id.payload.hex()}:{utxo.input.index}"
+            utxo_map[key] = utxo
+
+        inputs = []
+        for tx_input in tx_body.inputs:
+            tx_hash_hex = tx_input.transaction_id.payload.hex()
+            idx = tx_input.index
+            utxo = utxo_map.get(f"{tx_hash_hex}:{idx}")
+            if utxo:
+                amount = _extract_amount_from_value(utxo.output.amount)
+                inputs.append({
+                    "address": str(utxo.output.address),
+                    "tx_hash": tx_hash_hex,
+                    "output_index": idx,
+                    "amount": amount,
+                })
+
+        outputs = []
+        for idx, tx_output in enumerate(tx_body.outputs):
+            amount = _extract_amount_from_value(tx_output.amount)
+            outputs.append({
+                "address": str(tx_output.address),
+                "amount": amount,
+                "output_index": idx,
+            })
+
+        # 12. Save TransactionMongo
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        transaction = TransactionMongo(
+            tx_hash=tx_hash,
+            wallet_id=wallet_id,
+            contract_policy_id=grey_policy_id,
+            status=TransactionStatus.BUILT.value,
+            operation="burn_grey",
+            description=f"Burn {burn_quantity} grey token(s)",
+            unsigned_cbor=unsigned_cbor,
+            witness_cbor=witness_cbor,
+            from_address=wallet_address,
+            from_address_index=0,
+            to_address=None,
+            fee_lovelace=int(tx_body.fee),
+            estimated_fee=int(tx_body.fee),
+            inputs=inputs,
+            outputs=outputs,
+            created_at=now,
+            updated_at=now,
+        )
+
+        tx_collection = self.database.get_collection("transactions")
+        tx_dict = transaction.model_dump(by_alias=True, exclude_unset=False)
+        if "id" in tx_dict:
+            tx_dict.pop("id")
+        tx_dict["_id"] = transaction.tx_hash
+        await tx_collection.insert_one(tx_dict)
+
+        _fee = int(tx_body.fee)
+        _total_in = sum(int(a["quantity"]) for inp in inputs for a in inp["amount"] if a["unit"] == "lovelace")
+        _total_out = sum(int(a["quantity"]) for out in outputs for a in out["amount"] if a["unit"] == "lovelace")
+        return {
+            "success": True,
+            "transaction_id": tx_hash,
+            "tx_hash": tx_hash,
+            "tx_cbor": unsigned_cbor,
+            "from_address": wallet_address,
+            "to_address": None,
+            "amount_lovelace": 0,
+            "amount_ada": 0.0,
+            "estimated_fee_lovelace": _fee,
+            "estimated_fee_ada": _fee / 1_000_000,
+            "status": "BUILT",
+            "fee_lovelace": _fee,
+            "fee_ada": _fee / 1_000_000,
+            "tx_size": len(bytes.fromhex(unsigned_cbor)),
+            "total_input_lovelace": _total_in,
+            "total_output_lovelace": _total_out,
+            "grey_token_name": grey_token_name.hex(),
+            "grey_policy_id": grey_policy_id,
+            "burned_quantity": burn_quantity,
+            "remaining_tokens": remaining_tokens,
+            "inputs": inputs,
+            "outputs": outputs,
         }

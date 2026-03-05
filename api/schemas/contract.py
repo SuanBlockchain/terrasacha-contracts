@@ -7,7 +7,7 @@ Pydantic models for contract-related API requests and responses.
 from datetime import datetime
 from enum import Enum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from api.schemas.transaction import BuildTransactionResponse
 
@@ -701,6 +701,67 @@ class CompileInvestorResponse(BaseModel):
     error: str | None = Field(None, description="Error message if failed")
 
 
+class MintGreyRequest(BaseModel):
+    """Request to build an unsigned grey token minting transaction (free mode).
+
+    Free mode requires the wallet to hold the project USER token for authorization.
+    Grey tokens are sent to the investor contract with a DatumInvestor.
+    """
+
+    grey_token_quantity: int = Field(default=1, description="Number of grey tokens to mint")
+    seller_pkh: str = Field(description="Seller public key hash (hex) for DatumInvestor")
+    price: int = Field(description="Price per token as integer (e.g. 1250000 for 1.25 USDA with precision=6)")
+    precision: int = Field(default=6, description="Price precision/decimals (e.g. 6 means divide by 10^6)")
+    min_purchase: int = Field(default=1, description="Minimum purchase amount in grey tokens")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "grey_token_quantity": 1000,
+                "seller_pkh": "fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d",
+                "price": 1250000,
+                "precision": 6,
+                "min_purchase": 1,
+            }
+        }
+
+
+class MintGreyResponse(BuildTransactionResponse):
+    """Response after building an unsigned grey token minting transaction."""
+
+    grey_token_name: str = Field(description="Hex name of minted grey token (from project datum)")
+    minting_policy_id: str = Field(description="Grey minting policy ID")
+    project_contract_address: str = Field(description="Address of the project spending validator")
+    investor_contract_address: str = Field(description="Investor contract address where grey tokens are sent")
+    grey_token_quantity: int = Field(description="Number of grey tokens minted")
+
+
+class BurnGreyRequest(BaseModel):
+    """Request to build an unsigned grey token burn transaction."""
+
+    grey_policy_id: str = Field(
+        description="Policy ID of the grey minting contract. Obtained from compile-grey response or GET /contracts/."
+    )
+    burn_quantity: int = Field(default=1, description="Number of grey tokens to burn")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "grey_policy_id": "abc123def456...",
+                "burn_quantity": 10,
+            }
+        }
+
+
+class BurnGreyResponse(BuildTransactionResponse):
+    """Response after building an unsigned grey token burn transaction."""
+
+    grey_token_name: str = Field(description="Hex name of burned grey token")
+    grey_policy_id: str = Field(description="Grey minting policy ID")
+    burned_quantity: int = Field(description="Number of tokens burned")
+    remaining_tokens: int = Field(description="Tokens remaining in wallet after burn")
+
+
 # ============================================================================
 # Contract Info Schemas
 # ============================================================================
@@ -926,6 +987,15 @@ class StakeholderInput(BaseModel):
     pkh: str = Field(description="Public key hash (hex)")
     participation: int = Field(description="Grey token allocation")
 
+    @field_validator("stakeholder", "pkh")
+    @classmethod
+    def must_be_hex(cls, v: str, info) -> str:
+        try:
+            bytes.fromhex(v)
+        except ValueError:
+            raise ValueError(f"'{info.field_name}' must be a valid hex string (got: {v!r})")
+        return v.lower()
+
 
 class CertificationInput(BaseModel):
     """Certification definition for project creation/update"""
@@ -962,12 +1032,21 @@ class MintProjectRequest(BaseModel):
         description="Grey tokens for investment pool (added to total supply)."
     )
 
+    @field_validator("project_id", "project_metadata")
+    @classmethod
+    def must_be_hex(cls, v: str, info) -> str:
+        try:
+            bytes.fromhex(v)
+        except ValueError:
+            raise ValueError(f"'{info.field_name}' must be a valid hex string (got: {v!r})")
+        return v.lower()
+
     class Config:
         json_schema_extra = {
             "example": {
-                "project_id": "0a1b2c3d...",
+                "project_id": "0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b",
                 "stakeholders": [
-                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5b...", "participation": 500000}
+                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d", "participation": 500000}
                 ],
                 "investment_tokens": 100000,
             }

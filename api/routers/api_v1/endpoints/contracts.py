@@ -17,6 +17,8 @@ from api.dependencies.auth import WalletAuthContext, require_core_wallet
 from api.schemas.contract import (
     AvailableContractInfo,
     AvailableContractsResponse,
+    BurnGreyRequest,
+    BurnGreyResponse,
     BurnProjectRequest,
     BurnProjectResponse,
     BurnProtocolRequest,
@@ -26,6 +28,8 @@ from api.schemas.contract import (
     CompileContractRequest,
     CompileCustomContractRequest,
     CompileContractResponse,
+    CompileGreyRequest,
+    CompileGreyResponse,
     CompileProjectRequest,
     CompileProjectResponse,
     CompileProtocolRequest,
@@ -41,6 +45,8 @@ from api.schemas.contract import (
     InvalidateContractRequest,
     InvalidateContractResponse,
     InvalidatedContractInfo,
+    MintGreyRequest,
+    MintGreyResponse,
     MintProjectRequest,
     MintProjectResponse,
     MintProtocolRequest,
@@ -1226,6 +1232,250 @@ async def burn_project_nfts(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build burn transaction: {str(e)}")
+
+
+@router.post(
+    "/compile-grey",
+    response_model=CompileGreyResponse,
+    summary="Compile grey token minting policy (CORE only)",
+    description="Compile the grey token minting policy for a project. The grey policy is parameterized with the project_nfts policy ID. Requires CORE wallet and existing project contracts.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or missing project contracts"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Project contracts not found"},
+        409: {"model": ContractErrorResponse, "description": "Grey contract already exists"},
+        500: {"model": ContractErrorResponse, "description": "Compilation failed"},
+    },
+)
+async def compile_grey_contract(
+    request: CompileGreyRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+) -> CompileGreyResponse:
+    """
+    Compile the grey token minting policy for a project (CORE wallets only).
+
+    The grey minting policy is parameterized with the project_nfts policy ID,
+    which ties the grey tokens to a specific project. The compiled contract is
+    stored as '{project_name}_grey' in the database.
+
+    **Prerequisites:**
+    - Project contracts must be compiled: `POST /api/v1/contracts/compile-project`
+
+    **Flow:**
+    1. `POST /api/v1/contracts/compile-project` → note project_name
+    2. `POST /api/v1/contracts/compile-grey` (this endpoint) → note `grey_policy_id`
+    3. `POST /api/v1/contracts/{grey_policy_id}/mint-grey` → build mint tx
+    """
+    wallet_id = core_wallet.wallet_id
+    wallet_dict = await tenant_db.get_collection("wallets").find_one({"_id": wallet_id})
+    if not wallet_dict:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    db_wallet = WalletMongo.model_validate(wallet_dict)
+
+    try:
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.compile_grey_contract(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            project_name=request.project_name,
+        )
+
+        return CompileGreyResponse(**result)
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ContractAlreadyExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compile grey contract: {str(e)}")
+
+
+@router.post(
+    "/{policy_id}/mint-grey",
+    response_model=MintGreyResponse,
+    summary="Build mint grey tokens transaction (CORE only)",
+    description="Build an unsigned transaction to mint grey tokens in free mode. Grey tokens are sent to the investor contract with a DatumInvestor. Requires CORE wallet holding the project USER token.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Invalid request or wallet missing authorization token"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Grey or investor contract not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def mint_grey_tokens(
+    request: MintGreyRequest,
+    policy_id: str = Path(..., description="Policy ID of the compiled grey minting policy"),
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> MintGreyResponse:
+    """
+    Build an unsigned grey token minting transaction (CORE wallets only, free mode).
+
+    Mints grey tokens and sends them to the investor contract with a DatumInvestor.
+    The project contract datum is updated with `project_state=1` (token sale state).
+
+    **Prerequisites:**
+    - Grey contract compiled: `POST /api/v1/contracts/compile-grey`
+    - Investor contract compiled: `POST /api/v1/contracts/compile-investor`
+    - Project NFTs minted: `POST /api/v1/contracts/{id}/mint-project`
+    - Wallet must hold the project USER token for authorization
+
+    **No password required** — only builds the unsigned transaction.
+
+    **Flow:**
+    1. `POST /api/v1/contracts/{grey_policy_id}/mint-grey` (this endpoint) → get `transaction_id`
+    2. `POST /api/v1/transactions/sign` with `transaction_id` + password
+    3. `POST /api/v1/transactions/submit` with `transaction_id`
+    """
+    wallet_id = core_wallet.wallet_id
+    wallet_dict = await tenant_db.get_collection("wallets").find_one({"_id": wallet_id})
+    if not wallet_dict:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    db_wallet = WalletMongo.model_validate(wallet_dict)
+
+    try:
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_mint_grey_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            grey_policy_id=policy_id,
+            seller_pkh=request.seller_pkh,
+            price=request.price,
+            precision=request.precision,
+            min_purchase=request.min_purchase,
+            grey_token_quantity=request.grey_token_quantity,
+        )
+
+        return MintGreyResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_hash=result["tx_hash"],
+            tx_cbor=result["tx_cbor"],
+            from_address=result["from_address"],
+            to_address=result["to_address"],
+            amount_lovelace=result["amount_lovelace"],
+            amount_ada=result["amount_ada"],
+            estimated_fee_lovelace=result["estimated_fee_lovelace"],
+            estimated_fee_ada=result["estimated_fee_ada"],
+            status=result["status"],
+            fee_lovelace=result["fee_lovelace"],
+            fee_ada=result["fee_ada"],
+            tx_size=result.get("tx_size"),
+            total_input_lovelace=result.get("total_input_lovelace", 0),
+            total_output_lovelace=result.get("total_output_lovelace", 0),
+            grey_token_name=result["grey_token_name"],
+            minting_policy_id=result["minting_policy_id"],
+            project_contract_address=result["project_contract_address"],
+            investor_contract_address=result["investor_contract_address"],
+            grey_token_quantity=result["grey_token_quantity"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build mint-grey transaction: {str(e)}")
+
+
+@router.post(
+    "/burn-grey",
+    response_model=BurnGreyResponse,
+    summary="Build burn grey tokens transaction (CORE only)",
+    description="Build an unsigned transaction to burn grey tokens from the wallet. Requires CORE wallet holding grey tokens.",
+    responses={
+        400: {"model": ContractErrorResponse, "description": "Insufficient grey tokens or lovelace for fees"},
+        403: {"model": ContractErrorResponse, "description": "CORE wallet required"},
+        404: {"model": ContractErrorResponse, "description": "Grey contract or project UTXO not found"},
+        500: {"model": ContractErrorResponse, "description": "Transaction building failed"},
+    },
+)
+async def burn_grey_tokens(
+    request: BurnGreyRequest,
+    core_wallet: WalletAuthContext = Depends(require_core_wallet),
+    tenant_db=Depends(get_tenant_database),
+    chain_context: CardanoChainContext = Depends(get_chain_context),
+) -> BurnGreyResponse:
+    """
+    Build an unsigned grey token burn transaction (CORE wallets only).
+
+    Burns grey tokens from the wallet. The grey minting policy always succeeds
+    for burning. The project UTXO is included as a reference input.
+
+    **Flow:**
+    1. `POST /api/v1/contracts/burn-grey` (this endpoint) → get `transaction_id`
+    2. `POST /api/v1/transactions/sign` with `transaction_id` + password
+    3. `POST /api/v1/transactions/submit` with `transaction_id`
+    """
+    wallet_id = core_wallet.wallet_id
+    wallet_dict = await tenant_db.get_collection("wallets").find_one({"_id": wallet_id})
+    if not wallet_dict:
+        raise HTTPException(status_code=404, detail="Wallet not found")
+    db_wallet = WalletMongo.model_validate(wallet_dict)
+
+    try:
+        contract_service = MongoContractService(database=tenant_db)
+        result = await contract_service.build_burn_grey_transaction(
+            wallet_address=db_wallet.enterprise_address,
+            network=db_wallet.network,
+            wallet_id=wallet_id,
+            chain_context=chain_context,
+            grey_policy_id=request.grey_policy_id,
+            burn_quantity=request.burn_quantity,
+        )
+
+        return BurnGreyResponse(
+            success=result["success"],
+            transaction_id=result["transaction_id"],
+            tx_hash=result["tx_hash"],
+            tx_cbor=result["tx_cbor"],
+            from_address=result["from_address"],
+            to_address=result["to_address"],
+            amount_lovelace=result["amount_lovelace"],
+            amount_ada=result["amount_ada"],
+            estimated_fee_lovelace=result["estimated_fee_lovelace"],
+            estimated_fee_ada=result["estimated_fee_ada"],
+            status=result["status"],
+            fee_lovelace=result["fee_lovelace"],
+            fee_ada=result["fee_ada"],
+            tx_size=result.get("tx_size"),
+            total_input_lovelace=result.get("total_input_lovelace", 0),
+            total_output_lovelace=result.get("total_output_lovelace", 0),
+            grey_token_name=result["grey_token_name"],
+            grey_policy_id=result["grey_policy_id"],
+            burned_quantity=result["burned_quantity"],
+            remaining_tokens=result["remaining_tokens"],
+            inputs=result["inputs"],
+            outputs=result["outputs"],
+        )
+
+    except ContractNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except InvalidContractParametersError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ContractCompilationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build burn-grey transaction: {str(e)}")
 
 
 @router.post(
