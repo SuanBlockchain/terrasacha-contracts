@@ -1714,7 +1714,7 @@ async def confirm_reference_script(
 )
 async def update_protocol(
     request: UpdateProtocolRequest,
-    policy_id: str = Path(..., description="Policy ID of the protocol_nfts minting policy identifying which protocol to update"),
+    policy_id: str = Path(..., description="Contract policy ID (minting policy or spending validator) identifying which protocol to update"),
     core_wallet: WalletAuthContext = Depends(require_core_wallet),
     tenant_db=Depends(get_tenant_database),
     chain_context: CardanoChainContext = Depends(get_chain_context),
@@ -1810,7 +1810,7 @@ async def update_protocol(
 )
 async def update_project(
     request: UpdateProjectRequest,
-    policy_id: str = Path(..., description="Policy ID of the project_nfts minting policy identifying which project to update"),
+    policy_id: str = Path(..., description="Contract policy ID (minting policy or spending validator) identifying which project to update"),
     core_wallet: WalletAuthContext = Depends(require_core_wallet),
     tenant_db=Depends(get_tenant_database),
     chain_context: CardanoChainContext = Depends(get_chain_context),

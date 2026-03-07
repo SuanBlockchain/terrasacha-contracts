@@ -625,14 +625,11 @@ class CardanoCLI:
         stakeholders = []
         total_participation = 0
 
-        self.menu.print_info("Enter stakeholder information (minimum 1 stakeholder required)")
+        self.menu.print_info("Enter stakeholder information (press 'done' to skip, stakeholders can be added later)")
 
         while True:
             stakeholder_name = self.menu.get_input(f"Stakeholder {len(stakeholders) + 1} name (or 'done' to finish)")
             if stakeholder_name.lower() == "done":
-                if len(stakeholders) == 0:
-                    self.menu.print_error("At least one stakeholder is required")
-                    continue
                 break
 
             if not stakeholder_name.strip():
@@ -686,10 +683,7 @@ class CardanoCLI:
 
         # Certification periods setup
         self.menu.print_section("CERTIFICATION PERIODS SETUP")
-        self.menu.print_warning(
-            f"⚠️  IMPORTANT: The sum of certification quantities must equal the total supply ({total_supply:,})"
-        )
-        self.menu.print_info("Enter certification periods for the project (minimum 1 certification required)")
+        self.menu.print_info("Enter certification periods for the project (press 'done' to skip, certifications can be added later)")
 
         certifications = []
         total_certification_quantity = 0
@@ -698,7 +692,7 @@ class CardanoCLI:
         while True:
             cert_number = len(certifications) + 1
             self.menu.print_info(
-                f"\nCertification {cert_number} - Remaining quantity needed: {total_supply - total_certification_quantity:,}"
+                f"\nCertification {cert_number}"
             )
 
             cert_date_input = self.menu.get_input(
@@ -706,14 +700,6 @@ class CardanoCLI:
             )
 
             if cert_date_input.lower() == "done":
-                if len(certifications) == 0:
-                    self.menu.print_error("At least one certification is required")
-                    continue
-                if total_certification_quantity != total_supply:
-                    self.menu.print_error(
-                        f"Total certification quantity ({total_certification_quantity:,}) must equal total supply ({total_supply:,})"
-                    )
-                    continue
                 break
 
             # Parse certification date
@@ -3785,6 +3771,19 @@ class CardanoCLI:
             # Build custom datum with user updates
             custom_datum = self.build_custom_datum(current_datum, field_updates)
 
+            # On-chain validation: in state 0, sum of certification quantities must equal total_supply.
+            # Catch this client-side to give a clear error before burning gas.
+            if custom_datum.params.project_state == 0:
+                total_cert_qty = sum(c.quantity for c in custom_datum.certifications)
+                if total_cert_qty != custom_datum.project_token.total_supply:
+                    self.menu.print_error(
+                        f"Certification quantities sum ({total_cert_qty:,}) must equal total supply "
+                        f"({custom_datum.project_token.total_supply:,}) when project is in state 0.\n"
+                        "│ Update certifications (option 4) so their quantities add up to total supply before submitting."
+                    )
+                    input("Press Enter to continue...")
+                    return
+
             self.menu.print_info("Creating custom update transaction...")
             result = self.token_operations.create_project_update_transaction(user_address, custom_datum, project_name)
 
@@ -4176,40 +4175,38 @@ class CardanoCLI:
         self.menu.print_section("REFERENCE SCRIPT CREATION")
         self.menu.print_info("Creating reference scripts for compiled contracts...")
 
-        # Get available UTXOs (excluding reserved ones) - this also performs automatic cleanup
+        # Select funding/destination wallets FIRST so the user can pick a different
+        # funding wallet when the compilation wallet's only UTXO is reserved.
+        wallet_info = self.select_reference_script_wallets(source_address)
+        if not wallet_info:
+            self.menu.print_error("Reference script creation cancelled - contracts stored locally")
+            return
+
+        # Check available UTXOs on the chosen funding address (not necessarily source_address)
+        funding_address = wallet_info["source"]
         reserved_utxos = self.contract_manager.get_reserved_utxos()
         available_utxos = self.contract_manager.get_available_utxos(
-            source_address, min_ada=52_000_000, auto_cleanup=True
+            funding_address, min_ada=52_000_000, auto_cleanup=True
         )
-
-        self.menu.print_info(f"Reserved UTXOs: {reserved_utxos}")
 
         if not available_utxos:
             self.menu.print_error("No suitable UTXOs available for reference script creation")
-            self.menu.print_info("Requirements: UTXOs with >5 ADA that are not reserved for compilation")
+            self.menu.print_info("Requirements: UTXOs with >52 ADA that are not reserved for compilation")
             if reserved_utxos:
                 self.menu.print_warning(f"Found {len(reserved_utxos)} UTXOs reserved for project compilation")
                 self.menu.print_info("Reserved UTXOs cannot be used for reference scripts to prevent conflicts")
 
-            # Check if any UTXOs exist at all
-            all_utxos = self.transactions.context.utxos(source_address)
+            all_utxos = self.transactions.context.utxos(funding_address)
             total_utxos = len(all_utxos) if all_utxos else 0
             suitable_unreserved = (
                 sum(1 for utxo in all_utxos if utxo.output.amount.coin > 52_000_000) if all_utxos else 0
             )
-
             self.menu.print_info(
                 f"Address has {total_utxos} total UTXOs, {suitable_unreserved} with >52 ADA, {len(reserved_utxos)} reserved"
             )
             self.menu.print_info(
                 "Suggestion: Send additional ADA to this address or wait for compilation UTXOs to be released"
             )
-            return
-
-        # Get wallet addresses for reference script creation
-        wallet_info = self.select_reference_script_wallets(source_address)
-        if not wallet_info:
-            self.menu.print_error("Reference script creation cancelled - contracts stored locally")
             return
 
         successful_conversions = []
@@ -4380,15 +4377,6 @@ class CardanoCLI:
                         continue
                     protocol_address = protocol_selection.address
 
-                    # Ask for project wallet selection
-                    project_selection = self.select_wallet_or_address(
-                        "project contract", mode="wallet_only", allow_custom_address=False
-                    )
-                    if not project_selection:
-                        self.menu.print_info("Compilation cancelled")
-                        continue
-                    project_address = project_selection.address
-
                     # Ask for storage type
                     storage_type = self.select_storage_type()
                     if not storage_type:
@@ -4396,7 +4384,7 @@ class CardanoCLI:
                         continue
 
                     self.menu.print_info("Starting contract compilation...")
-                    result = self.contract_manager.compile_contracts(protocol_address, project_address, force=True)
+                    result = self.contract_manager.compile_contracts(protocol_address, force=True)
 
                     if result["success"]:
                         self.menu.print_success(result["message"])
@@ -4405,7 +4393,7 @@ class CardanoCLI:
 
                         # Handle reference script creation if selected
                         if storage_type == "reference_script":
-                            self._handle_reference_script_creation(result.get("contracts", []), project_address)
+                            self._handle_reference_script_creation(result.get("contracts", []), protocol_address)
                     else:
                         self.menu.print_error(result["error"])
                 except Exception as e:

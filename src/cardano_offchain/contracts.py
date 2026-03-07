@@ -492,15 +492,21 @@ class ContractManager:
             else:
                 available_utxo_refs = None
 
-            # Clean up used_utxos
-            utxos_to_remove = []
+            # Get reserved UTXO refs so we never clean them up based on an
+            # unrelated address query (compilation UTXOs may live on a different wallet).
+            reserved_utxo_refs = self.get_reserved_utxos()
+
+            # Clean up used_utxos — but only those NOT reserved for compilation
             for utxo_ref in self.used_utxos.copy():
                 if available_utxo_refs is None:
                     # If no address provided, we can't verify - skip for now
                     continue
 
+                if utxo_ref in reserved_utxo_refs:
+                    # Still needed for compilation — don't remove even if not on this address
+                    continue
+
                 if utxo_ref not in available_utxo_refs:
-                    utxos_to_remove.append(utxo_ref)
                     self.used_utxos.remove(utxo_ref)
                     cleanup_results["removed_used_utxos"].append(utxo_ref)
 
@@ -511,20 +517,10 @@ class ContractManager:
                     cleanup_results["removed_compilation_utxos"].append(compilation_ref)
                     self.compilation_utxo = None
 
-            # Clean up project_compilation_utxos
-            projects_to_remove = []
-            for project_name, compilation_info in self.project_compilation_utxos.items():
-                if available_utxo_refs is None:
-                    continue
-
-                utxo_ref = f"{compilation_info['tx_id']}:{compilation_info['index']}"
-                if utxo_ref not in available_utxo_refs:
-                    projects_to_remove.append(project_name)
-                    cleanup_results["removed_project_compilation_utxos"].append(f"{project_name}: {utxo_ref}")
-
-            # Remove spent project compilation UTXOs
-            for project_name in projects_to_remove:
-                del self.project_compilation_utxos[project_name]
+            # NOTE: project_compilation_utxos are NOT cleaned up here because the
+            # compilation UTXO may be on a different wallet than the address being
+            # queried. Premature cleanup causes a mismatch at minting time.
+            # They are only removed via mark_utxo_as_spent() when minting succeeds.
 
             cleanup_results["total_removed"] = (
                 len(cleanup_results["removed_used_utxos"])

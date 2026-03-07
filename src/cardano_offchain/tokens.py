@@ -788,10 +788,13 @@ class TokenOperations:
             )
 
             # Add project output
+            # NOTE: Opshin CBOR uses indefinite-length lists (9f...ff) but the node
+            # uses canonical (84...) for min_lovelace, causing a 1-byte undercount.
+            # Compensate by adding coins_per_utxo_byte.
             project_value = pc.Value(0, project_nft_asset)
             min_val_project = pc.min_lovelace(
                 self.context, output=pc.TransactionOutput(project_address, project_value, datum=project_datum)
-            )
+            ) + self.context.protocol_param.coins_per_utxo_byte
             project_output = pc.TransactionOutput(
                 address=project_address,
                 amount=pc.Value(coin=min_val_project, multi_asset=project_nft_asset),
@@ -809,6 +812,13 @@ class TokenOperations:
                 address=destination_address, amount=pc.Value(coin=min_val_user, multi_asset=user_nft_asset), datum=None
             )
             builder.add_output(user_output)
+
+            # Prevent PyCardano from auto-adding input vkey hashes as required_signers.
+            # validate_signatories checks every required_signer is a protocol admin;
+            # with project_admins=[], any required_signer causes EvaluationFailure.
+            # Security is via has_utxo(context, oref): only the wallet with the
+            # compilation UTXO can successfully mint.
+            builder.required_signers = []
 
             # Build transaction
             signed_tx = builder.build_and_sign([signing_key], change_address=from_address)
@@ -1148,15 +1158,23 @@ class TokenOperations:
             project_asset = self.transactions.extract_asset_from_utxo(project_utxo_to_spend, minting_policy_id)
             project_multi_asset = pc.MultiAsset({minting_policy_id: project_asset})
             project_value = pc.Value(0, project_multi_asset)
+            # NOTE: Opshin CBOR uses indefinite-length lists (9f...ff) but the node
+            # uses canonical (84...) for min_lovelace, causing a 1-byte undercount.
+            # Compensate by adding coins_per_utxo_byte.
             min_val_project = pc.min_lovelace(
                 self.context, output=pc.TransactionOutput(project_address, project_value, datum=new_datum)
-            )
+            ) + self.context.protocol_param.coins_per_utxo_byte
             project_output = pc.TransactionOutput(
                 address=project_address,
                 amount=pc.Value(coin=min_val_project, multi_asset=project_multi_asset),
                 datum=new_datum,
             )
             builder.add_output(project_output)
+
+            # Prevent PyCardano from auto-adding input vkey hashes as required_signers.
+            # The spending validator's validate_signatories rejects non-admin signers.
+            # Security is enforced via token ownership (user must hold the USER token).
+            builder.required_signers = []
 
             # Build transaction
             signing_key = self.wallet.get_signing_key(0)

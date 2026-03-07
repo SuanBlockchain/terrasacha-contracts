@@ -1089,6 +1089,8 @@ class UpdateProjectRequest(BaseModel):
     """Request to build an unsigned update transaction for project datum.
 
     The project is identified by the policy_id path parameter, not in the body.
+    All hex fields expect hex-encoded bytes. To encode a plain-text token name use
+    e.g. ``"ProyectoPrueba".encode().hex()`` → ``"50726f796563746f50727565626f"``.
     """
 
     wallet_id: str | None = Field(
@@ -1110,7 +1112,7 @@ class UpdateProjectRequest(BaseModel):
         default=None, description="New token policy ID hex. None = keep current."
     )
     project_token_name: str | None = Field(
-        default=None, description="New token name hex. None = keep current."
+        default=None, description="New token name hex. None = keep current. Encode plain text with str.encode().hex()."
     )
     total_supply: int | None = Field(
         default=None, description="New total supply. None = keep current."
@@ -1122,17 +1124,36 @@ class UpdateProjectRequest(BaseModel):
         default=None, description="New certifications list. None = keep current."
     )
 
+    @field_validator("project_id", "project_metadata", "project_token_policy_id")
+    @classmethod
+    def must_be_hex_if_set(cls, v: str | None, info) -> str | None:
+        if v is None:
+            return v
+        try:
+            bytes.fromhex(v)
+        except ValueError:
+            raise ValueError(f"'{info.field_name}' must be a valid hex string (got: {v!r})")
+        return v.lower()
+
+    @field_validator("project_token_name")
+    @classmethod
+    def token_name_to_hex(cls, v: str | None) -> str | None:
+        """Accept plain-text token names and encode to hex bytes."""
+        if v is None:
+            return v
+        return v.encode().hex()
+
     class Config:
         json_schema_extra = {
             "example": {
-                "project_id": "0a1b2c3d...",
+                "project_id": "d86e773973d3786f63e79765ca79e0758f395a0cb7335d154fc18393",
                 "project_metadata": "",
                 "project_state": 1,
-                "project_token_policy_id": "abc123...",
-                "project_token_name": "475245595f...",
+                "project_token_policy_id": "d96a99cd24897c70168454fe79c9dab9d8bcc88d84b3d26462a88876",
+                "project_token_name": "ProyectoPrueba",
                 "total_supply": 500000,
                 "stakeholders": [
-                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5b...", "participation": 500000}
+                    {"stakeholder": "6c616e646f776e6572", "pkh": "fe2d2b5ba9a01b09b2d5c573a7fb2b46d4d8601d00dcc3fec1e1402d", "participation": 500000}
                 ],
                 "certifications": [
                     {"certification_date": 1700000000, "quantity": 1000, "real_certification_date": 0, "real_quantity": 0}

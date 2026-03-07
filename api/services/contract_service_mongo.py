@@ -1940,6 +1940,12 @@ class MongoContractService:
         # Add protocol UTXO as reference input (index 0 — only reference input)
         builder.reference_inputs.add(protocol_utxo)
 
+        # Prevent PyCardano from auto-adding input vkey hashes as required_signers.
+        # project_nfts validator calls validate_signatories in its shared preamble
+        # (before the MintProject/BurnProject branch), so BurnProject hits the same
+        # check. With project_admins potentially empty, any required_signer fails.
+        builder.required_signers = []
+
         # Add minting script with BurnProject redeemer (protocol is reference_input[0])
         builder.add_minting_script(
             script=project_minting_script,
@@ -2060,6 +2066,69 @@ class MongoContractService:
             "outputs": outputs,
         }
 
+    async def _resolve_nfts_and_spending_contracts(
+        self,
+        policy_id: str,
+        nfts_registry_name: str,
+        spending_registry_name: str,
+        spending_category: Optional[str] = None,
+    ) -> tuple:
+        """
+        Resolve (nfts_contract, spending_contract) from either a minting policy ID
+        or a spending validator policy ID.
+
+        Mirrors the resolution logic used in get_contract_datum so that any endpoint
+        accepting a policy_id works with both ID types.
+        """
+        collection = self._get_contract_collection()
+
+        contract_doc = await collection.find_one({"_id": policy_id})
+        if not contract_doc:
+            raise ContractNotFoundError(
+                f"Contract '{policy_id}' not found. "
+                "Pass either the minting policy ID or the spending validator policy ID."
+            )
+        contract_doc["policy_id"] = contract_doc.pop("_id")
+        contract = ContractMongo.model_validate(contract_doc)
+
+        if contract.contract_type == "spending":
+            # Spending validator given — derive nfts contract from compilation_params[0]
+            spending_contract = contract
+            if not contract.compilation_params:
+                raise InvalidContractParametersError(
+                    f"Spending validator '{policy_id}' has no compilation_params — "
+                    "cannot determine the associated minting policy."
+                )
+            nfts_policy_id = contract.compilation_params[0]
+            nfts_doc = await collection.find_one({"_id": nfts_policy_id})
+            if not nfts_doc:
+                raise ContractNotFoundError(
+                    f"Minting policy '{nfts_policy_id}' (from {spending_registry_name} "
+                    f"compilation_params) not found."
+                )
+            nfts_doc["policy_id"] = nfts_doc.pop("_id")
+            nfts_contract = ContractMongo.model_validate(nfts_doc)
+        else:
+            # Minting policy given — find the spending validator
+            nfts_contract = contract
+            query = {
+                "registry_contract_name": spending_registry_name,
+                "compilation_params": [nfts_contract.policy_id],
+            }
+            if spending_category:
+                query["category"] = spending_category
+            spending_docs = await collection.find(query).sort("compiled_at", -1).limit(1).to_list(1)
+            if not spending_docs:
+                raise ContractNotFoundError(
+                    f"Spending validator '{spending_registry_name}' compiled with "
+                    f"policy {policy_id} not found."
+                )
+            spending_doc = spending_docs[0]
+            spending_doc["policy_id"] = spending_doc.pop("_id")
+            spending_contract = ContractMongo.model_validate(spending_doc)
+
+        return nfts_contract, spending_contract
+
     async def build_update_protocol_transaction(
         self,
         wallet_address: str,
@@ -2099,36 +2168,15 @@ class MongoContractService:
         if self.database is None:
             raise ContractCompilationError("Database context required for update operations")
 
-        collection = self._get_contract_collection()
+        # 1. Resolve protocol_nfts and protocol contracts (accepts minting or spending policy_id)
+        protocol_nfts_contract, protocol_contract = await self._resolve_nfts_and_spending_contracts(
+            policy_id=protocol_nfts_policy_id,
+            nfts_registry_name="protocol_nfts",
+            spending_registry_name="protocol",
+            spending_category="core_protocol",
+        )
 
-        # 1. Find protocol_nfts contract by policy_id
-        nfts_doc = await collection.find_one({"_id": protocol_nfts_policy_id})
-        if not nfts_doc:
-            raise ContractNotFoundError(
-                f"protocol_nfts contract with policy_id '{protocol_nfts_policy_id}' not found. "
-                "Use GET /contracts/ to list available compiled contracts."
-            )
-
-        nfts_doc["policy_id"] = nfts_doc.pop("_id")
-        protocol_nfts_contract = ContractMongo.model_validate(nfts_doc)
-
-        # 2. Find protocol spending validator
-        protocol_docs = await collection.find({
-            "registry_contract_name": "protocol",
-            "category": "core_protocol",
-            "compilation_params": [protocol_nfts_contract.policy_id],
-        }).sort("compiled_at", -1).limit(1).to_list(1)
-
-        if not protocol_docs:
-            raise ContractNotFoundError(
-                "protocol spending validator not found. Run POST /compile-protocol first."
-            )
-
-        protocol_doc = protocol_docs[0]
-        protocol_doc["policy_id"] = protocol_doc.pop("_id")
-        protocol_contract = ContractMongo.model_validate(protocol_doc)
-
-        # 3. Reconstruct scripts
+        # 2. Reconstruct scripts
         protocol_script = pc.PlutusV2Script(bytes.fromhex(protocol_contract.cbor_hex))
         minting_policy_id = pc.ScriptHash(bytes.fromhex(protocol_nfts_contract.policy_id))
 
@@ -2851,35 +2899,14 @@ class MongoContractService:
         if self.database is None:
             raise ContractCompilationError("Database context required for update operations")
 
-        collection = self._get_contract_collection()
+        # 1. Resolve project_nfts and project contracts (accepts minting or spending policy_id)
+        project_nfts_contract, project_contract = await self._resolve_nfts_and_spending_contracts(
+            policy_id=project_nfts_policy_id,
+            nfts_registry_name="project_nfts",
+            spending_registry_name="project",
+        )
 
-        # 1. Find project_nfts contract by policy_id
-        nfts_doc = await collection.find_one({"_id": project_nfts_policy_id})
-        if not nfts_doc:
-            raise ContractNotFoundError(
-                f"project_nfts contract with policy_id '{project_nfts_policy_id}' not found. "
-                "Use GET /contracts/ to list available compiled contracts."
-            )
-
-        nfts_doc["policy_id"] = nfts_doc.pop("_id")
-        project_nfts_contract = ContractMongo.model_validate(nfts_doc)
-
-        # 2. Find project spending validator
-        project_docs = await collection.find({
-            "registry_contract_name": "project",
-            "compilation_params": [project_nfts_contract.policy_id],
-        }).sort("compiled_at", -1).limit(1).to_list(1)
-
-        if not project_docs:
-            raise ContractNotFoundError(
-                "project spending validator not found. Run POST /compile-project first."
-            )
-
-        project_doc = project_docs[0]
-        project_doc["policy_id"] = project_doc.pop("_id")
-        project_contract = ContractMongo.model_validate(project_doc)
-
-        # 3. Reconstruct script
+        # 2. Reconstruct script
         project_script = pc.PlutusV2Script(bytes.fromhex(project_contract.cbor_hex))
         minting_policy_id = pc.ScriptHash(bytes.fromhex(project_nfts_contract.policy_id))
 
